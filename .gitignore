@@ -1,0 +1,35 @@
+# Claude Code — local machine state only; agent definitions ARE tracked
+.claude/settings.local.json
+
+# Secrets
+.env
+.env.*
+!.env.example
+.secrets.baseline.local
+
+# Corpus PDFs — mixed copyright, never committed. Rebuild: python -m carelite.corpus.fetch
+data/pdfs/
+carelite_pdfs/
+*.pdf
+
+# Database dumps and local DB state
+*.dump
+*.sql.gz
+dumps/
+
+# Generated run artifacts (regenerate via `make reproduce`)
+runs/
+.cache/
+*.log
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+*.egg-info/
+
+# macOS
+.DS_Store

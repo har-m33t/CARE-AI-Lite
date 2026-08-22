@@ -1,0 +1,8 @@
+#!/bin/sh
+# Block commits containing new secrets. Install: git config core.hooksPath .githooks
+set -e
+VENV_BIN="$(git rev-parse --show-toplevel)/.venv/bin"
+[ -x "$VENV_BIN/detect-secrets-hook" ] || { echo "detect-secrets not installed; skipping scan"; exit 0; }
+STAGED=$(git diff --cached --name-only --diff-filter=ACM | grep -v -E '^\.venv/|^uv\.lock$' || true)
+[ -z "$STAGED" ] && exit 0
+echo "$STAGED" | xargs "$VENV_BIN/detect-secrets-hook" --baseline .secrets.baseline
