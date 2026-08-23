@@ -174,12 +174,45 @@ CREATE INDEX IF NOT EXISTS rubric_score_rater_idx ON rubric_score (rater_type);
 
 -- Human rating is deferred but the harness is built now: this table records the
 -- blinded presentation each rater saw, so unblinding is a join, not a guess.
+-- A rater sees a mix of two kinds of item: real generations, and the fixed
+-- calibration responses used to align raters before scoring begins. Calibration
+-- items are fixtures in carelite.eval.rubric.calibration and have no `generation`
+-- row, so exactly one of (generation_id, calibration_id) is set on each row.
 CREATE TABLE IF NOT EXISTS rating_assignment (
     assignment_id   BIGSERIAL PRIMARY KEY,
     rater_id        TEXT NOT NULL,
-    generation_id   TEXT NOT NULL REFERENCES generation(generation_id) ON DELETE CASCADE,
+    generation_id   TEXT REFERENCES generation(generation_id) ON DELETE CASCADE,
+    calibration_id  TEXT,
     display_order   INTEGER NOT NULL,
     blind_label     TEXT NOT NULL,             -- what the rater sees instead of the condition
     is_calibration  BOOLEAN NOT NULL DEFAULT FALSE,
-    UNIQUE (rater_id, generation_id)
+    CONSTRAINT rating_assignment_one_target
+        CHECK (num_nonnulls(generation_id, calibration_id) = 1),
+    CONSTRAINT rating_assignment_calibration_flag_agrees
+        CHECK (is_calibration = (calibration_id IS NOT NULL)),
+    UNIQUE (rater_id, generation_id),
+    UNIQUE (rater_id, calibration_id)
 );
+
+-- Idempotent migration for databases created before calibration_id existed.
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM information_schema.tables
+               WHERE table_name = 'rating_assignment')
+       AND NOT EXISTS (SELECT 1 FROM information_schema.columns
+                       WHERE table_name = 'rating_assignment'
+                         AND column_name = 'calibration_id')
+    THEN
+        ALTER TABLE rating_assignment ADD COLUMN calibration_id TEXT;
+        ALTER TABLE rating_assignment ALTER COLUMN generation_id DROP NOT NULL;
+        ALTER TABLE rating_assignment
+            ADD CONSTRAINT rating_assignment_one_target
+            CHECK (num_nonnulls(generation_id, calibration_id) = 1);
+        ALTER TABLE rating_assignment
+            ADD CONSTRAINT rating_assignment_calibration_flag_agrees
+            CHECK (is_calibration = (calibration_id IS NOT NULL));
+        ALTER TABLE rating_assignment
+            ADD CONSTRAINT rating_assignment_rater_id_calibration_id_key
+            UNIQUE (rater_id, calibration_id);
+    END IF;
+END $$;
