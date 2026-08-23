@@ -1,10 +1,14 @@
 """Unit tests for carelite.corpus.load.
 
-The SQL-parameter-shaping helpers are plain unit tests (no connection, part
-of `make check`). Anything that opens an actual Postgres connection is
-`@pytest.mark.db` — excluded from `make check` by design, and not runnable
-in this environment yet (Postgres is not installed). Written anyway so the
-round-trip is verified the moment a database exists.
+The SQL-parameter-shaping helpers, `canonical_paper_id`, and the
+paper_id/doi consistency validation are plain unit tests (no connection,
+part of `make check`). Anything that opens an actual Postgres connection is
+`@pytest.mark.db` — excluded from `make check` by design.
+
+`_paper()` always derives `paper_id` from `doi` via `canonical_paper_id`,
+matching how `carelite.corpus.fetch.manifest_papers()` builds `Paper`
+objects in production — so these tests exercise the same invariant the
+real pipeline relies on, not an artificial paper_id/doi pairing.
 """
 
 from __future__ import annotations
@@ -13,6 +17,7 @@ import pytest
 
 from carelite.corpus.chunk import chunk_text
 from carelite.corpus.load import (
+    canonical_paper_id,
     chunk_params,
     paper_params,
     upsert_corpus,
@@ -21,24 +26,61 @@ from carelite.corpus.load import (
 from carelite.types import Chunk, EvidenceTier, Paper
 
 
-def _paper(paper_id: str = "paper-1") -> Paper:
-    return Paper(
-        paper_id=paper_id,
-        doi="10.1/xyz",
-        apa_citation="Smith, J. (2020). A study. Journal of Testing.",
-        year=2020,
-        design="RCT",
-        evidence_tier=EvidenceTier.STRONG,
-        pdf_path="/data/pdfs/2020_10-1-xyz.pdf",
-    )
+def _paper(doi: str = "10.1/xyz", **overrides: object) -> Paper:
+    fields: dict[str, object] = {
+        "paper_id": canonical_paper_id("ignored-when-doi-present", doi),
+        "doi": doi,
+        "apa_citation": "Smith, J. (2020). A study. Journal of Testing.",
+        "year": 2020,
+        "design": "RCT",
+        "evidence_tier": EvidenceTier.STRONG,
+        "pdf_path": "/data/pdfs/2020_10-1-xyz.pdf",
+    }
+    fields.update(overrides)
+    return Paper(**fields)  # type: ignore[arg-type]
+
+
+def test_canonical_paper_id_derives_from_doi_when_present():
+    assert canonical_paper_id("whatever-id", "10.1370/afm.348") == "10-1370-afm-348"
+
+
+def test_canonical_paper_id_falls_back_to_given_id_without_a_doi():
+    assert canonical_paper_id("manual-paper-1", None) == "manual-paper-1"
+    assert canonical_paper_id("manual-paper-1", "") == "manual-paper-1"
 
 
 def test_paper_params_maps_every_field_including_enum_value():
     params = paper_params(_paper())
-    assert params["paper_id"] == "paper-1"
+    assert params["paper_id"] == "10-1-xyz"
     assert params["doi"] == "10.1/xyz"
     assert params["evidence_tier"] == "strong"  # enum -> raw string for the CHECK constraint
     assert params["pdf_path"] == "/data/pdfs/2020_10-1-xyz.pdf"
+
+
+def test_paper_params_rejects_paper_id_doi_mismatch():
+    """The real-world trigger: a Paper whose paper_id was not derived from
+    its doi would collide on `paper_doi_key` (UNIQUE) before ON CONFLICT
+    (paper_id) ever saw it. paper_params catches this before it ever
+    reaches the database, with a message that says why."""
+    mismatched = Paper(
+        paper_id="not-the-slug",
+        doi="10.1/xyz",
+        apa_citation="X",
+        evidence_tier=EvidenceTier.EMERGING,
+    )
+    with pytest.raises(ValueError, match="canonical paper_id"):
+        paper_params(mismatched)
+
+
+def test_paper_params_allows_any_paper_id_when_doi_is_absent():
+    no_doi = Paper(
+        paper_id="manual-lookup-1",
+        doi=None,
+        apa_citation="X",
+        evidence_tier=EvidenceTier.EMERGING,
+    )
+    params = paper_params(no_doi)
+    assert params["paper_id"] == "manual-lookup-1"
 
 
 def test_chunk_params_recovers_ordinal_from_stable_chunk_id():
@@ -70,11 +112,37 @@ def test_chunks_from_chunk_text_upsert_with_monotonic_ordinals():
 
 
 @pytest.mark.db
+def test_duplicate_doi_manifest_case_upserts_to_a_single_row():
+    """Models the manifest's `duplicate_of` scenario directly: the real-world
+    trigger for the paper_doi_key UniqueViolation is two Paper objects built
+    independently for the same doi (e.g. "0030415.pdf" and its byte-identical
+    "0030415_1.pdf"). `fetch.manifest_papers()` already filters `duplicate_of`
+    rows so only one `Paper` per doi is ever emitted in production, but this
+    proves the DB layer itself is safe even if it weren't: two independently
+    constructed Papers sharing a doi resolve to the same canonical paper_id
+    and upsert onto a single row instead of raising.
+    """
+    from carelite.db import apply_schema, fetch_all
+
+    apply_schema()
+    doi = "10.1370/afm.348-test-dup"
+    primary = _paper(doi=doi, apa_citation="Primary citation.")
+    duplicate = _paper(doi=doi, apa_citation="Re-resolved citation, supersedes the first.")
+    assert primary.paper_id == duplicate.paper_id  # the guarantee under test
+
+    upsert_papers([primary, duplicate])
+
+    rows = fetch_all("SELECT paper_id, apa_citation FROM paper WHERE doi = %s", (doi,))
+    assert len(rows) == 1
+    assert rows[0]["apa_citation"] == "Re-resolved citation, supersedes the first."
+
+
+@pytest.mark.db
 def test_upsert_papers_and_chunks_round_trip():
     from carelite.db import apply_schema, fetch_all, fetch_one
 
     apply_schema()
-    paper = _paper("paper-roundtrip")
+    paper = _paper(doi="10.1/roundtrip-test")
     chunks = chunk_text(paper.paper_id, "First sentence here. Second sentence here. Third one too.")
 
     n_papers, n_chunks = upsert_corpus([paper], chunks)
@@ -96,7 +164,7 @@ def test_upsert_is_idempotent():
     from carelite.db import apply_schema, fetch_all
 
     apply_schema()
-    paper = _paper("paper-idempotent")
+    paper = _paper(doi="10.1/idempotent-test")
     chunks = chunk_text(paper.paper_id, "Alpha sentence here. Beta sentence here.")
 
     upsert_corpus([paper], chunks)
@@ -111,7 +179,7 @@ def test_upsert_paper_updates_fields_on_conflict():
     from carelite.db import apply_schema, fetch_one
 
     apply_schema()
-    paper = _paper("paper-update")
+    paper = _paper(doi="10.1/update-test")
     upsert_papers([paper])
 
     updated = paper.model_copy(update={"apa_citation": "Updated citation text."})
