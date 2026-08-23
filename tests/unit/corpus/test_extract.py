@@ -106,7 +106,7 @@ def test_extract_corpus_aggregates_results_and_failures(tmp_path):
 
     assert len(results) == 2
     assert len(failures) == 1
-    assert failures[0].pdf_path.endswith("bad.pdf")
+    assert failures[0].source_path.endswith("bad.pdf")
 
 
 def test_extract_corpus_default_dir_uses_settings(monkeypatch, tmp_path):
@@ -117,3 +117,153 @@ def test_extract_corpus_default_dir_uses_settings(monkeypatch, tmp_path):
 
     assert len(results) == 1
     assert not failures
+
+
+# ---------------------------------------------------------------------------
+# JATS full-text XML (PMC / Europe PMC fullTextXML)
+# ---------------------------------------------------------------------------
+
+_JATS_SAMPLE = """<?xml version="1.0" encoding="UTF-8"?>
+<article xmlns:xlink="http://www.w3.org/1999/xlink">
+  <front>
+    <article-meta>
+      <title-group><article-title>Empathy in Clinical Encounters</article-title></title-group>
+      <abstract><p>This study examines empathy in clinical encounters.</p></abstract>
+    </article-meta>
+  </front>
+  <body>
+    <sec>
+      <title>Introduction</title>
+      <p>Empathy improves patient outcomes.</p>
+      <fig><label>Figure 1</label><caption><p>Study flow diagram.</p></caption></fig>
+      <p>Second sentence of the introduction.</p>
+    </sec>
+    <sec>
+      <title>Methods</title>
+      <p>We interviewed patients about their care.</p>
+      <table-wrap><label>Table 1</label><caption><p>Baseline characteristics.</p></caption></table-wrap>
+    </sec>
+  </body>
+  <back>
+    <ref-list>
+      <ref><citation>Smith J. 2020. Some Journal.</citation></ref>
+    </ref-list>
+  </back>
+</article>
+"""
+
+
+def _make_xml(path: Path, content: str = _JATS_SAMPLE) -> Path:
+    path.write_text(content, encoding="utf-8")
+    return path
+
+
+def test_extract_xml_jats_pulls_title_and_body_text(tmp_path):
+    xml_path = _make_xml(tmp_path / "sample.xml")
+
+    result = extract.extract_xml_jats(xml_path)
+
+    assert result.ok
+    assert result.source_kind == "xml"
+    assert result.title == "Empathy in Clinical Encounters"
+    assert "Empathy improves patient outcomes." in result.text
+    assert "Second sentence of the introduction." in result.text
+    assert "We interviewed patients about their care." in result.text
+
+
+def test_extract_xml_jats_prepends_abstract(tmp_path):
+    xml_path = _make_xml(tmp_path / "sample.xml")
+    result = extract.extract_xml_jats(xml_path)
+    assert "Abstract" in result.text
+    assert "This study examines empathy in clinical encounters." in result.text
+    # abstract precedes the body
+    assert result.text.index("Abstract") < result.text.index("Introduction")
+
+
+def test_extract_xml_jats_excludes_figure_and_table_captions_structurally(tmp_path):
+    xml_path = _make_xml(tmp_path / "sample.xml")
+    result = extract.extract_xml_jats(xml_path)
+    assert "Study flow diagram" not in result.text
+    assert "Baseline characteristics" not in result.text
+    assert "Figure 1" not in result.text
+    assert "Table 1" not in result.text
+
+
+def test_extract_xml_jats_excludes_reference_list(tmp_path):
+    xml_path = _make_xml(tmp_path / "sample.xml")
+    result = extract.extract_xml_jats(xml_path)
+    assert "Smith J. 2020" not in result.text
+
+
+def test_extract_xml_jats_preserves_section_headings_for_chunk_boundaries(tmp_path):
+    """Headings come through as their own paragraph block, so
+    carelite.corpus.chunk's heading-boundary detection still works unmodified
+    on XML-derived text — the Chunk contract needs no changes."""
+    xml_path = _make_xml(tmp_path / "sample.xml")
+    result = extract.extract_xml_jats(xml_path)
+
+    from carelite.corpus.chunk import chunk_text
+
+    chunks = chunk_text("paper-x", result.text, target_tokens=1000, overlap_tokens=0)
+    assert len(chunks) >= 2  # forced section breaks at "Introduction" and "Methods"
+    assert any(c.text.startswith("Introduction") for c in chunks)
+    assert any(c.text.startswith("Methods") for c in chunks)
+
+
+def test_extract_xml_jats_reports_failure_for_malformed_xml(tmp_path):
+    xml_path = tmp_path / "broken.xml"
+    xml_path.write_bytes(b"<article><unclosed>")
+
+    result = extract.extract_xml_jats(xml_path)
+
+    assert not result.ok
+    assert result.failures
+    assert "could not parse" in result.failures[0].reason
+
+
+def test_extract_xml_jats_reports_failure_for_no_usable_text(tmp_path):
+    xml_path = _make_xml(tmp_path / "thin.xml", "<?xml version='1.0'?><article><body/></article>")
+
+    result = extract.extract_xml_jats(xml_path)
+
+    assert not result.ok
+    assert "no usable text" in result.failures[0].reason
+
+
+def test_extract_source_dispatches_on_suffix(tmp_path):
+    pdf_result = extract.extract_source(_make_pdf(tmp_path / "a.pdf", ["Some content."]))
+    assert pdf_result.source_kind == "pdf"
+
+    xml_result = extract.extract_source(_make_xml(tmp_path / "b.xml"))
+    assert xml_result.source_kind == "xml"
+
+
+def test_extract_source_reports_failure_for_unsupported_suffix(tmp_path):
+    other = tmp_path / "notes.txt"
+    other.write_text("plain text")
+
+    result = extract.extract_source(other)
+
+    assert not result.ok
+    assert "unsupported file type" in result.failures[0].reason
+
+
+def test_iter_source_files_picks_up_both_pdf_and_xml(tmp_path):
+    _make_pdf(tmp_path / "a.pdf", ["content"])
+    _make_xml(tmp_path / "b.xml")
+    (tmp_path / "ignore.txt").write_text("not a source file")
+
+    found = list(extract.iter_source_files(tmp_path))
+    assert {p.name for p in found} == {"a.pdf", "b.xml"}
+
+
+def test_extract_corpus_handles_a_mixed_pdf_and_xml_directory(tmp_path):
+    _make_pdf(tmp_path / "a.pdf", ["PDF content about empathy."])
+    _make_xml(tmp_path / "b.xml")
+
+    results, failures = extract.extract_corpus(tmp_path)
+
+    assert len(results) == 2
+    assert not failures
+    kinds = {r.source_kind for r in results}
+    assert kinds == {"pdf", "xml"}

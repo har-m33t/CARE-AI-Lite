@@ -1,19 +1,47 @@
-"""carelite.corpus.fetch — rebuild the CARELite paper corpus as real PDFs.
+"""carelite.corpus.fetch — rebuild the CARELite paper corpus as real PDFs (or,
+where only that is open, full-text XML).
 
 Refactored from the original `data/fetch_corpus.py` (now a thin shim over
-this module). Behaviour is preserved exactly:
+this module). Behaviour preserved: the embedded, self-contained DOI
+manifest; the `%PDF`/XML content-sniff guard so a paywall's HTML landing
+page never gets saved as a real document; `duplicate_of` dedup; idempotent
+re-runs (existing output — PDF or XML — is skipped); rows with no DOI, plus
+any runtime failures, land in `_manual_needed.csv`.
 
-- The DOI manifest is embedded below, self-contained.
-- Resolution order per DOI: Unpaywall -> NCBI PMC ID-converter -> PMC PDF URL.
-- Every download is checked for a real "%PDF" magic-byte header before being
-  kept, so a paywall's HTML page never gets saved with a .pdf extension.
-- `duplicate_of` marks byte-identical papers so they are fetched once.
-- Re-running is safe: existing output files are skipped.
-- Requests are rate-limited with `time.sleep(1)` between manifest rows.
-- Rows with no DOI, plus any runtime failures, land in `_manual_needed.csv`.
+Resolution chain per DOI, first hit wins, in order:
+
+1. **Unpaywall** — the primary OA index (requires `--email` per their ToS).
+2. **Europe PMC** (`ebi.ac.uk/europepmc/webservices/rest`) — REST search by
+   DOI, explicitly built for programmatic access. When the article is OA
+   there, its `fullTextXML` endpoint is preferred *ahead of* a PDF: it is
+   clean JATS XML with real section/paragraph/reference structure, so
+   `carelite.corpus.extract` doesn't have to heuristically strip running
+   headers, footers, or ligature damage the way it must for a PDF.
+3. **PMC OA Web Service** (`ncbi.nlm.nih.gov/pmc/utils/oa/oa.fcgi`) — NCBI's
+   own sanctioned bulk-download API for the PMC open-access subset. This
+   replaces the old fallback of building
+   `pmc/articles/{pmcid}/pdf/` directly and scraping it: that URL pattern
+   returns HTTP 403 for programmatic clients (verified against this
+   manifest — 19/34 failures were exactly this) because it's gated for
+   interactive browser use, not because the content is closed. The correct
+   response to a 403 is to use the API the content owner actually offers
+   for automated access, not to retry past the block or spoof a browser
+   User-Agent — this module does neither. NCBI PMC's ID-converter
+   (`pmc/utils/idconv`) is still used, but only as a metadata lookup to get
+   a PMCID for the OA Web Service call, never to build the blocked URL.
+4. **OpenAlex** (`api.openalex.org`) — `best_oa_location.pdf_url`.
+5. **Semantic Scholar** (`api.semanticscholar.org`) — `openAccessPdf.url`.
+
+A DOI that resolves nowhere in this chain is genuinely not open-access
+through any of these sources and is reported in `_manual_needed.csv`, same
+as before — that file is a legitimate output, not a failure of the script.
+
+Requests are rate-limited with `time.sleep(1)` between manifest rows, and
+every HTTP call additionally retries HTTP 429 with exponential backoff
+(honouring `Retry-After` when the server sends one) via `_get`.
 
 Default output directory is `settings.pdf_dir` (`data/pdfs/`, gitignored —
-PDFs are mixed-copyright and must never be committed).
+fetched documents are mixed-copyright and must never be committed).
 """
 
 from __future__ import annotations
@@ -24,13 +52,17 @@ import pathlib
 import re
 import sys
 import time
-from collections.abc import Iterable
+import xml.etree.ElementTree as ElementTree
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
+from typing import Any
 
 try:
     import requests
 except ImportError:  # pragma: no cover - dependency is declared in pyproject
     sys.exit("Missing dependency. Run:  uv sync")
+
+from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 from carelite.config import get_settings
 from carelite.types import EvidenceTier, Paper
@@ -131,13 +163,63 @@ MANIFEST: list[ManifestRow] = [
 UA_TEMPLATE = "CARELite-corpus-rebuild/1.0 (mailto:{email})"
 
 
+class _RateLimited(requests.RequestException):
+    """Raised internally on HTTP 429 to trigger a tenacity retry.
+
+    Subclasses `requests.RequestException` so it's caught by the same
+    `except requests.RequestException` handling every caller already uses,
+    with a message that reports the real cause instead of a generic error.
+    """
+
+    def __init__(self, retry_after: float | None) -> None:
+        self.retry_after = retry_after
+        suffix = f", honouring Retry-After: {retry_after}s" if retry_after else ""
+        super().__init__(f"HTTP 429 (rate limited{suffix})")
+
+
+def _retry_after_seconds(resp: requests.Response) -> float | None:
+    value = resp.headers.get("Retry-After")
+    if not value:
+        return None
+    try:
+        return max(0.0, float(value))
+    except ValueError:
+        return None  # HTTP-date form; fall back to exponential backoff instead
+
+
+def _wait_honouring_retry_after(retry_state):
+    exc = retry_state.outcome.exception() if retry_state.outcome else None
+    if isinstance(exc, _RateLimited) and exc.retry_after is not None:
+        return exc.retry_after
+    return wait_exponential(multiplier=1, min=2, max=30)(retry_state)
+
+
+@retry(
+    retry=retry_if_exception_type(_RateLimited),
+    wait=_wait_honouring_retry_after,
+    stop=stop_after_attempt(5),
+    reraise=True,
+)
+def _get(url: str, **kwargs: Any) -> requests.Response:
+    """`requests.get`, transparently retrying HTTP 429 with backoff.
+
+    Every other status code (including 403/404 — a real access control or a
+    dead link, not a transient condition) is returned as-is for the caller
+    to interpret; only 429 is retried here.
+    """
+    r = requests.get(url, **kwargs)
+    if r.status_code == 429:
+        raise _RateLimited(_retry_after_seconds(r))
+    return r
+
+
 def slug(doi: str) -> str:
     """Stable filesystem/paper_id slug for a DOI, e.g. 10.1370/afm.348 -> 10-1370-afm-348."""
     return re.sub(r"[^A-Za-z0-9]+", "-", doi).strip("-").lower()
 
 
 def unpaywall_pdf_url(doi: str, email: str, headers: dict[str, str]) -> str | None:
-    r = requests.get(
+    r = _get(
         f"https://api.unpaywall.org/v2/{doi}",
         params={"email": email},
         headers=headers,
@@ -149,9 +231,12 @@ def unpaywall_pdf_url(doi: str, email: str, headers: dict[str, str]) -> str | No
     return loc.get("url_for_pdf") or loc.get("url")
 
 
-def pmc_pdf_url(doi: str, headers: dict[str, str]) -> str | None:
-    """Fallback: resolve DOI -> PMCID via NCBI, then build the PMC PDF URL."""
-    r = requests.get(
+def pmc_idconv_pmcid(doi: str, headers: dict[str, str]) -> str | None:
+    """DOI -> PMCID via NCBI's ID-converter. A metadata lookup, not a document
+    fetch — used only to feed the PMC OA Web Service, never to build the
+    `pmc/articles/{pmcid}/pdf/` URL (that pattern 403s for programmatic
+    clients; see the module docstring)."""
+    r = _get(
         "https://www.ncbi.nlm.nih.gov/pmc/utils/idconv/v1.0/",
         params={"ids": doi, "format": "json", "tool": "carelite", "email": "noreply@example.com"},
         headers=headers,
@@ -161,12 +246,161 @@ def pmc_pdf_url(doi: str, headers: dict[str, str]) -> str | None:
         return None
     records = (r.json() or {}).get("records") or []
     pmcid = records[0].get("pmcid") if records else None
-    return f"https://www.ncbi.nlm.nih.gov/pmc/articles/{pmcid}/pdf/" if pmcid else None
+    return str(pmcid) if pmcid else None
 
 
-def download_pdf(url: str, dest: pathlib.Path, headers: dict[str, str]) -> tuple[bool, str]:
-    """Stream to disk; abort and report if the response isn't actually a PDF."""
-    r = requests.get(url, headers=headers, timeout=90, stream=True, allow_redirects=True)
+def europepmc_lookup(doi: str, headers: dict[str, str]) -> dict[str, object] | None:
+    """Europe PMC REST search by DOI — explicitly built for programmatic access."""
+    r = _get(
+        "https://www.ebi.ac.uk/europepmc/webservices/rest/search",
+        params={"query": f"DOI:{doi}", "format": "json", "resultType": "core"},
+        headers=headers,
+        timeout=30,
+    )
+    if r.status_code != 200:
+        return None
+    results = ((r.json() or {}).get("resultList") or {}).get("result") or []
+    if not results:
+        return None
+    result = results[0]
+    return {"pmcid": result.get("pmcid"), "is_oa": result.get("isOpenAccess") == "Y"}
+
+
+def europepmc_fulltext_xml_url(pmcid: str) -> str:
+    """Europe PMC's own full-text endpoint: clean JATS XML, preferred over a
+    PDF when available — real section/paragraph structure means
+    `carelite.corpus.extract` doesn't have to heuristically undo header/
+    footer/ligature damage the way it must for a PDF."""
+    return f"https://www.ebi.ac.uk/europepmc/webservices/rest/{pmcid}/fullTextXML"
+
+
+def pmc_oa_pdf_url(pmcid: str, headers: dict[str, str]) -> str | None:
+    """The PMC OA Web Service: NCBI's sanctioned API for the open-access
+    subset, offered *instead of* scraping the article-view /pdf/ URL."""
+    r = _get(
+        "https://www.ncbi.nlm.nih.gov/pmc/utils/oa/oa.fcgi",
+        params={"id": pmcid},
+        headers=headers,
+        timeout=30,
+    )
+    if r.status_code != 200:
+        return None
+    try:
+        root = ElementTree.fromstring(r.content)
+    except ElementTree.ParseError:
+        return None
+    for link in root.iter("link"):
+        if link.get("format") != "pdf":
+            continue
+        href = link.get("href")
+        if not href:
+            continue
+        # NCBI's OA service returns ftp:// links; the same tree is also
+        # served over https at an identical path, which `requests` can fetch.
+        return href.replace("ftp://", "https://", 1) if href.startswith("ftp://") else href
+    return None
+
+
+def openalex_pdf_url(doi: str, headers: dict[str, str]) -> str | None:
+    r = _get(f"https://api.openalex.org/works/doi:{doi}", headers=headers, timeout=30)
+    if r.status_code != 200:
+        return None
+    data = r.json() or {}
+    best = data.get("best_oa_location") or {}
+    return best.get("pdf_url") or (data.get("open_access") or {}).get("oa_url")
+
+
+def semantic_scholar_pdf_url(doi: str, headers: dict[str, str]) -> str | None:
+    r = _get(
+        f"https://api.semanticscholar.org/graph/v1/paper/DOI:{doi}",
+        params={"fields": "openAccessPdf"},
+        headers=headers,
+        timeout=30,
+    )
+    if r.status_code != 200:
+        return None
+    pdf = (r.json() or {}).get("openAccessPdf") or {}
+    return pdf.get("url")
+
+
+@dataclass
+class Resolution:
+    """One resolved source for a DOI: a URL and what kind of document it is."""
+
+    url: str
+    kind: str  # "pdf" | "xml"
+
+
+def _safe_lookup(fn: Any, *args: Any) -> Any:
+    """Call a resolver lookup, treating a network error as a miss (None)
+    rather than aborting the whole candidate chain for this DOI. `_get`
+    already retries HTTP 429 internally; what's left here (timeouts,
+    connection resets) is rare enough that one resolver failing outright
+    shouldn't stop the others from being tried."""
+    try:
+        return fn(*args)
+    except requests.RequestException:
+        return None
+
+
+def resolve_candidates(doi: str, email: str, headers: dict[str, str]) -> Iterator[Resolution]:
+    """Yield every candidate source for this DOI, in priority order, lazily.
+
+    Order: Unpaywall -> Europe PMC (XML preferred when OA there) -> PMC OA
+    Web Service -> OpenAlex -> Semantic Scholar.
+
+    A resolver returning *some* URL does not guarantee that URL actually
+    serves the document — Unpaywall's `best_oa_location` is sometimes a
+    publisher's gated landing page, not the PDF itself (observed directly:
+    Unpaywall resolves 10.1177/08258597241245022 to
+    `journals.sagepub.com/doi/pdf/...`, which 403s for a programmatic
+    client). This is a generator, not a single lookup, so a caller can
+    attempt each candidate's download and fall through to the next only on
+    an actual failure, trying every sanctioned source before concluding a
+    DOI is genuinely not open-access. Because it's a generator, resolvers
+    further down the list are only ever called if an earlier candidate's
+    *download* failed — the common case (first candidate just works) costs
+    exactly one resolver call, same as before.
+    """
+    url = _safe_lookup(unpaywall_pdf_url, doi, email, headers)
+    if url:
+        yield Resolution(url, "pdf")
+
+    epmc = _safe_lookup(europepmc_lookup, doi, headers) or {}
+    pmcid = epmc.get("pmcid")
+    if epmc.get("is_oa") and pmcid:
+        yield Resolution(europepmc_fulltext_xml_url(str(pmcid)), "xml")
+
+    if not pmcid:
+        pmcid = _safe_lookup(pmc_idconv_pmcid, doi, headers)
+    if pmcid:
+        pdf_url = _safe_lookup(pmc_oa_pdf_url, str(pmcid), headers)
+        if pdf_url:
+            yield Resolution(pdf_url, "pdf")
+
+    url = _safe_lookup(openalex_pdf_url, doi, headers)
+    if url:
+        yield Resolution(url, "pdf")
+
+    url = _safe_lookup(semantic_scholar_pdf_url, doi, headers)
+    if url:
+        yield Resolution(url, "pdf")
+
+
+_XML_LOOKS_LIKE_HTML_RE = re.compile(rb"^\s*<(!doctype\s+html|html)\b", re.IGNORECASE)
+
+
+def download_source(
+    url: str, dest: pathlib.Path, headers: dict[str, str], kind: str
+) -> tuple[bool, str]:
+    """Stream to disk; abort and report if the response doesn't match `kind`.
+
+    `kind="pdf"` requires the `%PDF` magic bytes (unchanged from the
+    original guard). `kind="xml"` requires something that looks like XML and
+    explicitly rejects an HTML landing/error page dressed up as a hit — the
+    same failure mode the PDF guard exists to catch.
+    """
+    r = _get(url, headers=headers, timeout=90, stream=True, allow_redirects=True)
     if r.status_code != 200:
         return False, f"HTTP {r.status_code}"
     it = r.iter_content(65536)
@@ -174,14 +408,30 @@ def download_pdf(url: str, dest: pathlib.Path, headers: dict[str, str]) -> tuple
         first = next(it)
     except StopIteration:
         return False, "empty response"
-    if not first.startswith(b"%PDF"):
-        ctype = r.headers.get("content-type", "?")
-        return False, f"not a PDF (got {ctype})"
+
+    if kind == "pdf":
+        if not first.startswith(b"%PDF"):
+            ctype = r.headers.get("content-type", "?")
+            return False, f"not a PDF (got {ctype})"
+    else:
+        head = first.lstrip()
+        if _XML_LOOKS_LIKE_HTML_RE.match(head):
+            ctype = r.headers.get("content-type", "?")
+            return False, f"not XML, got an HTML page (content-type {ctype})"
+        if not head.startswith((b"<?xml", b"<")):
+            ctype = r.headers.get("content-type", "?")
+            return False, f"not XML (got {ctype})"
+
     with open(dest, "wb") as fh:
         fh.write(first)
         for piece in it:
             fh.write(piece)
     return True, f"{dest.stat().st_size // 1024} KB"
+
+
+def download_pdf(url: str, dest: pathlib.Path, headers: dict[str, str]) -> tuple[bool, str]:
+    """Backwards-compatible PDF-only entry point over `download_source`."""
+    return download_source(url, dest, headers, "pdf")
 
 
 @dataclass
@@ -201,8 +451,17 @@ class FetchResult:
         return self.downloaded + self.skipped_existing
 
 
-def dest_for(out_dir: pathlib.Path, doi: str, year: str) -> pathlib.Path:
-    return out_dir / f"{year or 'nd'}_{slug(doi)}.pdf"
+def dest_for(out_dir: pathlib.Path, doi: str, year: str, ext: str = "pdf") -> pathlib.Path:
+    return out_dir / f"{year or 'nd'}_{slug(doi)}.{ext}"
+
+
+def existing_dest(out_dir: pathlib.Path, doi: str, year: str) -> pathlib.Path | None:
+    """Whichever of the PDF/XML destinations for this DOI already exists, if any."""
+    for ext in ("pdf", "xml"):
+        candidate = dest_for(out_dir, doi, year, ext)
+        if candidate.exists():
+            return candidate
+    return None
 
 
 def fetch_all(
@@ -241,43 +500,46 @@ def fetch_all(
     failed: list[tuple[str, str, str]] = []
 
     for i, (orig_file, doi, year, _dup) in enumerate(todo, 1):
-        dest = dest_for(resolved_out, doi, year)
-        if dest.exists():
+        already = existing_dest(resolved_out, doi, year)
+        if already is not None:
             if log:
-                print(f"[{i:>2}/{len(todo)}] skip (exists)   {dest.name}")
+                print(f"[{i:>2}/{len(todo)}] skip (exists)   {already.name}")
             skipped += 1
             continue
 
-        url = None
-        try:
-            url = unpaywall_pdf_url(doi, email, headers) or pmc_pdf_url(doi, headers)
-        except requests.RequestException as e:
-            failed.append((orig_file, doi, f"lookup failed: {e}"))
-            if log:
-                print(f"[{i:>2}/{len(todo)}] LOOKUP ERROR    {doi}")
-            continue
+        # Try each candidate source in turn: a resolver returning a URL does
+        # not guarantee that URL actually serves the document (Unpaywall's OA
+        # location is sometimes a gated publisher landing page), so a failed
+        # download falls through to the next sanctioned resolver instead of
+        # giving up after the first one.
+        good = False
+        note = "no open-access source found"
+        dest: pathlib.Path | None = None
+        attempts: list[str] = []
+        for resolution in resolve_candidates(doi, email, headers):
+            candidate_dest = dest_for(resolved_out, doi, year, resolution.kind)
+            try:
+                good, note = download_source(
+                    resolution.url, candidate_dest, headers, resolution.kind
+                )
+            except requests.RequestException as e:
+                good, note = False, str(e)
 
-        if not url:
-            failed.append((orig_file, doi, "no open-access PDF found"))
-            if log:
-                print(f"[{i:>2}/{len(todo)}] no OA link      {doi}")
-            time.sleep(sleep_seconds)
-            continue
+            if good:
+                dest = candidate_dest
+                break
+            candidate_dest.unlink(missing_ok=True)
+            attempts.append(f"{resolution.kind}:{note}")
 
-        try:
-            good, note = download_pdf(url, dest, headers)
-        except requests.RequestException as e:
-            good, note = False, str(e)
-
-        if good:
+        if good and dest is not None:
             downloaded += 1
             if log:
                 print(f"[{i:>2}/{len(todo)}] ok  {note:>9}   {dest.name}")
         else:
-            dest.unlink(missing_ok=True)
-            failed.append((orig_file, doi, note))
+            failure_note = "; ".join(attempts) if attempts else note
+            failed.append((orig_file, doi, failure_note))
             if log:
-                print(f"[{i:>2}/{len(todo)}] FAIL            {doi} - {note}")
+                print(f"[{i:>2}/{len(todo)}] FAIL            {doi} - {failure_note}")
 
         time.sleep(sleep_seconds)  # be polite to the free APIs
 
@@ -344,8 +606,8 @@ def manifest_papers(
     for _orig_file, doi, year, dup in manifest:
         if not doi or dup:
             continue
-        dest = dest_for(resolved_out, doi, year)
-        if not dest.exists():
+        dest = existing_dest(resolved_out, doi, year)
+        if dest is None:
             continue
         papers.append(
             Paper(
@@ -354,7 +616,7 @@ def manifest_papers(
                 apa_citation=f"[citation pending] DOI: {doi}",
                 year=int(year) if year else None,
                 evidence_tier=evidence_tier,
-                pdf_path=str(dest),
+                pdf_path=str(dest),  # may be a .pdf or a .xml full-text file
             )
         )
     return papers
