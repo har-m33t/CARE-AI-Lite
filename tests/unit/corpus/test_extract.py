@@ -195,6 +195,51 @@ def test_extract_xml_jats_excludes_reference_list(tmp_path):
     assert "Smith J. 2020" not in result.text
 
 
+_JATS_SUPPLEMENTARY_SAMPLE = """<?xml version="1.0" encoding="UTF-8"?>
+<article xmlns:xlink="http://www.w3.org/1999/xlink">
+  <front>
+    <article-meta>
+      <title-group><article-title>A Study of Care Communication</article-title></title-group>
+    </article-meta>
+  </front>
+  <body>
+    <sec>
+      <title>Results</title>
+      <p>Patients reported higher satisfaction with structured communication.</p>
+    </sec>
+    <sec>
+      <title>Supporting information</title>
+      <supplementary-material id="s001" position="float">
+        <label>S1 File</label>
+        <caption><title>Minimal data set.</title><p>(PDF)</p></caption>
+        <media xlink:href="s001.pdf"/>
+      </supplementary-material>
+      <supplementary-material id="s002" position="float">
+        <label>S1 Graphical abstract</label>
+        <caption><p>(TIF)</p></caption>
+        <media xlink:href="s002.tif"/>
+      </supplementary-material>
+    </sec>
+  </body>
+</article>
+"""
+
+
+def test_extract_xml_jats_excludes_supplementary_material_structurally(tmp_path):
+    """Regression test: PLOS-style <supplementary-material> wraps each
+    attachment's format tag ("(PDF)", "(TIF)") in a <caption>, which used to
+    leak out as a near-empty block — and then got misread as a section
+    heading by chunk.py's ALL-CAPS check, becoming its own junk chunk."""
+    xml_path = _make_xml(tmp_path / "supplementary.xml", _JATS_SUPPLEMENTARY_SAMPLE)
+    result = extract.extract_xml_jats(xml_path)
+
+    assert "(PDF)" not in result.text
+    assert "(TIF)" not in result.text
+    assert "Minimal data set" not in result.text
+    assert "S1 File" not in result.text
+    assert "Patients reported higher satisfaction" in result.text
+
+
 def test_extract_xml_jats_preserves_section_headings_for_chunk_boundaries(tmp_path):
     """Headings come through as their own paragraph block, so
     carelite.corpus.chunk's heading-boundary detection still works unmodified

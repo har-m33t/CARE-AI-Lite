@@ -184,6 +184,17 @@ _SKIP_SUBTREES = {
     "media",
     "ref-list",
     "ack",
+    # PLOS-style "Supporting information" sections wrap each attachment in
+    # <supplementary-material><label>S1 File</label><caption><p>(PDF)</p>
+    # </caption><media .../></supplementary-material>. Without this, the
+    # caption's format tag ("(PDF)", "(TIF)", ...) is the only text inside
+    # the subtree and leaks out as its own near-empty block — worse, it then
+    # gets misread as a section heading by chunk.py's ALL-CAPS heuristic
+    # (str.isupper() ignores the parens) and ends up as its own standalone
+    # chunk. Excluding the element structurally, like <fig>/<table-wrap>,
+    # is correct where a regex on "(PDF)" would also strip legitimate prose
+    # that happens to end a sentence with an all-caps parenthetical.
+    "supplementary-material",
 }
 
 

@@ -135,3 +135,42 @@ def upsert_corpus(papers: Iterable[Paper], chunks: Sequence[Chunk]) -> tuple[int
     n_papers = upsert_papers(papers)
     n_chunks = upsert_chunks(chunks)
     return n_papers, n_chunks
+
+
+def replace_paper_chunks(paper_id: str, chunks: Sequence[Chunk]) -> int:
+    """Replace ALL chunks for one paper: delete existing rows for `paper_id`,
+    then insert `chunks` fresh, in one transaction.
+
+    Plain `upsert_chunks` only ever adds or updates rows by `chunk_id` — it
+    cannot remove one. That leaves stale rows behind whenever a re-chunk of
+    the same paper produces a *smaller* chunk set than a previous load (e.g.
+    a chunker bug fix that now drops degenerate chunks it used to emit, or
+    an extraction fix that removes junk source content). Delete-then-insert
+    guarantees the stored set for `paper_id` exactly matches `chunks`, with
+    nothing left over. Passing an empty `chunks` clears every chunk for that
+    paper — used when extraction fails and there's nothing usable to load.
+    """
+    with transaction() as conn:
+        conn.execute("DELETE FROM chunk WHERE paper_id = %(paper_id)s", {"paper_id": paper_id})
+        for chunk in chunks:
+            conn.execute(_UPSERT_CHUNK_SQL, chunk_params(chunk))
+    return len(chunks)
+
+
+def replace_corpus(
+    papers: Iterable[Paper], chunks_by_paper: dict[str, Sequence[Chunk]]
+) -> tuple[int, int]:
+    """Upsert every paper, then *replace* (not upsert) each paper's chunk set.
+
+    Prefer this over `upsert_corpus` whenever a paper's chunk set may have
+    shrunk since the last load — the common case for a re-run after a
+    chunking or extraction bug fix. Papers not present in `papers` are left
+    untouched (including their existing chunks); only papers actually being
+    reloaded have their chunk rows replaced.
+    """
+    papers = list(papers)
+    n_papers = upsert_papers(papers)
+    n_chunks = 0
+    for paper in papers:
+        n_chunks += replace_paper_chunks(paper.paper_id, chunks_by_paper.get(paper.paper_id, []))
+    return n_papers, n_chunks

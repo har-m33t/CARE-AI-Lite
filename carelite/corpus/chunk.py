@@ -94,12 +94,26 @@ def chunk_text(
     target_tokens: int | None = None,
     overlap_tokens: int | None = None,
     min_chunk_tokens: int | None = None,
+    absolute_min_tokens: int = 3,
 ) -> list[Chunk]:
     """Chunk one paper's cleaned text into `Chunk` objects, in reading order.
 
     `chunk_id` is `f"{paper_id}::{ordinal:04d}"` — stable across re-runs and
     lets `carelite.corpus.load` recover a monotonic per-paper ordinal without
     a separate field on the frozen `Chunk` model.
+
+    `absolute_min_tokens` is a hard floor, independent of `min_chunk_tokens`:
+    a unit that gets misread as a section heading (the ALL-CAPS check below
+    matches short all-caps fragments like a JATS caption's "(PDF)"/"(TIF)"
+    format tag, not just real headings) force-breaks into its own chunk and
+    is explicitly exempt from the proportional tiny-tail merge, since a real
+    short final section must not be merged across a section boundary. Below
+    this absolute floor, a standalone chunk is dropped rather than merged —
+    merging would mean crossing that same protected boundary, and content
+    this short is essentially never independently retrievable. See
+    `carelite.corpus.extract`'s `_SKIP_SUBTREES` for the preferred, upstream
+    fix (exclude the source structurally); this is the belt-and-suspenders
+    backstop for whatever slips past it.
     """
     retrieval = get_settings().retrieval
     target = target_tokens or retrieval.chunk_target_tokens
@@ -181,6 +195,10 @@ def chunk_text(
     ):
         tail = chunks_text.pop()
         chunks_text[-1] = f"{chunks_text[-1]} {tail}"
+
+    # Hard floor, applied after the tail-merge above and regardless of
+    # section-boundary status: drop, don't merge (see the docstring).
+    chunks_text = [t for t in chunks_text if _approx_tokens(t) >= absolute_min_tokens]
 
     return [
         Chunk(chunk_id=f"{paper_id}::{ordinal:04d}", paper_id=paper_id, text=t)

@@ -80,6 +80,65 @@ def test_chunk_force_breaks_at_section_headings():
     assert "Sentence D" in chunks[1].text
 
 
+def test_degenerate_all_caps_marker_never_becomes_its_own_chunk():
+    """Regression test: chunk.py's ALL-CAPS heading heuristic misreads a
+    short parenthetical like "(PDF)" as a section heading (str.isupper()
+    ignores punctuation), force-breaking it into an isolated chunk that
+    min_chunk_tokens never catches because it's a section boundary, not an
+    overflow split. The upstream fix is carelite.corpus.extract excluding
+    <supplementary-material> structurally; this proves the chunker itself is
+    also safe against whatever slips past that."""
+    text = (
+        "Introduction\n\n"
+        "Real content sentence one is here. Real content sentence two is here.\n\n"
+        "(PDF)\n\n"
+        "Methods\n\n"
+        "We interviewed patients about their care experience in this study."
+    )
+    chunks = chunk_text("paper-1", text, target_tokens=1000, overlap_tokens=0)
+
+    assert not any(c.text.strip() == "(PDF)" for c in chunks)
+    assert not any(len(c.text.split()) < 3 for c in chunks)
+    # the real sections around it must survive intact
+    assert any(c.text.startswith("Introduction") for c in chunks)
+    assert any(c.text.startswith("Methods") for c in chunks)
+
+
+def test_absolute_min_tokens_drops_short_chunks_not_merges_them():
+    """Dropped, not merged: merging a degenerate standalone chunk would mean
+    crossing the section boundary that force-broke it in the first place."""
+    text = (
+        "Introduction\n\n"
+        "Real content sentence one is here.\n\n"
+        "OK\n\n"
+        "Methods\n\n"
+        "We interviewed patients about their care today."
+    )
+    # "OK" (all-caps, 1 token) force-breaks like a heading; with a floor of 3
+    # tokens it must be dropped entirely, not glued onto its neighbour.
+    chunks = chunk_text(
+        "paper-1", text, target_tokens=1000, overlap_tokens=0, absolute_min_tokens=3
+    )
+    texts = [c.text for c in chunks]
+    assert not any(t.strip() == "OK" for t in texts)
+    assert any(t.startswith("Introduction") for t in texts)
+    assert any(t.startswith("Methods") for t in texts)
+
+
+def test_absolute_min_tokens_zero_keeps_every_chunk():
+    text = (
+        "Introduction\n\n"
+        "Real content sentence one is here.\n\n"
+        "OK\n\n"
+        "Methods\n\n"
+        "We interviewed patients about their care today."
+    )
+    chunks = chunk_text(
+        "paper-1", text, target_tokens=1000, overlap_tokens=0, absolute_min_tokens=0
+    )
+    assert any(c.text.strip() == "OK" for c in chunks)
+
+
 def test_chunks_meet_minimum_size_except_when_corpus_is_tiny():
     chunks = chunk_text("paper-1", _sentences(30), target_tokens=20, overlap_tokens=5)
     min_tokens = 20 // 5

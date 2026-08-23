@@ -20,10 +20,35 @@ from carelite.corpus.load import (
     canonical_paper_id,
     chunk_params,
     paper_params,
+    replace_corpus,
+    replace_paper_chunks,
     upsert_corpus,
     upsert_papers,
 )
 from carelite.types import Chunk, EvidenceTier, Paper
+
+
+@pytest.fixture(autouse=True)
+def _cleanup_live_db_test_fixtures(request: pytest.FixtureRequest):
+    """Every @pytest.mark.db test in this file writes to the shared, live
+    Postgres instance — there is no isolated test database yet. Left alone,
+    a paper like "10.1/roundtrip-test" sits in `paper`/`chunk` right next to
+    the real corpus, and carelite-index embeds whatever is in `chunk`. This
+    deletes anything a db-marked test created (every fixture doi here
+    contains "test") once that test finishes; a no-op, no connection
+    attempted, for the non-db tests that make up most of this file."""
+    yield
+    if request.node.get_closest_marker("db") is None:
+        return
+    from carelite.db import connect
+
+    with connect() as conn:
+        conn.execute(
+            "DELETE FROM chunk WHERE paper_id IN (SELECT paper_id FROM paper WHERE doi LIKE %s)",
+            ("%test%",),
+        )
+        conn.execute("DELETE FROM paper WHERE doi LIKE %s", ("%test%",))
+        conn.commit()
 
 
 def _paper(doi: str = "10.1/xyz", **overrides: object) -> Paper:
@@ -135,6 +160,70 @@ def test_duplicate_doi_manifest_case_upserts_to_a_single_row():
     rows = fetch_all("SELECT paper_id, apa_citation FROM paper WHERE doi = %s", (doi,))
     assert len(rows) == 1
     assert rows[0]["apa_citation"] == "Re-resolved citation, supersedes the first."
+
+
+@pytest.mark.db
+def test_replace_paper_chunks_removes_stale_rows_not_just_upserts():
+    """The bug this guards against: a re-chunk that now produces fewer
+    chunks than a previous load (e.g. a chunker fix that drops degenerate
+    chunks) must not leave the dropped ones behind. Plain upsert_chunks
+    can't do this — it only ever adds/updates by chunk_id."""
+    from carelite.db import apply_schema, fetch_all
+
+    apply_schema()
+    paper = _paper(doi="10.1/replace-shrink-test")
+    big = chunk_text(
+        paper.paper_id,
+        "Alpha sentence one. Beta sentence two. Gamma sentence three. Delta sentence four.",
+        target_tokens=6,
+        overlap_tokens=0,
+    )
+    assert len(big) > 1
+    upsert_papers([paper])
+    replace_paper_chunks(paper.paper_id, big)
+
+    small = chunk_text(paper.paper_id, "Alpha sentence one.", target_tokens=1000, overlap_tokens=0)
+    assert len(small) < len(big)
+    replace_paper_chunks(paper.paper_id, small)
+
+    stored = fetch_all("SELECT chunk_id FROM chunk WHERE paper_id = %s", (paper.paper_id,))
+    assert len(stored) == len(small)
+    assert {r["chunk_id"] for r in stored} == {c.chunk_id for c in small}
+
+
+@pytest.mark.db
+def test_replace_paper_chunks_with_empty_list_clears_all_chunks():
+    from carelite.db import apply_schema, fetch_all
+
+    apply_schema()
+    paper = _paper(doi="10.1/replace-clear-test")
+    chunks = chunk_text(paper.paper_id, "Some sentence here. Another sentence here.")
+    upsert_papers([paper])
+    replace_paper_chunks(paper.paper_id, chunks)
+
+    replace_paper_chunks(paper.paper_id, [])
+
+    stored = fetch_all("SELECT chunk_id FROM chunk WHERE paper_id = %s", (paper.paper_id,))
+    assert stored == []
+
+
+@pytest.mark.db
+def test_replace_corpus_upserts_papers_and_replaces_each_papers_chunks():
+    from carelite.db import apply_schema, fetch_all
+
+    apply_schema()
+    paper = _paper(doi="10.1/replace-corpus-test")
+    old_chunks = chunk_text(paper.paper_id, "First old sentence. Second old sentence.")
+    upsert_papers([paper])
+    replace_paper_chunks(paper.paper_id, old_chunks)
+
+    new_chunks = chunk_text(paper.paper_id, "Only one new sentence here.", target_tokens=1000)
+    n_papers, n_chunks = replace_corpus([paper], {paper.paper_id: new_chunks})
+
+    assert n_papers == 1
+    assert n_chunks == len(new_chunks)
+    stored = fetch_all("SELECT chunk_id FROM chunk WHERE paper_id = %s", (paper.paper_id,))
+    assert {r["chunk_id"] for r in stored} == {c.chunk_id for c in new_chunks}
 
 
 @pytest.mark.db
