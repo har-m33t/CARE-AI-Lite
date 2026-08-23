@@ -1,0 +1,5 @@
+# Generated KB artifacts. Never committed: they carry long verbatim quotations
+# from mixed-copyright papers, and this repo has a public remote. Both are
+# rebuildable — `python -m carelite.kb.extract` and `python -m carelite.kb.review`.
+cache/
+review/
