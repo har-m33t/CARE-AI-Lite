@@ -28,8 +28,7 @@ test-security: ## Adversarial input corpus: injection, PHI, red-flag
 test-db: ## Tests needing a live Postgres
 	$(VENV)/bin/pytest -m db -q
 
-db-up: ## Create the database and apply the schema
-	@createdb carelite 2>/dev/null || echo "database 'carelite' already exists"
+db-up: ## Apply the schema to an existing database (see REPRODUCE.md to create it)
 	$(PY) -c "from carelite.db import apply_schema; apply_schema(); print('schema applied')"
 
 db-check: ## Wave-0 gate: extension, tables, three-way join
