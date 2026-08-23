@@ -57,13 +57,34 @@ report it — do not edit it, and do not work around it by duplicating the file.
 are the shared interface. Read them first. **Never edit them.** If you need a contract change,
 stop and report exactly what you need and why; the foundation lane amends it between waves.
 
-**3. Commit your own work, narrowly.**
-- Stage only your owned paths, explicitly: `git add carelite/<yours>/ tests/unit/<yours>/`
-- `git add -A` and `git add .` are **forbidden** — they would sweep up other lanes' in-flight work.
+**3. Commit your own work, narrowly. Use a pathspec-limited commit.**
+
+Other lanes commit to this same branch while you work, and the git index is shared. A bare
+`git commit` commits **the whole index**, including whatever another lane staged in the moment
+between your `git add` and your `git commit`. That race has already happened once in this project.
+So always name your paths on the commit itself:
+
+```sh
+git add    carelite/<yours>/ tests/unit/<yours>/     # needed for new/untracked files
+git commit -- carelite/<yours>/ tests/unit/<yours>/  # the `--` pathspec is what makes it safe
+```
+
+`git commit -- <paths>` commits only those paths regardless of what else sits in the index.
+Both steps take the same explicit path list.
+
+**Option order matters:** everything after `--` is parsed as a pathspec, so flags must come
+first. `git commit -F - -- <paths>` works; `git commit -- <paths> -F -` fails with
+"pathspec '-F' did not match any file(s)".
+
+- `git add -A` and `git add .` are **forbidden** — they sweep up other lanes' in-flight work.
 - Message format: `<your-agent-name>: <what changed>`. One logical change per commit.
 - If `.git/index.lock` exists, another lane is mid-commit. Sleep 2s and retry, up to 5 times.
   **Never delete the lock file.**
-- Never run `push`, `rebase`, `reset --hard`, `stash`, `checkout -- <path>`, or `merge`.
+- Never run `push`, `rebase`, `reset --hard`, `reset --soft`, `stash`, `checkout -- <path>`,
+  or `merge`. If you find your work already committed under another lane's message, that is a
+  known, harmless outcome of the race above — **report it and move on. Do not try to repair
+  history**; rewriting a branch tip while other lanes are committing can drop a commit that lands
+  in the window, turning a cosmetic problem into real data loss.
 
 **4. This repo has a PUBLIC remote.** Never commit: PDFs, `.env`, database dumps, model weights,
 API keys, or any real patient data. Synthetic scenarios and code only.
