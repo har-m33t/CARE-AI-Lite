@@ -105,10 +105,19 @@ N_SUBSET_SCENARIOS = 10
 #: Conditions excluded from the validation subset, with the reason, because a
 #: silently narrowed sample is the kind of thing a reader cannot reconstruct.
 #:
-#: `LC` stuffs the whole corpus into the prompt: a measured ~119,500-token
-#: prefill at ~95 tok/s on this hardware, so **21 minutes per generation** and
-#: 3.5 hours for the ten cells this subset would have contained — half the
-#: study's entire compute budget for one sixth of its sample. The subset still
+#: `LC` fills the context window by design: a measured ~119,500-token prefill at
+#: ~95 tok/s on this hardware (degrading 101 -> 95 as the KV cache grows), so
+#: **~21 minutes per generation** and 3.5 hours for the ten cells this subset
+#: would have contained — half the study's entire compute budget for one sixth
+#: of its sample.
+#:
+#: That measurement was taken from a process started before D7's `lc_sample`
+#: landed, so it may reflect the older whole-corpus prompt truncated to the
+#: window. It makes almost no difference: D7 caps LC at a 112,000-token budget
+#: (`LC_RESERVE_TOKENS`, 169 of 471 chunks), which is ~19.6 minutes at the same
+#: prefill rate. **D7 made LC implementable, not affordable** — the fix fills
+#: the window rather than shrinking it, and the prefill cost is set by the
+#: window, not by the selection rule. The subset still
 #: spans bare (`A`), bare in a second model family (`A2`), framework (`B`),
 #: framework plus retrieval (`C`) and the degraded negative control (`D`), which
 #: is the range that matters here: this study measures the *judge*, and what it
@@ -118,9 +127,9 @@ N_SUBSET_SCENARIOS = 10
 #:
 #: This is a decision about the validation subset only. It says nothing about
 #: whether `LC` belongs in the main experiment — but the same measurement
-#: implies ~63 hours for `LC` alone in the 60-scenario, 3-sample holdout run,
-#: which is the orchestrator lane's problem to know about rather than mine to
-#: solve.
+#: implies ~59 hours for `LC` alone in the 60-scenario, 3-sample holdout run
+#: (and ~39 hours on the train split), which is the orchestrator and retrieval
+#: lanes' problem to know about rather than mine to solve.
 EXCLUDED_CONDITIONS: tuple[Condition, ...] = (Condition.LC,)
 
 #: The conditions the validation subset is generated and judged over.
