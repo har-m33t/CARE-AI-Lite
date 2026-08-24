@@ -224,7 +224,26 @@ OVERLAP_THRESHOLD = 0.72
 #: one on purpose: two entries drawn from the same paper about the same theme
 #: already share their subject, so the question is not "are these related" —
 #: they are, by construction — but "do these say the same thing".
-CLUSTER_THRESHOLD = 0.58
+#:
+#: Set at 0.47, and the calibration is worth stating because the first value
+#: repeated the very defect this section exists to fix. At 0.58 it reported 17
+#: of 114 entries as clustered. The case that exposed it: *"Brief the
+#: interpreter on the goals and specific content of the conversation before the
+#: patient enters the room"* and *"provide the interpreter with advanced
+#: preparation and specific context before the encounter"* — plainly one piece
+#: of advice, and they score **0.478**, so 0.58 called them independent. Reading
+#: the groups that appear as the threshold drops confirms the same thing at
+#: scale: at 0.47 the `teach_back` cluster grows from 6 entries to 10, which
+#: matches what reading them shows, because nearly every Talevski teach_back
+#: entry says "use teach-back to confirm the patient understood their discharge
+#: instructions". The honest figure is 38 of 114, not 17.
+#:
+#: **Over-grouping is the safer error here and the threshold is set accordingly.**
+#: Nothing in this section rejects an entry; it tells a reader which entries are
+#: not independent of each other. A cluster a reader disagrees with costs them a
+#: moment; a restatement this misses goes into the write-up as convergent
+#: evidence, which is the failure being corrected.
+CLUSTER_THRESHOLD = 0.47
 
 #: A theme drawing this share or more of its entries from a single paper is
 #: single-source in practice, whatever its distinct-paper count says.

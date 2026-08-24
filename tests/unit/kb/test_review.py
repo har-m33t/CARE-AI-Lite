@@ -467,3 +467,65 @@ class TestThemeCoverage:
         out = render_digest(rows)
         assert "single-source in effect" in out
         assert "8 of 9 from" in out
+
+
+class TestClusterThresholdCalibration:
+    """The threshold was itself an instance of the defect it exists to catch.
+
+    Set at 0.58 the cluster check reported 17 of 114 entries as restating each
+    other. The case that exposed it: "Brief the interpreter on the goals and
+    specific content of the conversation before the patient enters the room"
+    and "provide the interpreter with advanced preparation and specific context
+    before the encounter" are one piece of advice, and they score 0.478 — so the
+    check called them independent and the digest said so.
+
+    Over-grouping is the safer error, because nothing here rejects an entry: a
+    cluster a reader disagrees with costs a moment, a restatement this misses
+    goes into the write-up as convergent evidence.
+    """
+
+    INTERPRETER_A = (
+        "Brief the interpreter on the goals and specific content of the conversation "
+        "before the patient enters the room."
+    )
+    INTERPRETER_B = (
+        "Clinicians should provide the interpreter with advanced preparation and specific "
+        "context before the encounter to ensure the interpreter can accurately convey the "
+        "clinician's meaning."
+    )
+
+    def _pair(self) -> list[ReviewRow]:
+        rows = []
+        for n, takeaway in ((1, self.INTERPRETER_A), (2, self.INTERPRETER_B)):
+            row = _row(entry_id=f"kb-trust_continuity-{n:010d}", theme="trust_continuity")
+            row.practical_takeaway = takeaway
+            rows.append(row)
+        return rows
+
+    def test_a_paraphrase_of_one_instruction_is_clustered(self) -> None:
+        from carelite.kb.review import redundancy_clusters
+
+        clusters = redundancy_clusters(self._pair())
+        assert len(clusters) == 1
+        assert clusters[0].size == 2
+
+    def test_the_old_threshold_would_have_missed_it(self) -> None:
+        """Guards the calibration itself, so a future tightening has to be deliberate."""
+        from carelite.kb.review import redundancy_clusters
+
+        assert redundancy_clusters(self._pair(), threshold=0.58) == []
+
+    def test_genuinely_distinct_advice_from_one_paper_stays_unclustered(self) -> None:
+        """The cost of the lower threshold, bounded: unrelated moves must not merge."""
+        from carelite.kb.review import redundancy_clusters
+
+        rows = []
+        for n, takeaway in (
+            (1, "Ask the patient to explain the plan back in their own words."),
+            (2, "Request an in-person interpreter rather than a telephone line."),
+            (3, "Pause after delivering the diagnosis before moving to treatment options."),
+        ):
+            row = _row(entry_id=f"kb-teach_back-{n:010d}")
+            row.practical_takeaway = takeaway
+            rows.append(row)
+        assert redundancy_clusters(rows) == []
