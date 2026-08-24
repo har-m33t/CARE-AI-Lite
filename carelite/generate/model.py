@@ -108,21 +108,42 @@ class GenerationClient:
     host: str = ""
     client: Any | None = None
     timeout_s: float = 600.0
+    """Wall clock for one generation. Ten minutes is generous for a few hundred
+    tokens and is sized for the long-context condition, whose prompt is over
+    120,000 tokens, and for a daemon shared with other work."""
+
+    metadata_timeout_s: float = 30.0
+    """Separate, much shorter clock for `list()`. Asking the daemon what it has
+    is a cheap metadata call, and it happens *before* the plan is built — so a
+    daemon that is wedged or saturated would otherwise stall a 1,080-cell run
+    at the pre-flight, with nothing written and nothing to resume from. Failing
+    fast here costs the digest, which `DIGEST_UNAVAILABLE` records honestly."""
 
     _digests: dict[str, str] = field(default_factory=dict, init=False, repr=False)
+    _pool: dict[float, Any] = field(default_factory=dict, init=False, repr=False)
 
     def __post_init__(self) -> None:
         self.host = self.host or get_settings().ollama_host
 
     # -- daemon -------------------------------------------------------------
 
-    def _handle(self) -> Any:
+    def _handle(self, *, timeout_s: float | None = None) -> Any:
+        """One cached `ollama.Client` per distinct timeout.
+
+        Two, in practice: the long one for generation and the short one for
+        metadata. Cached rather than rebuilt per call so a 1,080-cell run reuses
+        its connection pool instead of opening one per generation.
+        """
         if self.client is not None:
             return self.client
-        import ollama
+        timeout = timeout_s if timeout_s is not None else self.timeout_s
+        handle = self._pool.get(timeout)
+        if handle is None:
+            import ollama
 
-        self.client = ollama.Client(host=self.host, timeout=self.timeout_s)
-        return self.client
+            handle = ollama.Client(host=self.host, timeout=timeout)
+            self._pool[timeout] = handle
+        return handle
 
     def resolve_digest(self, model_tag: str) -> str:
         """The digest the daemon currently serves for this tag.
@@ -136,7 +157,7 @@ class GenerationClient:
             return self._digests[model_tag]
         digest = DIGEST_UNAVAILABLE
         try:
-            listing = self._handle().list()
+            listing = self._handle(timeout_s=self.metadata_timeout_s).list()
             models = getattr(listing, "models", None)
             if models is None and isinstance(listing, dict):
                 models = listing.get("models", [])
