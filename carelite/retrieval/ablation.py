@@ -67,6 +67,7 @@ __all__ = [
     "format_markdown",
     "long_context_stats",
     "main",
+    "prewarm_hyde",
     "run_ablation",
     "run_row",
 ]
@@ -347,6 +348,35 @@ def _mean(values: Sequence[float]) -> float:
     return sum(values) / len(values) if values else 0.0
 
 
+def prewarm_hyde(turns: Sequence[str], generator: Any) -> int:
+    """Generate every HyDE passage up front, in one pass over the generator.
+
+    **This is a model-residency fix, not a micro-optimisation.** Ollama holds a
+    limited number of models in memory at once. The natural per-turn ordering
+    is HyDE (generator, ~8GB) then CRAG grading and precision judging (judge,
+    ~12.7GB), which on a single-GPU machine evicts and fully reloads a large
+    model twice per turn. Measured mid-run: `ollama ps` showed the generator
+    not resident at all, and judge throughput collapsed from the 5-15s per call
+    measured in isolation to roughly 150s per call — a ~10x slowdown caused
+    entirely by the interleaving.
+
+    Generating all passages first collapses the generator to a single
+    residency period, after which every remaining call in the run is a judge
+    call and the judge stays loaded. Passages land in the `LLMClient` cache, so
+    the pipeline picks them up transparently on each row without knowing this
+    happened.
+
+    Returns the number of passages successfully generated.
+    """
+    from carelite.retrieval.hyde import generate_hyde_passage
+
+    generated = 0
+    for turn in turns:
+        if generate_hyde_passage(turn, client=generator, enabled=True):
+            generated += 1
+    return generated
+
+
 def run_ablation(
     turns: Sequence[str] | None = None,
     *,
@@ -380,6 +410,9 @@ def run_ablation(
 
     out: list[AblationRow] = []
     try:
+        if any(PRESETS[name].hyde for name in rows if name in PRESETS):
+            prewarm_hyde(turns, generator)
+
         for name in rows:
             flags = preset(name)
             out.append(

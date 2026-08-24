@@ -156,6 +156,29 @@ def test_turns_that_correctly_retrieve_nothing_are_excluded_from_precision(
     assert row.fallback_rate == pytest.approx(0.5)
 
 
+def test_prewarm_generates_every_passage_in_one_pass(fake_llm) -> None:
+    """Model residency, not micro-optimisation: interleaving generator and
+    judge calls per turn evicts and reloads a ~12.7GB model twice per turn,
+    which measured as a ~10x throughput collapse mid-run."""
+    from carelite.retrieval.ablation import prewarm_hyde
+
+    passage = (
+        "When a patient expresses fear about a diagnosis the clinician should name the "
+        "emotion before providing further information, an empathic response associated "
+        "with improved patient experience across the communication literature reviewed."
+    )
+    fake_llm.default = passage
+    assert prewarm_hyde(["turn one", "turn two", "turn three"], fake_llm) == 3
+    assert len(fake_llm.calls) == 3
+
+
+def test_prewarm_tolerates_an_unavailable_generator(fake_llm) -> None:
+    from carelite.retrieval.ablation import prewarm_hyde
+
+    fake_llm.default = None
+    assert prewarm_hyde(["a", "b"], fake_llm) == 0
+
+
 def test_off_domain_turns_are_always_included() -> None:
     """A table computed only over on-domain turns cannot show what CRAG does."""
     from carelite.retrieval.ablation import OFF_DOMAIN_TURNS
