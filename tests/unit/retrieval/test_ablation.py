@@ -238,25 +238,35 @@ def test_markdown_marks_unscored_rows_as_na() -> None:
     assert "n/a" in format_markdown([AblationRow("LC", "", "", context_precision=None)])
 
 
-def test_lc_row_reports_the_context_budget(monkeypatch) -> None:
-    """LC's precision is deliberately not computed — see `long_context_stats`."""
+def test_lc_row_reports_the_budget_and_the_framing(monkeypatch) -> None:
+    """LC-sample's precision is deliberately not computed, and the row must
+    carry D7's framing where a reader of the results will actually meet it."""
     import carelite.retrieval.ablation as ablation
 
     monkeypatch.setattr(
         ablation,
-        "long_context_stats",
+        "lc_sample_stats",
         lambda: {
-            "n_chunks": 475,
-            "est_tokens": 300_000,
+            "n_chunks": 471,
+            "est_tokens": 326_526,
             "context_window": 128_000,
+            "reserve_tokens": 16_000,
+            "budget_tokens": 112_000,
             "fits": False,
-            "utilisation": 2.344,
+            "utilisation": 2.551,
+            "sample_chunks": 169,
+            "sample_fraction": 0.359,
+            "sample_chunk_ids": [],
         },
     )
     row = run_row(preset("LC"), ["a turn"])
+
     assert row.context_precision is None
-    assert any("475 chunks" in n for n in row.notes)
-    assert any("DOES NOT FIT" in n for n in row.notes)
+    joined = " ".join(row.notes)
+    assert "DOES NOT FIT" in joined
+    assert "169 of 471" in joined
+    assert "ANY SELECTION RULE IS A FORM OF RETRIEVAL" in joined
+    assert "query-DEPENDENT" in joined
 
 
 def test_turns_that_correctly_retrieve_nothing_are_excluded_from_precision(
@@ -328,3 +338,101 @@ def test_off_domain_turns_are_always_included() -> None:
     from carelite.retrieval.ablation import OFF_DOMAIN_TURNS
 
     assert len(OFF_DOMAIN_TURNS) >= 3
+
+
+# ---------------------------------------------------------------- LC-sample
+
+
+def test_lc_row_is_named_lc_sample_not_lc() -> None:
+    """The name is load-bearing, not cosmetic (D7). `LC` would let a reader
+    take this row for the whole-corpus baseline v3 §3 specified, which is not
+    what it is and not a question this corpus can answer."""
+    assert preset("LC").label == "LC-sample"
+    assert preset("LC-sample").label == "LC-sample"
+
+
+def test_lc_note_records_that_selection_is_retrieval() -> None:
+    """The point D7 exists to keep in the open must survive in the artifact,
+    not just in a decision document nobody re-reads."""
+    note = preset("LC").note.lower()
+    assert "any selection rule is a form of retrieval" in note
+    assert "query-dependent" in note
+
+
+def test_lc_sample_is_round_robin_and_covers_every_paper(monkeypatch) -> None:
+    """Round-robin over random precisely so no paper can be dropped by
+    chance: random selection would make LC's content an accident of the seed
+    and turn part of the C-vs-LC comparison into a comparison of which papers
+    happened to survive."""
+    import carelite.retrieval.ablation as ablation
+
+    rows = [
+        {"chunk_id": f"p{p}::{o:04d}", "paper_id": f"p{p}", "ordinal": o, "chars": 400}
+        for p in range(10)
+        for o in range(20)
+    ]
+    monkeypatch.setattr(ablation, "fetch_all", lambda *a, **k: rows, raising=False)
+    monkeypatch.setattr("carelite.db.connection.fetch_all", lambda *a, **k: rows, raising=False)
+
+    # 400 chars = 100 tokens per chunk; a 3000-token budget buys 30 chunks.
+    sample = ablation.lc_sample(budget_tokens=3000, seed=1)
+    assert len(sample) == 30
+    per_paper = {}
+    for cid in sample:
+        per_paper.setdefault(cid.split("::")[0], []).append(cid)
+    assert len(per_paper) == 10, "every paper must be represented"
+    assert {len(v) for v in per_paper.values()} == {3}, "round-robin means equal depth"
+
+
+def test_lc_sample_takes_chunks_in_ordinal_order(monkeypatch) -> None:
+    import carelite.retrieval.ablation as ablation
+
+    rows = [
+        {"chunk_id": f"p0::{o:04d}", "paper_id": "p0", "ordinal": o, "chars": 400}
+        for o in range(10)
+    ]
+    monkeypatch.setattr("carelite.db.connection.fetch_all", lambda *a, **k: rows, raising=False)
+    sample = ablation.lc_sample(budget_tokens=300, seed=1)
+    assert sample == ["p0::0000", "p0::0001", "p0::0002"]
+
+
+def test_lc_sample_is_deterministic_for_a_seed(monkeypatch) -> None:
+    import carelite.retrieval.ablation as ablation
+
+    rows = [
+        {"chunk_id": f"p{p}::{o:04d}", "paper_id": f"p{p}", "ordinal": o, "chars": 400}
+        for p in range(8)
+        for o in range(5)
+    ]
+    monkeypatch.setattr("carelite.db.connection.fetch_all", lambda *a, **k: rows, raising=False)
+    a = ablation.lc_sample(budget_tokens=1200, seed=42)
+    b = ablation.lc_sample(budget_tokens=1200, seed=42)
+    assert a == b
+
+
+def test_lc_sample_stops_rather_than_backfilling_with_short_chunks(monkeypatch) -> None:
+    """ "Take whatever still fits" would bias the sample toward short chunks,
+    which is a content bias introduced by the budget rather than by the
+    sampling rule."""
+    import carelite.retrieval.ablation as ablation
+
+    rows = [
+        {"chunk_id": "p0::0000", "paper_id": "p0", "ordinal": 0, "chars": 4000},
+        {"chunk_id": "p0::0001", "paper_id": "p0", "ordinal": 1, "chars": 40},
+    ]
+    monkeypatch.setattr("carelite.db.connection.fetch_all", lambda *a, **k: rows, raising=False)
+    # Budget fits the tiny second chunk but not the first; it must stop, not skip.
+    assert ablation.lc_sample(budget_tokens=500, seed=1) == []
+
+
+def test_lc_sample_respects_the_budget(monkeypatch) -> None:
+    import carelite.retrieval.ablation as ablation
+
+    rows = [
+        {"chunk_id": f"p{p}::{o:04d}", "paper_id": f"p{p}", "ordinal": o, "chars": 400}
+        for p in range(5)
+        for o in range(10)
+    ]
+    monkeypatch.setattr("carelite.db.connection.fetch_all", lambda *a, **k: rows, raising=False)
+    sample = ablation.lc_sample(budget_tokens=1000, seed=1)
+    assert len(sample) * 100 <= 1000

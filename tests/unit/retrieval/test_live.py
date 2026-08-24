@@ -163,3 +163,68 @@ def test_rrf_over_live_legs_is_stable() -> None:
     retrieval feeding a controlled comparison cannot be order-dependent."""
     lists = lexical_search("shared decision", top_k=10)
     assert [i.ref_id for i in rrf_fuse(lists)] == [i.ref_id for i in rrf_fuse(lists)]
+
+
+def test_graph_leg_is_live_now_that_graph_edge_is_populated() -> None:
+    """The inert leg activated as designed.
+
+    `graph_edge` was empty when this leg was written and `graph_search`
+    returned `[]` as a documented no-op. carelite-graph has since landed 623
+    edges, and the leg started doing real work without a change here — which
+    is the property the pure/IO split in `fusion.py` was for.
+    """
+    from carelite.db.connection import fetch_all
+
+    n_edges = fetch_all("SELECT count(*) c FROM graph_edge")[0]["c"]
+    if not n_edges:
+        pytest.skip("graph_edge is empty; the leg is a documented no-op")
+
+    seeds = [
+        r["entry_id"] for r in fetch_all("SELECT entry_id FROM kb_entry ORDER BY entry_id LIMIT 3")
+    ]
+    if not seeds:
+        pytest.skip("kb_entry is empty")
+
+    ranked = graph_search(seeds, top_k=10)
+    assert ranked.hits, "populated graph_edge should reach neighbours from KB seeds"
+    assert all(h.hops is not None and h.hops >= 1 for h in ranked.hits)
+    assert all(h.ref_id not in seeds for h in ranked.hits), "seeds are not their own hits"
+
+
+def test_lc_sample_fits_the_budget_and_covers_every_paper() -> None:
+    """D7's sampler against the real corpus: the whole corpus does not fit, so
+    LC-sample takes a fixed round-robin slice. Every paper must survive —
+    losing one would make LC's content an accident of the seed."""
+    from carelite.db.connection import fetch_all
+    from carelite.retrieval.ablation import CHARS_PER_TOKEN, lc_sample_stats
+
+    stats = lc_sample_stats()
+    assert stats["fits"] is False, "if the corpus now fits, D7 needs revisiting"
+    assert stats["sample_chunks"] < stats["n_chunks"]
+
+    ids = stats["sample_chunk_ids"]
+    assert len(set(ids)) == len(ids), "no chunk may be selected twice"
+
+    all_papers = {r["paper_id"] for r in fetch_all("SELECT DISTINCT paper_id FROM chunk")}
+    sampled_papers = {
+        r["paper_id"]
+        for r in fetch_all(
+            "SELECT DISTINCT paper_id FROM chunk WHERE chunk_id = ANY(%(ids)s)",
+            {"ids": ids},
+        )
+    }
+    assert sampled_papers == all_papers, "every paper must be represented"
+
+    chars = fetch_all(
+        "SELECT coalesce(sum(length(text)), 0) AS c FROM chunk WHERE chunk_id = ANY(%(ids)s)",
+        {"ids": ids},
+    )[0]["c"]
+    assert int(chars) // CHARS_PER_TOKEN <= stats["budget_tokens"]
+
+
+def test_lc_sample_is_stable_across_calls() -> None:
+    """A fixed context that moved between rows would make C-vs-LC-sample
+    partly a comparison of two different LC conditions."""
+    from carelite.retrieval.ablation import lc_sample
+
+    assert lc_sample() == lc_sample()

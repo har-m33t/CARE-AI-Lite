@@ -155,8 +155,14 @@ class RetrievalFlags:
     the cost is roughly 5-15s per uncached turn on `gpt-oss:20b`."""
 
     long_context: bool = False
-    """Condition LC: skip retrieval entirely and stuff the corpus. Handled by
-    `ablation.py`, not by `pipeline.py`."""
+    """Condition LC-sample: no query-dependent retrieval. Handled by
+    `ablation.py`, not by `pipeline.py`.
+
+    Not "stuff the whole corpus" — the corpus does not fit (D7). It is a fixed
+    round-robin sample across all papers at a pinned seed. Any selection rule
+    is a form of retrieval, so this row asks whether query-dependent selection
+    beats a fixed context, which is a different question from the one v3 §3
+    posed. See `ablation.lc_sample`."""
 
     label: str = ""
     """Ablation row name (`"R0"`…`"R9"`, `"LC"`). Free-form; carried into the
@@ -411,8 +417,12 @@ PRESETS: dict[str, RetrievalFlags] = {
         crag=True,
     ),
     "LC": _f(
-        label="LC",
-        note="long-context baseline: no retrieval, whole corpus stuffed (v3 §3)",
+        label="LC-sample",
+        note="long-context baseline: no QUERY-DEPENDENT retrieval. A fixed round-robin "
+        "sample across all papers at a pinned seed, because the corpus is ~255% of the "
+        "context window and does not fit (D7). Any selection rule is a form of retrieval, "
+        "so this asks whether query-dependent selection beats a fixed context — not the "
+        "question v3 §3 posed.",
         long_context=True,
         router=False,
         query_expansion=False,
@@ -427,12 +437,21 @@ PRESETS: dict[str, RetrievalFlags] = {
 }
 
 
+#: Row labels that differ from their preset key, so a caller can ask for a row
+#: by the name it is *reported* under. `LC-sample` is the reported name (D7);
+#: `LC` remains accepted because run scripts and ABLATION_ORDER use it.
+_LABEL_ALIASES: dict[str, str] = {"LC-SAMPLE": "LC"}
+
+
 def preset(name: str) -> RetrievalFlags:
     """Look up a named ablation row. Raises on an unknown name rather than
     silently returning the default, so a typo in a run script fails loudly."""
+    key = name.upper()
+    key = _LABEL_ALIASES.get(key, key)
     try:
-        return PRESETS[name.upper()]
+        return PRESETS[key]
     except KeyError as exc:
         raise KeyError(
-            f"unknown ablation preset {name!r}; expected one of {sorted(PRESETS)}"
+            f"unknown ablation preset {name!r}; expected one of "
+            f"{sorted(PRESETS) + sorted(_LABEL_ALIASES)}"
         ) from exc

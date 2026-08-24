@@ -86,6 +86,8 @@ __all__ = [
     "context_precision",
     "default_turns",
     "format_markdown",
+    "lc_sample",
+    "lc_sample_stats",
     "long_context_stats",
     "main",
     "prewarm_hyde",
@@ -347,33 +349,146 @@ def context_precision(
 # ---------------------------------------------------------------------------
 
 
-def long_context_stats() -> dict[str, Any]:
-    """Corpus-stuffing budget for condition LC.
+#: Head-room reserved inside the context window for the system prompt, the
+#: patient turn, and the model's own response. The corpus sample is fitted to
+#: what is left, not to the raw window size.
+LC_RESERVE_TOKENS = 16_000
 
-    Context precision is deliberately **not** computed for LC. LC's "retrieved
-    set" is the entire corpus, so its precision is (relevant chunks)/(all
-    chunks) — a number that would require hand-labelling all 475 chunks per
-    turn to obtain honestly, and which would in any case be near zero by
-    construction rather than by measurement. The reviewer-relevant fact about
-    LC is whether the corpus fits in the window at all, so that is what this
-    reports.
+#: Characters per token. A budgeting approximation for English prose, not an
+#: exact count — the sample is sized conservatively so the approximation has
+#: room to be wrong.
+CHARS_PER_TOKEN = 4
+
+
+def long_context_stats() -> dict[str, Any]:
+    """What condition LC would cost, and what it actually gets (D7).
+
+    v3 §3 assumed the whole corpus fits in the window and could therefore be
+    stuffed, making LC a genuine no-retrieval baseline. Measured, it does not:
+    471 chunks are roughly 326,526 tokens against the 128,000-token window
+    configured for `models.long_context`, or **255% utilisation**. Reserving
+    `LC_RESERVE_TOKENS` for the prompt and response, about a third of the
+    corpus fits.
+
+    Context precision is deliberately not computed for LC. Its context is
+    fixed rather than retrieved, so per-turn precision would be measuring the
+    sample, not a retriever, and would be near zero by construction rather
+    than by measurement.
     """
     from carelite.db.connection import fetch_one
 
     row = fetch_one("SELECT count(*) AS n, coalesce(sum(length(text)), 0) AS chars FROM chunk")
     n_chunks = int(row["n"]) if row else 0
     chars = int(row["chars"]) if row else 0
-    # ~4 characters per token is the usual English approximation; this is a
-    # budget check, not an exact count.
-    est_tokens = chars // 4
+    est_tokens = chars // CHARS_PER_TOKEN
     window = get_settings().models.long_context.context_window
+    budget = max(0, window - LC_RESERVE_TOKENS)
     return {
         "n_chunks": n_chunks,
         "est_tokens": est_tokens,
         "context_window": window,
+        "reserve_tokens": LC_RESERVE_TOKENS,
+        "budget_tokens": budget,
         "fits": est_tokens < window,
         "utilisation": round(est_tokens / window, 3) if window else None,
     }
+
+
+_LC_CHUNK_SQL = """
+SELECT chunk_id, paper_id, ordinal, length(text) AS chars
+FROM chunk
+ORDER BY paper_id, ordinal
+"""
+
+
+def lc_sample(
+    *,
+    budget_tokens: int | None = None,
+    seed: int | None = None,
+) -> list[str]:
+    """The fixed, query-independent corpus sample that condition LC-sample uses.
+
+    **Any selection rule is a form of retrieval.** This is the point D7 exists
+    to keep in the open, and it must not be quietly absorbed into an
+    implementation detail. LC was specified as the baseline that asks whether
+    curated retrieval beats stuffing everything in. Because the corpus does not
+    fit, it can no longer ask that. It can only ask whether *query-dependent*
+    selection beats a *fixed* context. That remains a real and interesting
+    question — arguably closer to what a practitioner would actually build —
+    but it is not the question build plan v3 §3 posed, and a reader must not be
+    able to mistake one for the other. The row is named `LC-sample` for exactly
+    that reason: the name is load-bearing, not cosmetic.
+
+    **Round-robin across papers, not random sampling.** Round-robin guarantees
+    every one of the 33 papers is represented. Random selection can drop whole
+    papers by chance, which would make LC's content an accident of the seed and
+    would turn part of the C-vs-LC comparison into a comparison of which papers
+    happened to survive.
+
+    **Where the seed actually matters.** Within a paper, chunks are taken in
+    `ordinal` order, which is deterministic and needs no seed. Papers are
+    visited in an order shuffled at `seed`, and that only changes the outcome
+    on the final, partial cycle — when the budget runs out part-way through a
+    round, the seed decides which papers get that last chunk. Fixing it stops
+    the tail from systematically favouring whichever papers sort first by id.
+
+    Returns chunk ids in the order they should be stuffed into the prompt.
+    """
+    import random
+
+    from carelite.db.connection import fetch_all
+
+    settings = get_settings()
+    if budget_tokens is None:
+        budget_tokens = max(0, settings.models.long_context.context_window - LC_RESERVE_TOKENS)
+    if seed is None:
+        seed = settings.experiment.base_seed
+
+    by_paper: dict[str, list[tuple[str, int]]] = {}
+    for row in fetch_all(_LC_CHUNK_SQL):
+        by_paper.setdefault(str(row["paper_id"]), []).append(
+            (str(row["chunk_id"]), int(row["chars"]))
+        )
+
+    papers = sorted(by_paper)
+    random.Random(seed).shuffle(papers)
+
+    selected: list[str] = []
+    spent = 0
+    depth = 0
+    deepest = max((len(v) for v in by_paper.values()), default=0)
+    while depth < deepest:
+        progressed = False
+        for paper in papers:
+            chunks = by_paper[paper]
+            if depth >= len(chunks):
+                continue
+            chunk_id, chars = chunks[depth]
+            cost = chars // CHARS_PER_TOKEN
+            if spent + cost > budget_tokens:
+                # Budget exhausted mid-cycle. Stop outright rather than
+                # skipping to a smaller chunk: "take whatever still fits"
+                # would silently bias the sample toward short chunks.
+                return selected
+            selected.append(chunk_id)
+            spent += cost
+            progressed = True
+        if not progressed:
+            break
+        depth += 1
+    return selected
+
+
+def lc_sample_stats() -> dict[str, Any]:
+    """`long_context_stats()` plus what the sample actually selected."""
+    stats = long_context_stats()
+    sample = lc_sample()
+    stats["sample_chunks"] = len(sample)
+    stats["sample_fraction"] = (
+        round(len(sample) / stats["n_chunks"], 3) if stats["n_chunks"] else None
+    )
+    stats["sample_chunk_ids"] = sample
+    return stats
 
 
 # ---------------------------------------------------------------------------
@@ -403,16 +518,34 @@ def run_row(
     off = set(off_domain)
 
     if flags.long_context:
-        stats = long_context_stats()
+        stats = lc_sample_stats()
         row.n_turns = len(turns)
-        row.mean_retrieved = float(stats["n_chunks"])
+        row.n_on_domain = len([t for t in turns if t not in off])
+        row.n_off_domain = len(turns) - row.n_on_domain
+        row.mean_retrieved = float(stats["sample_chunks"])
         row.notes.append(
-            f"no retrieval; {stats['n_chunks']} chunks ~{stats['est_tokens']:,} tokens "
-            f"into a {stats['context_window']:,}-token window "
-            f"({'fits' if stats['fits'] else 'DOES NOT FIT'}, "
-            f"{stats['utilisation']:.1%} utilisation)"
+            f"no query-dependent retrieval; the full corpus is {stats['n_chunks']} chunks "
+            f"~{stats['est_tokens']:,} tokens against a {stats['context_window']:,}-token "
+            f"window ({stats['utilisation']:.1%} utilisation) and DOES NOT FIT"
         )
-        row.notes.append("context precision not computed for LC — see long_context_stats()")
+        row.notes.append(
+            f"fixed round-robin sample across all papers at seed "
+            f"{get_settings().experiment.base_seed}: {stats['sample_chunks']} of "
+            f"{stats['n_chunks']} chunks ({stats['sample_fraction']:.1%}) inside a "
+            f"{stats['budget_tokens']:,}-token budget "
+            f"({stats['reserve_tokens']:,} reserved for prompt and response)"
+        )
+        row.notes.append(
+            "ANY SELECTION RULE IS A FORM OF RETRIEVAL. This row does not ask whether "
+            "curated retrieval beats stuffing everything in — the corpus does not fit, "
+            "so that question is not available. It asks whether query-DEPENDENT "
+            "selection beats a FIXED context. That is not the question v3 §3 posed "
+            "(D7); the LC-sample name carries the distinction."
+        )
+        row.notes.append(
+            "context precision not computed for LC-sample: its context is fixed rather "
+            "than retrieved, so per-turn precision would measure the sample, not a retriever"
+        )
         return row
 
     results: list[RetrievalResult] = []

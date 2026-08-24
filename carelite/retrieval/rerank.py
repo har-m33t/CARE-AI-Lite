@@ -36,11 +36,15 @@ the weight is multiplicative and gentle (`strong` 1.00, `moderate` 0.92,
 rather than penalised to the floor, since "we have not tiered this paper yet"
 is not evidence of weakness.
 
-*Current data note:* all 33 papers in the corpus are presently tiered
-`emerging`, so tier weighting is a uniform scaling — a no-op on ordering —
-against today's database. The logic is exercised by fixtures in the unit
-tests rather than by live data, and will start to bite when the corpus lane
-assigns real tiers.
+*Data note, corrected.* This module previously recorded that every paper in
+the corpus was tiered `emerging`, making tier weighting a uniform scaling and
+therefore a no-op on ordering. **That is no longer true and the note was left
+stale for a while, which is worth flagging as much as the fact itself.** Both
+tables now carry a real spread — papers 17 emerging / 12 strong / 4 moderate,
+`kb_entry` 75 / 28 / 13 — so the R5-to-R6 comparison is measuring something
+live rather than an identity transform. A reader comparing those two rows in
+an older ablation table than this docstring should treat the tier column as
+inert for that run and active for later ones.
 
 **Unavailability is degradation, not failure.** sentence-transformers and
 torch are an optional extra (`pip install carelite[rerank]`). If they are
