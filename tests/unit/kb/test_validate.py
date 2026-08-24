@@ -56,7 +56,13 @@ def _paper(paper_id: str, text: str, design: str) -> PaperText:
         source_path=f"/tmp/{paper_id}.xml",
         text=text,
         text_sha256=hashlib.sha256(text.encode()).hexdigest(),
-        meta=PaperMeta(paper_id=paper_id, design=design, short_citation=f"{paper_id} (test)"),
+        meta=PaperMeta(
+            paper_id=paper_id,
+            design=design,
+            short_citation=f"{paper_id} (test)",
+            year=2020,
+            apa_citation=f"Test, A. (2020). {paper_id}. Journal of Fixtures, 1(1), 1-2.",
+        ),
     )
 
 
@@ -228,77 +234,103 @@ class TestVocabulary:
         assert any("unknown action type" in r for r in result.reasons)
 
 
-class TestTierAgainstDesign:
-    """An overclaimed tier is corrected, not fatal — but the claim is kept.
+class TestTierFromDesign:
+    """Tier is derived from the recorded design, in both directions.
 
-    This is the one check in the validator that repairs rather than rejects,
-    and the reason is that it is the only one with a derivable right answer:
-    the study design is recorded, so the tier it supports is known. The
-    entry's span, theme, finding and takeaway are untouched by the model's
-    tier error, and discarding four correct fields to punish a fifth would
-    manufacture a knowledge-base shortfall out of a field the pipeline can fix.
-    What must not happen is the correction being silent, so both values
-    survive on the result and the review digest prints them together.
+    The first version of this check treated the design tier as a *ceiling*: it
+    lowered an overclaim and left an underclaim alone. That is half a check, and
+    the half it omitted let the same defect back in through the other door —
+    four papers ended up carrying entries at more than one tier and one carried
+    entries at all three, because wherever the model happened to say `emerging`
+    about a randomised trial, `emerging` survived. Tier then recorded the
+    model's confidence rather than the study design, which is exactly the
+    property the check exists to remove. `README.md` defines evidence strength
+    as a property of the source, so `test_two_entries_from_one_paper_agree` is
+    the invariant that matters here; the directional tests are how it is met.
+
+    Correcting rather than rejecting is still right, for the reason it always
+    was: unlike a fabricated span, an ill-judged tier has a derivable right
+    answer, and the entry's other fields are untouched by the error. What must
+    not happen is the correction being silent, so both values survive on the
+    result and the digest prints them together.
     """
 
-    def test_a_strong_claim_off_a_protocol_is_downgraded_not_rejected(
-        self, papers: dict[str, PaperText]
-    ) -> None:
-        candidate = _candidate(
+    def _protocol_candidate(self, tier: str) -> CandidateEntry:
+        return _candidate(
             source_paper_ids=["protocol-paper"],
-            evidence_tier="strong",
+            evidence_tier=tier,
             theme="activation_sdm",
             verbatim_span=(
                 "The primary outcome will be medication adherence at twelve months, "
                 "measured by pill count and self-report at each scheduled study visit"
             ),
         )
-        result = validate_candidate(candidate, papers=papers)
+
+    def test_a_strong_claim_off_a_protocol_is_corrected_down_not_rejected(
+        self, papers: dict[str, PaperText]
+    ) -> None:
+        result = validate_candidate(self._protocol_candidate("strong"), papers=papers)
 
         assert isinstance(result, ValidatedEntry)
         assert result.entry.evidence_tier is EvidenceTier.EMERGING
         assert result.claimed_tier is EvidenceTier.STRONG
-        assert result.design_ceiling is EvidenceTier.EMERGING
-        assert result.tier_downgraded is True
+        assert result.design_tier is EvidenceTier.EMERGING
+        assert result.tier_corrected is True
+        assert result.tier_direction == "down"
 
-    def test_a_tier_within_the_ceiling_is_left_alone(self, papers: dict[str, PaperText]) -> None:
-        result = validate_candidate(_candidate(evidence_tier="moderate"), papers=papers)
+    def test_an_underclaim_off_a_systematic_review_is_corrected_up(
+        self, papers: dict[str, PaperText]
+    ) -> None:
+        """The half the ceiling version missed, and the reason for this rewrite."""
+        result = validate_candidate(_candidate(evidence_tier="emerging"), papers=papers)
+
         assert isinstance(result, ValidatedEntry)
-        assert result.tier_downgraded is False
-        assert result.claimed_tier is result.entry.evidence_tier
+        assert result.entry.evidence_tier is EvidenceTier.STRONG
+        assert result.claimed_tier is EvidenceTier.EMERGING
+        assert result.tier_corrected is True
+        assert result.tier_direction == "up"
 
-    def test_the_report_counts_every_downgrade(self, papers: dict[str, PaperText]) -> None:
-        overclaimed = _candidate(
-            source_paper_ids=["protocol-paper"],
-            evidence_tier="strong",
-            theme="activation_sdm",
-            verbatim_span=(
-                "The primary outcome will be medication adherence at twelve months, "
-                "measured by pill count and self-report at each scheduled study visit"
-            ),
-        )
-        report = validate_candidates([overclaimed], papers=papers)
-        assert len(report.downgraded) == 1
-        assert report.downgrade_counts() == {"strong -> emerging": 1}
-
-    def test_protocol_supports_an_emerging_claim(self, papers: dict[str, PaperText]) -> None:
-        candidate = _candidate(
-            source_paper_ids=["protocol-paper"],
-            evidence_tier="emerging",
-            theme="activation_sdm",
-            verbatim_span=(
-                "The primary outcome will be medication adherence at twelve months, "
-                "measured by pill count and self-report at each scheduled study visit"
-            ),
-        )
-        result = validate_candidate(candidate, papers=papers)
-        assert isinstance(result, ValidatedEntry)
-
-    def test_a_cautious_claim_below_the_ceiling_is_allowed(
+    def test_a_cautious_moderate_claim_is_also_raised_to_the_design(
         self, papers: dict[str, PaperText]
     ) -> None:
         result = validate_candidate(_candidate(evidence_tier="moderate"), papers=papers)
         assert isinstance(result, ValidatedEntry)
+        assert result.entry.evidence_tier is EvidenceTier.STRONG
+
+    def test_a_correct_claim_is_left_alone(self, papers: dict[str, PaperText]) -> None:
+        result = validate_candidate(_candidate(evidence_tier="strong"), papers=papers)
+        assert isinstance(result, ValidatedEntry)
+        assert result.tier_corrected is False
+        assert result.tier_direction == "unchanged"
+
+    def test_two_entries_from_one_paper_agree(self, papers: dict[str, PaperText]) -> None:
+        """The invariant. One paper, one design, one evidence strength."""
+        first = _candidate(evidence_tier="emerging")
+        second = _candidate(
+            evidence_tier="strong",
+            verbatim_span=(
+                "Any misunderstandings are then clarified by the health provider and "
+                "understanding is checked again"
+            ),
+        )
+        report = validate_candidates([first, second], papers=papers)
+
+        assert len(report.accepted) == 2
+        assert {e.entry.evidence_tier for e in report.accepted} == {EvidenceTier.STRONG}
+        assert report.tier_consistency() == {"review-paper": {"strong"}}
+
+    def test_the_report_counts_every_correction_with_its_direction(
+        self, papers: dict[str, PaperText]
+    ) -> None:
+        report = validate_candidates(
+            [self._protocol_candidate("strong"), _candidate(evidence_tier="emerging")],
+            papers=papers,
+        )
+        assert len(report.tier_corrected) == 2
+        assert report.tier_correction_counts() == {
+            "strong -> emerging (down)": 1,
+            "emerging -> strong (up)": 1,
+        }
 
 
 class TestSpanQuality:
@@ -394,3 +426,49 @@ class TestEntryId:
         a = entry_id_for(Theme.EMPATHY, "p1", "the same sentence")
         b = entry_id_for(Theme.EMPATHY, "p2", "the same sentence")
         assert a != b
+
+
+class TestRejectionReporting:
+    """The rejection counts are a published number, so the buckets have to be right.
+
+    `format_report`'s totals appear in the review digest and in the write-up as
+    the measured fabrication rate. They are produced by matching a needle against
+    each rejection reason in order, which is fragile in a specific way: a short
+    generic needle earlier in the list absorbs every later reason containing it.
+    `"span is"` matched both "span is 6 words … below the evidence floor" and
+    "span is about a clinician-inward practice", so one bucket over-counted and
+    another never appeared at all — a reporting bug that says the pipeline
+    rejected something for a reason it did not.
+    """
+
+    def test_every_rejection_reason_maps_to_its_own_bucket(
+        self, papers: dict[str, PaperText]
+    ) -> None:
+        short_span = _candidate(verbatim_span="Implementation was inconsistent across settings")
+        inward = _candidate(
+            source_paper_ids=["protocol-paper"],
+            theme="emotion_response",
+            verbatim_span=(
+                "The primary outcome will be medication adherence at twelve months, "
+                "measured by pill count and self-report at each scheduled study visit"
+            ),
+            practical_takeaway=(
+                "Practise mindfulness so that you notice the patient's emotional changes."
+            ),
+        )
+        report = validate_candidates([short_span, inward], papers=papers)
+        buckets = report.reason_counts()
+
+        assert buckets.get("span too short to be evidence") == 1
+        assert buckets.get("out of scope: clinician-inward practice") == 1
+
+    def test_the_bucket_counts_add_up_to_the_rejections(self, papers: dict[str, PaperText]) -> None:
+        """The property the collision broke: nothing may be counted twice or lost."""
+        candidates = [
+            _candidate(verbatim_span="a sentence that is nowhere in either fixture paper at all"),
+            _candidate(verbatim_span="Implementation was inconsistent across settings"),
+            _candidate(theme="not_a_theme"),
+            _candidate(practical_takeaway="Clinicians should be mindful of the patient's needs."),
+        ]
+        report = validate_candidates(candidates, papers=papers)
+        assert sum(report.reason_counts().values()) == len(report.rejected)

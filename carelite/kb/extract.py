@@ -214,6 +214,66 @@ Each entry has these fields:
 
 Return JSON only, shaped: {"entries": [ ... ]}. Return {"entries": []} when the passage supports nothing."""
 
+#: The equity variant, approved as `DECISIONS.md` D3.
+#:
+#: The equity theme reached 3 entries out of 127 and the cause was structural
+#: rather than a sampling accident. The equity literature *describes a
+#: disparity* — low-SES patients receive less empathy, minority patients'
+#: emotional cues are blocked more often, LEP conversations are shorter — and a
+#: faithful extraction of a descriptive finding produces an awareness statement:
+#: *"clinicians should be mindful of empathy gaps in patients from lower
+#: socioeconomic backgrounds"*. The actionability gate rejects those correctly,
+#: because awareness is not something the system can detect, generate, or
+#: reframe; six of the nine equity rejections were that one sentence shape.
+#:
+#: So the instruction changes what the *takeaway* must be, not what the model
+#: should conclude. The passage still has to say what it says. Note the
+#: difference from `FOCUS_VOCABULARY`, which changes only which pages are read
+#: and leaves the prompt alone precisely because a prompt told to find equity
+#: findings will find them regardless: this addition never tells the model a
+#: passage contains a disparity, only what to write if it does.
+#:
+#: **D3's guard, and the reason it is stated here rather than assumed.** A model
+#: told to find compensating moves will find them whether or not the passage
+#: supports one, and the span requirement does not catch it — the span can be
+#: perfectly genuine while the takeaway drifts past what it licenses. The last
+#: paragraph is the counterweight, and it is not sufficient on its own; every
+#: entry this variant produces is read individually against its span rather
+#: than sampled.
+_EQUITY_GUIDANCE = """
+
+ONE ADDITIONAL RULE FOR PASSAGES THAT REPORT A DIFFERENCE BETWEEN GROUPS OF PATIENTS.
+
+Where the passage reports that some group of patients receives worse, shorter, less empathic, or less well-checked communication, the practical_takeaway must name the COMPENSATING MOVE - the thing a clinician does differently in the encounter to close that gap. It must not be an awareness statement. "Be mindful of empathy gaps in patients from lower socioeconomic backgrounds" is NOT acceptable: being mindful is a state of mind, not a move, and no observer could tell whether it happened. "Check your assumptions about this patient's adherence by asking what actually gets in the way of taking the medication" IS acceptable: it is something said out loud, in a conversation, that a listener could observe.
+
+This rule does not license inventing the move. If the passage reports a disparity but says nothing about what closes it, and no compensating action follows directly from what the passage states, return no entry for that passage. An entry whose takeaway goes beyond what its quoted span supports is worse than a missing entry, because it will be retrieved and acted on as though the paper said it."""
+
+
+@dataclass(frozen=True)
+class PromptVariant:
+    """A system template and the version stamped on everything it produces.
+
+    The version is part of the extraction cache key, so two variants never mix
+    in one cache and switching between them does not silently reuse the other's
+    windows. Keeping the equity variant on its own version rather than bumping
+    `PROMPT_VERSION` globally is deliberate: a global bump invalidates all 33
+    papers' cached windows to change how one theme is extracted, and the cache
+    key already separates them without spending the corpus's inference budget
+    twice.
+    """
+
+    version: str
+    system: str
+
+
+GENERAL_PROMPT = PromptVariant(PROMPT_VERSION, SYSTEM_TEMPLATE)
+EQUITY_PROMPT = PromptVariant("kb-extract-equity-v1", SYSTEM_TEMPLATE + _EQUITY_GUIDANCE)
+
+PROMPT_VARIANTS: dict[str, PromptVariant] = {
+    "general": GENERAL_PROMPT,
+    "equity": EQUITY_PROMPT,
+}
+
 TASK = (
     "Extract at most "
     f"{MAX_ENTRIES_PER_WINDOW} knowledge-base entries from the passage above. "
@@ -403,10 +463,12 @@ def select_windows(
 # ---------------------------------------------------------------------------
 
 
-def build_prompt(window_text: str, *, paper_id: str) -> fencing.FencedPrompt:
+def build_prompt(
+    window_text: str, *, paper_id: str, variant: PromptVariant = GENERAL_PROMPT
+) -> fencing.FencedPrompt:
     """Assemble the extraction prompt with the passage confined to a fence."""
     return fencing.assemble(
-        system=SYSTEM_TEMPLATE,
+        system=variant.system,
         task=TASK,
         extra_untrusted=[("PAPER_PASSAGE", window_text)],
         retrieved=(),
@@ -468,6 +530,7 @@ def extract_window(
     *,
     client: Any | None = None,
     model: str | None = None,
+    variant: PromptVariant = GENERAL_PROMPT,
 ) -> WindowResult:
     """One model call for one window. Never raises; errors land on the result."""
     settings = get_settings()
@@ -476,11 +539,11 @@ def extract_window(
         paper_id=paper.paper_id,
         window_index=window.index,
         paper_sha256=paper.text_sha256,
-        prompt_version=PROMPT_VERSION,
+        prompt_version=variant.version,
         model=model,
     )
 
-    prompt = build_prompt(window.text, paper_id=paper.paper_id)
+    prompt = build_prompt(window.text, paper_id=paper.paper_id, variant=variant)
     started = time.monotonic()
     try:
         if client is None:
@@ -499,7 +562,7 @@ def extract_window(
         candidate.source_paper_ids = [paper.paper_id]
         candidate.window_index = window.index
         candidate.paper_sha256 = paper.text_sha256
-        candidate.prompt_version = PROMPT_VERSION
+        candidate.prompt_version = variant.version
         candidate.model = model
         result.candidates.append(candidate)
     return result
@@ -599,6 +662,7 @@ def extract_corpus_entries(
     client: Any | None = None,
     model: str | None = None,
     focus: str | None = None,
+    variant: PromptVariant = GENERAL_PROMPT,
     progress: bool = False,
 ) -> ExtractionRun:
     """Extract candidates across the corpus, reusing anything already cached.
@@ -626,7 +690,7 @@ def extract_corpus_entries(
             continue
 
         for window in select_windows(paper.text, limit=max_windows, vocabulary=vocabulary):
-            key = _cache_key(paper_id, window.index, paper.text_sha256, PROMPT_VERSION, model)
+            key = _cache_key(paper_id, window.index, paper.text_sha256, variant.version, model)
             hit = cached.get(key)
             if hit is not None and hit.error is None:
                 run.results.append(hit)
@@ -635,7 +699,7 @@ def extract_corpus_entries(
 
             if progress:
                 print(f"  {paper_id} w{window.index} (density {window.density}) ...", flush=True)
-            result = extract_window(paper, window, client=client, model=model)
+            result = extract_window(paper, window, client=client, model=model, variant=variant)
             append_cache(result, cache_path)
             run.called += 1
             run.results.append(result)
@@ -658,6 +722,13 @@ def main(argv: list[str] | None = None) -> int:
         help="rank windows by this theme's vocabulary instead of the general one "
         "(the prompt is unchanged; only which pages get read)",
     )
+    ap.add_argument(
+        "--prompt",
+        choices=sorted(PROMPT_VARIANTS),
+        default="general",
+        help="which system template to extract with; 'equity' adds the D3 "
+        "compensating-move rule and runs on its own cache version",
+    )
     args = ap.parse_args(argv)
 
     run = extract_corpus_entries(
@@ -665,6 +736,7 @@ def main(argv: list[str] | None = None) -> int:
         max_windows=args.max_windows,
         cache_path=args.cache,
         focus=args.focus,
+        variant=PROMPT_VARIANTS[args.prompt],
         progress=True,
     )
     print(

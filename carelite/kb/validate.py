@@ -23,26 +23,43 @@ replaced with the exact source substring. What lands in the database is
 therefore a literal slice of the paper rather than the model's rendering of
 one, and the review digest can be trusted to show a human what the paper says.
 
-Four further checks, in the order they run:
+Five further checks, in the order they run:
 
 1. **Vocabulary** — theme, tier, and action type must be real enum members.
 2. **Span** — located, and long enough to actually be evidence.
-3. **Tier against design** — an entry cannot claim `strong` off a study
-   protocol. The ceiling is read off the `PaperText` objects being validated
-   against, whose `PaperMeta` records the design and derives the tier from it.
-   Unlike every other check here, this one **corrects rather than rejects**,
-   and the reasoning is worth stating because the first version of this module
-   got it wrong. A missing span has no right answer to substitute — the paper
-   either says the thing or it does not. An overclaimed tier does: the study
-   design is recorded, the ceiling it supports is derivable, and the entry's
-   span, theme, finding and takeaway are all untouched by the error. Killing
-   the entry would discard four correct fields to punish a fifth, and would
-   then report a knowledge-base shortfall that the pipeline had manufactured.
-   So the tier is lowered to what the design supports and **both values are
-   kept** — `ValidatedEntry.claimed_tier` holds what the model asserted, the
-   stored entry holds the corrected tier, and the review digest prints them
-   side by side. A reviewer can see the model overreach; nothing is laundered.
-4. **Actionability** — the takeaway has to be something a clinician can do
+3. **Tier from design** — the evidence tier is **derived from the recorded
+   study design, not read from the model**, and this is a correction rather
+   than the original behaviour. The first version treated the design tier as a
+   *ceiling*: an overclaim was lowered, an underclaim was left alone. That is
+   half a check, and the half it omitted let the defect back in through the
+   other door. Four papers ended up carrying entries at more than one tier and
+   one carried entries at all three, because wherever the model happened to say
+   `emerging` about a randomised trial, `emerging` survived. Tier then recorded
+   the model's mood rather than the study behind it — precisely the property
+   this check exists to remove. `README.md` defines evidence strength as a
+   property of the source, so two entries citing one paper cannot honestly
+   carry different strengths.
+
+   So the derivation runs in both directions, and **both values are kept**:
+   `ValidatedEntry.claimed_tier` holds what the model asserted, the stored
+   entry holds the design-derived tier, and the digest prints them side by
+   side. Correcting rather than rejecting is still right for the same reason it
+   always was — a missing span has no right answer to substitute, an
+   ill-judged tier does — but "correct" now means "make it match the design",
+   not "cap it".
+
+   One exception, and it is principled rather than a loophole: a span that is
+   **relaying someone else's study** is capped by
+   `carelite.kb.scope.second_hand_ceiling`, because the source of record for
+   that claim is a paper outside the corpus and the citing paper's design says
+   nothing about it. Those entries are flagged as second-hand wherever the tier
+   is shown, so the within-paper variation is explained rather than arbitrary.
+4. **Scope** — `carelite.kb.scope` rejects candidates that `TAXONOMY.md`'s
+   inclusion criteria exclude (training-transfer findings, clinician-inward
+   practices) and candidates whose finding claims something the span does not
+   report. These are entries the span check cannot catch, because their spans
+   are perfectly real.
+5. **Actionability** — the takeaway has to be something a clinician can do
    during an encounter. This is where the corpus's skew toward
    training-intervention studies gets filtered: "clinicians should receive
    communication training" is a true claim about curricula and a useless
@@ -58,6 +75,13 @@ from dataclasses import dataclass, field
 
 from carelite.kb.extract import CandidateEntry
 from carelite.kb.papers import PaperText, load_paper_texts, strongest_tier, tier_at_most
+from carelite.kb.scope import (
+    ScopeFinding,
+    SecondHand,
+    out_of_scope,
+    second_hand_ceiling,
+    second_hand_evidence,
+)
 from carelite.kb.spans import NormalizedText, SpanMatch, locate_span, normalize, normalized_text
 from carelite.types import ActionType, EncounterPhase, EvidenceTier, KBEntry, Theme
 
@@ -250,9 +274,9 @@ class ValidatedEntry:
     """A `KBEntry` that survived, plus the proof it survived on.
 
     `claimed_tier` is what the extraction model asserted; `entry.evidence_tier`
-    is what the source design actually supports. They differ exactly when the
-    model overclaimed, and keeping both is what makes the correction auditable
-    instead of silent.
+    is what the recorded study design supports. They differ whenever the model
+    misjudged the design in either direction, and keeping both is what makes the
+    correction auditable instead of silent.
     """
 
     entry: KBEntry
@@ -262,16 +286,25 @@ class ValidatedEntry:
     span_was_exact: bool
     paper_sha256: str
     claimed_tier: EvidenceTier
-    design_ceiling: EvidenceTier | None = None
+    design_tier: EvidenceTier | None = None
     span_match_via: str = "normalized"
+    second_hand: SecondHand | None = None
 
     @property
     def entry_id(self) -> str:
         return self.entry.entry_id
 
     @property
-    def tier_downgraded(self) -> bool:
+    def tier_corrected(self) -> bool:
+        """Did the stored tier end up different from what the model claimed?"""
         return self.claimed_tier is not self.entry.evidence_tier
+
+    @property
+    def tier_direction(self) -> str:
+        """`"up"`, `"down"`, or `"unchanged"` — which way the correction went."""
+        if not self.tier_corrected:
+            return "unchanged"
+        return "up" if tier_at_most(self.claimed_tier, self.entry.evidence_tier) else "down"
 
 
 @dataclass(frozen=True)
@@ -311,16 +344,35 @@ class ValidationReport:
         return dict(sorted(counts.items(), key=lambda kv: -kv[1]))
 
     @property
-    def downgraded(self) -> list[ValidatedEntry]:
-        """Accepted entries whose claimed tier was lowered to what the design supports."""
-        return [e for e in self.accepted if e.tier_downgraded]
+    def tier_corrected(self) -> list[ValidatedEntry]:
+        """Accepted entries whose stored tier differs from the model's claim."""
+        return [e for e in self.accepted if e.tier_corrected]
 
-    def downgrade_counts(self) -> dict[str, int]:
+    def tier_correction_counts(self) -> dict[str, int]:
         counts: dict[str, int] = {}
-        for e in self.downgraded:
-            key = f"{e.claimed_tier.value} -> {e.entry.evidence_tier.value}"
+        for e in self.tier_corrected:
+            key = f"{e.claimed_tier.value} -> {e.entry.evidence_tier.value} ({e.tier_direction})"
             counts[key] = counts.get(key, 0) + 1
         return dict(sorted(counts.items(), key=lambda kv: -kv[1]))
+
+    @property
+    def second_hand(self) -> list[ValidatedEntry]:
+        """Accepted entries whose span relays a study outside the corpus."""
+        return [e for e in self.accepted if e.second_hand is not None]
+
+    def tier_consistency(self) -> dict[str, set[str]]:
+        """Tiers held per source paper, ignoring second-hand entries.
+
+        Any paper appearing here with more than one tier is a bug: tier is
+        derived from design, and a paper has one design. Second-hand entries are
+        excluded because their tier is deliberately not this paper's.
+        """
+        out: dict[str, set[str]] = {}
+        for e in self.accepted:
+            if e.second_hand is not None:
+                continue
+            out.setdefault(e.paper_id, set()).add(e.entry.evidence_tier.value)
+        return out
 
     def span_match_counts(self) -> dict[str, int]:
         """How much normalisation each accepted span needed to be located."""
@@ -330,12 +382,26 @@ class ValidationReport:
         return dict(sorted(counts.items(), key=lambda kv: -kv[1]))
 
 
+#: Needles must be **distinctive**, not merely present. These are matched in
+#: order against the rejection reason, so a short generic needle earlier in the
+#: list silently absorbs every later reason that happens to contain it: `"span
+#: is"` was matching "span is about a clinician-inward practice" and reporting
+#: it as a too-short span, which made one bucket over-count and hid another
+#: entirely. Prefer the phrase that appears in exactly one reason.
 _REASON_BUCKETS: tuple[tuple[str, str], ...] = (
     ("not found in", "fabricated span (not in source paper)"),
-    ("span is", "span too short to be evidence"),
+    ("evidence floor", "span too short to be evidence"),
     ("unknown theme", "unparseable theme"),
     ("unknown evidence tier", "unparseable evidence tier"),
     ("unknown action type", "unparseable action type"),
+    # Ordered before the training-transfer needle: a self-rated-skill reason
+    # cites the same TAXONOMY.md §1 clause, so the broader needle would swallow
+    # it and the two would report as one bucket.
+    ("rate their own skills", "out of scope: self-rated clinician skill"),
+    ("training-transfer finding", "out of scope: training-transfer finding"),
+    ("clinician-inward practice", "out of scope: clinician-inward practice"),
+    ("comparative or causal result", "finding not reported by its span"),
+    ("mangled glyph", "direction read out of an extraction artefact"),
     ("takeaway asks the clinician to hold an attitude", "takeaway is an attitude, not an action"),
     ("takeaway", "takeaway not actionable"),
     ("example behaviour is a script", "example behaviour is a script"),
@@ -422,22 +488,48 @@ def validate_candidate(
                     f"below the {MIN_SPAN_WORDS}-word evidence floor"
                 )
 
-    # ---- tier against design -------------------------------------------------
-    # Corrected, not rejected. See the module docstring: an overclaimed tier
-    # is a defect in one field with a derivable right answer, and the evidence
-    # behind the entry is unaffected by it.
-    ceiling: EvidenceTier | None = None
+    # ---- tier from design ----------------------------------------------------
+    # Derived, not capped, and corrected rather than rejected. See the module
+    # docstring: the design is recorded, the tier it supports is derivable, and
+    # the entry's span, theme, finding and takeaway are untouched by the model's
+    # misjudgment of it.
+    design_tier: EvidenceTier | None = None
+    design: str | None = None
     if paper_ids:
-        # Read the ceiling off the PaperText objects actually being validated
+        # Read the design off the PaperText objects actually being validated
         # against, not off the module-level table. A paper missing from the
-        # table would otherwise yield no ceiling and pass this check by
-        # default, which is the wrong direction to fail in.
+        # table would otherwise yield no tier at all and leave the model's claim
+        # standing unchecked, which is the wrong direction to fail in.
         metas = [papers[p].meta for p in paper_ids]
-        ceiling = strongest_tier(m.evidence_tier for m in metas if m is not None)
+        design_tier = strongest_tier(m.evidence_tier for m in metas if m is not None)
+        primary_meta = papers[paper_ids[0]].meta
+        design = primary_meta.design if primary_meta else None
 
     claimed_tier = tier
-    if tier is not None and ceiling is not None and not tier_at_most(tier, ceiling):
-        tier = ceiling
+    if design_tier is not None:
+        tier = design_tier
+
+    # A relayed result is evidence from a paper we do not hold. The citing
+    # paper's design cannot vouch for a study it merely mentions, so the tier
+    # drops to what this corpus can actually stand behind.
+    second_hand: SecondHand | None = None
+    if match is not None:
+        second_hand = second_hand_evidence(match.source_text)
+        if second_hand is not None and tier is not None:
+            relayed_ceiling = second_hand_ceiling(design)
+            if not tier_at_most(tier, relayed_ceiling):
+                tier = relayed_ceiling
+
+    # ---- scope ---------------------------------------------------------------
+    # Real span, real paper, wrong subject matter. These are rejected rather
+    # than corrected because there is nothing to correct to: an entry about
+    # what a course did to trainees' scores is not an entry about what to do in
+    # front of a patient, and no field can be rewritten to make it one.
+    scope: ScopeFinding | None = None
+    if match is not None:
+        scope = out_of_scope(match.source_text, candidate.finding, candidate.practical_takeaway)
+        if scope is not None:
+            reasons.append(str(scope))
 
     # ---- actionability -------------------------------------------------------
     ok, why = takeaway_is_actionable(candidate.practical_takeaway)
@@ -479,8 +571,9 @@ def validate_candidate(
         span_was_exact=match.exact,
         paper_sha256=paper.text_sha256,
         claimed_tier=claimed_tier,
-        design_ceiling=ceiling,
+        design_tier=design_tier,
         span_match_via=match.via,
+        second_hand=second_hand,
     )
 
 
@@ -535,16 +628,30 @@ def format_report(report: ValidationReport) -> str:
     ]
     for reason, count in report.reason_counts().items():
         lines.append(f"  {count:4d}  {reason}")
-    downgrades = report.downgrade_counts()
-    if downgrades:
+    corrections = report.tier_correction_counts()
+    if corrections:
         lines += [
             "",
-            f"Evidence tier corrected against study design ({len(report.downgraded)} "
-            f"of {len(report.accepted)} accepted entries):",
+            f"Evidence tier derived from study design ({len(report.tier_corrected)} "
+            f"of {len(report.accepted)} accepted entries differ from the model's claim):",
         ]
-        for change, count in downgrades.items():
+        for change, count in corrections.items():
             lines.append(f"  {count:4d}  {change}")
         lines.append("  (the model's claim is kept on each entry and printed in the review digest)")
+
+    inconsistent = {p: t for p, t in report.tier_consistency().items() if len(t) > 1}
+    if inconsistent:
+        lines += ["", "WARNING  papers carrying entries at more than one tier:"]
+        for paper_id, tiers in sorted(inconsistent.items()):
+            lines.append(f"  {paper_id}: {', '.join(sorted(tiers))}")
+
+    if report.second_hand:
+        lines += [
+            "",
+            f"{len(report.second_hand)} accepted entr(ies) quote a span that relays another study;",
+            "  their tier is capped at what this corpus can vouch for, not at the citing "
+            "paper's design.",
+        ]
 
     lines += ["", "Span located after:"]
     for via, count in report.span_match_counts().items():

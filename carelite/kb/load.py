@@ -17,6 +17,21 @@ still be there, still correct, and no longer marked as reviewed.
 complete statement about what backs it, so a re-load replaces the set rather
 than accumulating rows from a previous extraction that may no longer apply.
 
+**A re-load is not only additive, so it has to prune.** An upsert alone leaves
+behind every entry the previous run produced and this one did not, and both
+things that remove an entry are routine. A validator rule tightens, and
+thirteen entries stop qualifying. A paper's extraction is corrected — the
+corpus lane repairing `inthe` to `in the` — and the span changes, which changes
+the `entry_id` derived from it, so the same finding arrives under a new id and
+the old row survives as a duplicate quoting text the paper no longer contains.
+Left alone, the knowledge base accumulates exactly the entries the pipeline has
+decided against, and every one of them is still reachable by retrieval.
+
+`prune_entries` is therefore part of a full reload and refuses one case: it will
+not silently delete a row whose `human_verified` is TRUE. Nothing in this corpus
+is (`DECISIONS.md` D4), but an entry a person has read is a decision, and a rule
+change should not be able to erase one without saying so.
+
 `kb_entry.embedding` is left NULL. Embedding belongs to the index lane, which
 reads these rows after the review gate.
 """
@@ -150,6 +165,47 @@ def load_entries(validated: Iterable[ValidatedEntry]) -> LoadResult:
     return result
 
 
+@dataclass
+class PruneResult:
+    deleted: tuple[str, ...] = ()
+    kept_verified: tuple[str, ...] = ()
+
+    def __str__(self) -> str:
+        out = f"{len(self.deleted)} stale entr(ies) deleted."
+        if self.kept_verified:
+            out += (
+                f" {len(self.kept_verified)} kept because a human had verified them: "
+                f"{', '.join(self.kept_verified[:5])}"
+            )
+        return out
+
+
+def prune_entries(keep: Iterable[str], *, dry_run: bool = False) -> PruneResult:
+    """Delete `kb_entry` rows that the current pipeline no longer produces.
+
+    `keep` is the full set of entry ids the run just validated. Anything else in
+    the table is from a previous run under different rules or against different
+    paper text, and leaving it there would make the knowledge base the union of
+    every extraction ever run rather than the output of this one.
+
+    `kb_entry_source` rows go with it via `ON DELETE CASCADE`; so does anything
+    else keyed on `entry_id`. A human-verified row is reported and kept.
+    """
+    keep_ids = set(keep)
+    with transaction() as conn:
+        rows = conn.execute("SELECT entry_id, human_verified FROM kb_entry").fetchall()
+        stale = [r["entry_id"] for r in rows if r["entry_id"] not in keep_ids]
+        verified = {r["entry_id"] for r in rows if r["human_verified"]}
+
+        deletable = sorted(e for e in stale if e not in verified)
+        protected = sorted(e for e in stale if e in verified)
+
+        if deletable and not dry_run:
+            conn.execute("DELETE FROM kb_entry WHERE entry_id = ANY(%s)", (deletable,))
+
+    return PruneResult(deleted=tuple(deletable), kept_verified=tuple(protected))
+
+
 def kb_counts() -> dict[str, int]:
     """`(n_entries, n_verified)` — the number the review gate moves."""
     with transaction() as conn:
@@ -181,6 +237,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="Validate cached candidates and load survivors.")
     ap.add_argument("--cache", default=str(CACHE_PATH))
     ap.add_argument("--dry-run", action="store_true", help="validate and report, write nothing")
+    ap.add_argument(
+        "--no-prune",
+        action="store_true",
+        help="leave entries the current rules no longer produce in place (they will be stale)",
+    )
+    ap.add_argument(
+        "--sync-papers",
+        action="store_true",
+        help="also write design, evidence tier, citation and year onto the `paper` rows",
+    )
     args = ap.parse_args(list(argv) if argv is not None else None)
 
     candidates = [c for r in read_cache(args.cache) for c in r.candidates]
@@ -190,8 +256,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.dry_run:
         return 0
 
+    if args.sync_papers:
+        from carelite.kb.papers import sync_paper_metadata
+
+        print(sync_paper_metadata())
+
     result = load_entries(report.accepted)
     print(result)
+
+    if not args.no_prune:
+        pruned = prune_entries(e.entry_id for e in report.accepted)
+        print(pruned)
     orphans = orphaned_entries()
     if orphans:
         print(f"  WARNING  {len(orphans)} entr(ies) with no source link: {orphans[:5]}")
@@ -200,7 +275,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     return 0
 
 
-__all__ = ["LoadResult", "entry_params", "kb_counts", "load_entries", "orphaned_entries"]
+__all__ = [
+    "LoadResult",
+    "PruneResult",
+    "entry_params",
+    "kb_counts",
+    "load_entries",
+    "orphaned_entries",
+    "prune_entries",
+]
 
 
 if __name__ == "__main__":

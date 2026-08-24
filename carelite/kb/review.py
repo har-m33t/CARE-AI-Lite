@@ -1,29 +1,37 @@
-"""The human review gate: emit a digest a person can actually check, read back their decisions.
+"""The review digest: an optional aid, and the record of what nobody has checked.
 
-`human_verified` is the column that turns "an LLM proposed this" into "a human
-checked this". Everything else in this lane is machine enforcement; this is the
-only place a person enters the loop, so the digest has to be genuinely
-reviewable rather than a formality. That means showing, per entry:
+This module was written as a required gate. `DECISIONS.md` D4 removed the gate
+rather than tick it falsely, and the distinction matters more than it sounds.
+The knowledge base's provenance claim is now, exactly: **LLM-assisted extraction
+with automated verbatim-span validation, and no human verification.**
+`human_verified` stays FALSE on every entry because that is true, and nothing in
+this module may be used to make it look otherwise. `record_signoff` still works,
+for whoever does a review later; it is a tool, not a step the pipeline is
+waiting on.
 
-- the seven fields as they will be stored,
-- the verbatim span, marked up inside its **surrounding paragraph**, so the
-  reviewer can see the sentence in context and judge whether the entry's
-  finding is a fair reading of it rather than a true sentence bolted to an
-  unrelated claim,
-- the source citation and study design, so an overclaimed tier is visible,
-- and a checkbox.
+So the digest's job changed. It no longer asks a reviewer to complete something.
+It shows what was checked mechanically, states plainly what was not, and gives
+anyone who wants to check the rest everything they need to. Per entry:
 
-The context is the part that makes this real. A digest that printed only the
-quote would let a reviewer confirm the quote exists — which the validator has
-already proved mechanically — without ever checking the thing a machine cannot
-check, which is whether the *entry* follows from the paper. Machine-checkable
-things belong to `validate.py`; a human's time should go to the judgment call.
+- the seven fields as they are stored,
+- the verbatim span, marked up inside its **surrounding paragraph**, so a reader
+  can see the sentence in context and judge whether the entry's finding is a
+  fair reading of it rather than a true sentence bolted to an unrelated claim,
+- the source citation and study design, so the derived tier can be argued with,
+- whether the span relays somebody else's study,
+- and a checkbox, unticked, that a later reviewer may use.
 
-Sign-off round-trips through the digest file itself. The reviewer ticks
-`- [x]` next to entries they accept, saves, and `record_signoff` reads the
-file back and sets `human_verified` for exactly those. No second file to keep
-in sync, and the artifact that records the decision is the same one that shows
-the evidence it was made on.
+The context is what makes the document worth anything. A digest that printed
+only the quote would let a reader confirm the quote exists — which the validator
+has already proved mechanically — without ever reaching the thing a machine
+cannot reach, which is whether the *entry* follows from the paper. That gap is
+the whole of what D4 declines to claim, and the digest should point straight at
+it rather than around it.
+
+Sign-off, if it ever happens, round-trips through the digest file itself: tick
+`- [x]`, save, and `record_signoff` sets `human_verified` for exactly those
+entries. No second file to keep in sync, and the artifact recording the decision
+is the same one that showed the evidence it was made on.
 """
 
 from __future__ import annotations
@@ -38,7 +46,11 @@ from pathlib import Path
 from carelite.config import REPO_ROOT
 from carelite.db.connection import transaction
 from carelite.kb.papers import PAPER_META, load_paper_texts
+from carelite.kb.scope import LOW_OVERLAP_THRESHOLD, takeaway_span_overlap
 from carelite.kb.spans import locate_span, surrounding_context
+
+#: Ranking used only to say which way a tier correction went in the digest.
+_TIER_ORDER = {"emerging": 0, "moderate": 1, "strong": 2}
 
 DIGEST_PATH = REPO_ROOT / "knowledge_base" / "review" / "kb_review_digest.md"
 
@@ -63,32 +75,37 @@ UPDATE kb_entry SET human_verified = %(verified)s WHERE entry_id = ANY(%(entry_i
 
 @dataclass(frozen=True)
 class EntryAudit:
-    """What the pipeline changed about an entry, for the reviewer to see.
+    """What the pipeline decided about an entry, for a reader to see.
 
-    Two of the validator's behaviours alter or stretch what the model produced,
-    and a review gate that hid them would be a rubber stamp:
+    Three of the validator's behaviours change or stretch what the model
+    produced, and a digest that hid them would be decoration:
 
-    - `claimed_tier` is the evidence tier the extraction model asserted. When
-      it differs from the stored tier, the validator lowered it to what the
-      source study design supports. The reviewer should see the overreach, not
-      just the corrected value.
+    - `claimed_tier` is the evidence tier the extraction model asserted. The
+      stored tier is derived from the source's recorded study design, so the
+      two differ whenever the model misjudged the design — in either
+      direction. A reader should see the model's judgment, not only the
+      corrected value.
+    - `second_hand` is set when the span relays a study that is not the paper
+      it was quoted from. Those entries carry a capped tier for a different
+      reason than everything else, and the digest says so where it shows them.
     - `span_via` is how much normalisation locating the quote required.
       ``"glued"`` means it matched only after spaces and hyphens were deleted
       from both sides — almost always a word the PDF extractor split across a
       column break, but the loosest match the validator makes and therefore
-      the one most worth a human eye.
+      the one most worth an eye.
 
-    Neither is stored in `kb_entry`; the schema is frozen and this lane does
-    not amend it. Both are re-derived from the extraction cache at digest time,
-    which keeps one source of truth instead of a sidecar file that can drift.
+    None of it is stored in `kb_entry`; the schema is frozen and this lane does
+    not amend it. All of it is re-derived from the extraction cache at digest
+    time, which keeps one source of truth instead of a sidecar file that drifts.
     """
 
     claimed_tier: str
     stored_tier: str
     span_via: str
+    second_hand: str = ""
 
     @property
-    def tier_downgraded(self) -> bool:
+    def tier_corrected(self) -> bool:
         return self.claimed_tier != self.stored_tier
 
 
@@ -116,6 +133,7 @@ def build_audit() -> dict[str, EntryAudit]:
             claimed_tier=e.claimed_tier.value,
             stored_tier=e.entry.evidence_tier.value,
             span_via=e.span_match_via,
+            second_hand=str(e.second_hand) if e.second_hand else "",
         )
         for e in report.accepted
     }
@@ -195,24 +213,33 @@ def _context_block(row: ReviewRow) -> str:
     return "\n".join(f"> {line}" for line in (body,))
 
 
-#: Takeaway similarity above which two entries are worth a reviewer's attention.
-#: Tuned against the loaded knowledge base: at 0.72 it surfaces two pairs out of
-#: 95 entries, both of them the same paper making the same point through two
-#: different sentences. Lower and it starts flagging any two entries that share
-#: a theme vocabulary; higher and it misses genuine restatements.
+#: Takeaway similarity above which two entries are worth a reader's attention.
+#: Tuned against the loaded knowledge base: at 0.72 it surfaces a handful of
+#: pairs, each the same paper making the same point through two different
+#: sentences. Lower and it flags any two entries that share a theme vocabulary;
+#: higher and it misses genuine restatements.
 OVERLAP_THRESHOLD = 0.72
+
+#: The threshold used *within* one (theme, paper) group. Lower than the global
+#: one on purpose: two entries drawn from the same paper about the same theme
+#: already share their subject, so the question is not "are these related" —
+#: they are, by construction — but "do these say the same thing".
+CLUSTER_THRESHOLD = 0.58
+
+#: A theme drawing this share or more of its entries from a single paper is
+#: single-source in practice, whatever its distinct-paper count says.
+DOMINANCE_THRESHOLD = 0.60
 
 
 def overlapping_pairs(
     rows: Sequence[ReviewRow], *, threshold: float = OVERLAP_THRESHOLD
 ) -> list[tuple[ReviewRow, ReviewRow, float]]:
-    """Entry pairs whose takeaways say close to the same thing.
+    """Entry pairs whose takeaways say close to the same thing, anywhere in the base.
 
-    Overlapping extraction windows mean one paper can yield two entries that
-    quote different sentences in support of the same practical advice. The
-    validator cannot reject these — both spans are real and both entries are
-    well-formed — but counting them as two pieces of evidence overstates the
-    knowledge base, so the reviewer is told where they are and decides.
+    Kept for cross-paper restatement, which `redundancy_clusters` will not see:
+    two different papers reaching the same advice is a genuinely different
+    situation from one paper being quoted nine times, and it is the one case
+    where the duplication does not overstate the evidence.
     """
     out: list[tuple[ReviewRow, ReviewRow, float]] = []
     for i, a in enumerate(rows):
@@ -225,115 +252,367 @@ def overlapping_pairs(
     return sorted(out, key=lambda t: -t[2])
 
 
+#: Numbers of the shape a paper reports a result in: `6.99`, `4.30`, `82.1%`.
+#: Two entries quoting the same statistics block are quoting one result, however
+#: differently their takeaways are worded.
+_STATISTIC = re.compile(r"(?<![A-Za-z0-9.])\d+\.\d+")
+
+
+def _statistics(row: ReviewRow) -> frozenset[str]:
+    return frozenset(_STATISTIC.findall(row.verbatim_span))
+
+
+@dataclass(frozen=True)
+class RedundancyCluster:
+    """Entries from one paper, in one theme, that are making one point."""
+
+    theme: str
+    paper_id: str
+    rows: tuple[ReviewRow, ...]
+    shared_statistics: frozenset[str] = frozenset()
+
+    @property
+    def size(self) -> int:
+        return len(self.rows)
+
+
+def redundancy_clusters(
+    rows: Sequence[ReviewRow], *, threshold: float = CLUSTER_THRESHOLD
+) -> list[RedundancyCluster]:
+    """Group entries that restate each other, within one paper and one theme.
+
+    A pairwise scan was the first version of this and it under-reported the
+    problem badly. Pairs are what you find when the duplication is a pair; the
+    actual shape in this corpus is a *cluster* — ten `activation_sdm` entries
+    from one motivational-interviewing meta-analysis, nine of which amount to
+    "use motivational interviewing", three of them quoting the same statistics
+    block. A pairwise check at a threshold high enough not to drown in
+    theme vocabulary sees a few of those ten and calls it six pairs across the
+    whole base, which reads as a minor tidying job rather than as one paper
+    counted nine times.
+
+    Clustering inside a (theme, paper) group fixes the comparison. Two entries
+    from one paper about one theme already share their subject, so a lower
+    threshold is meaningful there and misleading globally. Single-linkage:
+    entries chain through each other, because A restating B and B restating C
+    is one point made three times whatever A and C look like side by side.
+
+    A shared statistics block joins a cluster regardless of similarity — two
+    takeaways can be worded quite differently and still be quoting the same
+    `MD = 6.99`.
+    """
+    groups: dict[tuple[str, str], list[ReviewRow]] = {}
+    for row in rows:
+        groups.setdefault((row.theme, row.primary_paper), []).append(row)
+
+    clusters: list[RedundancyCluster] = []
+    for (theme, paper_id), members in groups.items():
+        if len(members) < 2:
+            continue
+        parent = list(range(len(members)))
+
+        def find(i: int, parent: list[int] = parent) -> int:
+            while parent[i] != i:
+                parent[i] = parent[parent[i]]
+                i = parent[i]
+            return i
+
+        def union(i: int, j: int, parent: list[int] = parent) -> None:
+            ri, rj = find(i, parent), find(j, parent)
+            if ri != rj:
+                parent[max(ri, rj)] = min(ri, rj)
+
+        stats = [_statistics(m) for m in members]
+        for i in range(len(members)):
+            for j in range(i + 1, len(members)):
+                ratio = difflib.SequenceMatcher(
+                    None,
+                    members[i].practical_takeaway.lower(),
+                    members[j].practical_takeaway.lower(),
+                ).ratio()
+                if ratio >= threshold or (stats[i] and stats[i] & stats[j]):
+                    union(i, j)
+
+        buckets: dict[int, list[int]] = {}
+        for i in range(len(members)):
+            buckets.setdefault(find(i), []).append(i)
+        for indices in buckets.values():
+            if len(indices) < 2:
+                continue
+            shared: frozenset[str] = frozenset()
+            for a in range(len(indices)):
+                for b in range(a + 1, len(indices)):
+                    shared |= stats[indices[a]] & stats[indices[b]]
+            clusters.append(
+                RedundancyCluster(
+                    theme=theme,
+                    paper_id=paper_id,
+                    rows=tuple(members[i] for i in indices),
+                    shared_statistics=shared,
+                )
+            )
+    return sorted(clusters, key=lambda c: (-c.size, c.theme, c.paper_id))
+
+
+@dataclass(frozen=True)
+class ThemeCoverage:
+    """How independent a theme's entries actually are."""
+
+    theme: str
+    n_entries: int
+    n_papers: int
+    dominant_paper: str
+    dominant_count: int
+
+    @property
+    def dominant_share(self) -> float:
+        return self.dominant_count / self.n_entries if self.n_entries else 0.0
+
+    @property
+    def single_source_in_effect(self) -> bool:
+        """One paper carries most of the theme, even though others appear in it.
+
+        The distinct-paper count is the number the coverage table used to report
+        on its own, and it flatters a theme badly: `teach_back` at 17 entries
+        over 4 papers looks like a four-paper theme and is in practice one
+        paper's, with three entries from elsewhere. A write-up that treats those
+        17 as convergent evidence is wrong about its own knowledge base.
+        """
+        return self.n_entries > 1 and self.dominant_share >= DOMINANCE_THRESHOLD
+
+
+def theme_coverage(rows: Sequence[ReviewRow]) -> list[ThemeCoverage]:
+    """Per-theme entry counts, source counts, and how concentrated the sources are."""
+    by_theme: dict[str, list[ReviewRow]] = {}
+    for row in rows:
+        by_theme.setdefault(row.theme, []).append(row)
+
+    out: list[ThemeCoverage] = []
+    for theme, theme_rows in sorted(by_theme.items()):
+        counts: dict[str, int] = {}
+        for row in theme_rows:
+            counts[row.primary_paper] = counts.get(row.primary_paper, 0) + 1
+        dominant, dominant_count = max(counts.items(), key=lambda kv: (kv[1], kv[0]))
+        out.append(
+            ThemeCoverage(
+                theme=theme,
+                n_entries=len(theme_rows),
+                n_papers=len(counts),
+                dominant_paper=dominant,
+                dominant_count=dominant_count,
+            )
+        )
+    return out
+
+
 def render_digest(
     rows: Sequence[ReviewRow],
     *,
     generated_at: dt.datetime | None = None,
     audit: Mapping[str, EntryAudit] | None = None,
 ) -> str:
-    """Render the full review digest as Markdown."""
+    """Render the full digest as Markdown."""
     stamp = (generated_at or dt.datetime.now(dt.UTC)).strftime("%Y-%m-%d %H:%M UTC")
     audit = {} if audit is None else audit
     total = len(rows)
     verified = sum(1 for r in rows if r.human_verified)
     audits = [audit.get(r.entry_id) for r in rows]
-    downgraded = sum(1 for x in audits if x and x.tier_downgraded)
+    corrected = sum(1 for x in audits if x and x.tier_corrected)
     glued = sum(1 for x in audits if x and x.span_via == "glued")
+    second_hand = sum(1 for x in audits if x and x.second_hand)
 
     by_theme: dict[str, list[ReviewRow]] = {}
     for row in rows:
         by_theme.setdefault(row.theme, []).append(row)
 
-    source_counts: dict[str, int] = {}
-    for row in rows:
-        source_counts[row.primary_paper] = source_counts.get(row.primary_paper, 0) + 1
-
     out: list[str] = [
-        "# Knowledge Base Review Digest",
+        "# Knowledge Base Digest",
         "",
-        f"Generated {stamp}. {total} entr(ies) loaded, {verified} already signed off.",
+        f"Generated {stamp}. {total} entr(ies) loaded, {verified} carrying a recorded review.",
         "",
-        "Every entry below passed automated provenance validation: its quoted span was",
-        "located in the extracted text of the paper it cites, and what is stored is the",
-        "paper's own wording rather than the model's rendering of it — the span you see",
-        "marked in the context block is a literal slice of the source document. Matching",
-        "folds only rendering differences: ligatures, quotation glyphs, dashes, hyphenated",
-        "line breaks, whitespace, case, and (where flagged) the spaces and hyphens a PDF",
-        "extractor invents at a column break. That much is already proven mechanically and",
-        "is not what you are being asked to check.",
+        "## What has been checked, and what has not",
         "",
-        "**What to check, per entry:** does the *finding* follow from the quoted sentence in",
-        "the context shown, or has a true sentence been attached to a claim it does not",
-        "support? Is the *takeaway* something a clinician could actually do mid-encounter?",
-        "Is the *evidence tier* honest about the study design named beside it?",
+        "This document is **not a gate**. `DECISIONS.md` D4 dropped the human-verification",
+        "requirement rather than tick it without anyone having read anything, so the claim",
+        "the knowledge base makes is now exactly this: **LLM-assisted extraction with",
+        "automated verbatim-span validation, and no human verification.** `human_verified`",
+        "is FALSE on every entry because that is the true record, not because a review is",
+        "pending.",
         "",
-        "## What the pipeline changed, and why you are being told",
+        "**What is mechanically established.** Every entry's quoted span was located in the",
+        "extracted text of the paper it cites, and what is stored is a literal slice of that",
+        "source rather than the model's rendering of it — the marked text in each context",
+        "block is the document's own characters. Matching folds only rendering differences:",
+        "ligatures, quotation glyphs, dashes, hyphenated line breaks, whitespace, case, and",
+        "(where flagged) the spaces and hyphens a PDF extractor invents at a column break.",
+        "Candidates were rejected for a fabricated span, a span too short to carry evidence,",
+        "a takeaway that named no action, a subject matter `TAXONOMY.md` excludes, or a",
+        "finding the span does not report; the rejection counts are enumerated by",
+        "`carelite.kb.validate`, and the fabrication rate was measured rather than estimated.",
         "",
-        f"**Evidence tier corrected on {downgraded} of {total} entries.** The extraction model",
-        "judges a tier from the passage in front of it, which routinely overshoots: it sees a",
-        "confident result and calls it `strong` without knowing the paper is a survey or a",
-        "study protocol. The validator lowers the tier to what the recorded study design",
-        "supports rather than discarding the entry, because the span, theme, finding and",
-        "takeaway are untouched by a tier error and there is a derivable right answer to",
-        "substitute — unlike a fabricated quote, where there is none. Every corrected entry",
-        "below prints the model's original claim next to the stored value, so the overreach",
-        "is visible rather than laundered. **If you think a correction went the wrong way,",
-        "that is a review finding — leave the entry unticked and say so.**",
+        "**What is not established, by anyone.** Whether each *finding* actually follows",
+        "from its *span* — whether a true sentence has been attached to a claim it does not",
+        "support. No automated check can do this and no person has done it. Any result that",
+        "depends on knowledge base quality inherits that limitation.",
+        "",
+        "So the entries below are worth reading in the same order of suspicion the pipeline",
+        "would: the finding against the quoted sentence in its context, then the takeaway",
+        "against the finding, then the tier against the design.",
+        "",
+        "## What the pipeline decided, and why you are being told",
+        "",
+        f"**Evidence tier is derived from the study design, not from the model, on all "
+        f"{total} entries; {corrected} differ from what the model claimed.** The extraction",
+        "model judges a tier from the passage in front of it, and it misses in both",
+        "directions — calling a survey `strong` because the result sounded confident, or a",
+        "randomised trial `emerging` because the sentence was hedged. An earlier version of",
+        "this pipeline only capped overclaims, which left four papers carrying entries at",
+        "more than one tier and one carrying entries at all three. `README.md` defines",
+        "evidence strength as a property of the source, so that was incoherent: two entries",
+        "citing one paper cannot honestly carry different strengths. The tier now comes from",
+        "the recorded design outright. Each corrected entry prints the model's own claim",
+        "beside the stored value, so nothing is laundered — **if you think a correction went",
+        "the wrong way, that is a finding about the design label, and the design label is in",
+        "`carelite/kb/papers.py` where it can be argued with.**",
+        "",
+        f"**{second_hand} entr(ies) quote a span that relays somebody else's study.** A",
+        "systematic review's summary of a trial is a legitimate quotation, but that trial is",
+        "not in this corpus, and stamping the entry `strong` because the *review* is strong",
+        "asserts we hold evidence we do not hold. Those entries are marked `second-hand`",
+        "below and their tier is capped at what this corpus can vouch for: `moderate` when a",
+        "systematic review or meta-analysis is doing the relaying, `emerging` otherwise.",
+        "This is the one place two entries from one paper may honestly differ in tier.",
         "",
         f"**{glued} entr(ies) matched only after layout-glue normalisation.** Their quote was",
         "located only once spaces and hyphens were deleted from both sides, which almost",
         "always means the PDF text extractor split a word across a column break (`show ing`)",
         "or joined one across a line break (`healthrelated`). These are marked. The stored",
         "span is still the paper's own text, artefact and all — but they are the loosest",
-        "matches the validator makes, so they are worth your eye first.",
+        "matches the validator makes, so they are worth an eye first.",
         "",
-        "Tick `- [x]` beside each entry you accept, save this file, then run:",
+        "## If you do review these",
+        "",
+        "Nothing requires it, and nothing downstream is waiting on it. If you want the",
+        "record to show that a person read an entry, tick `- [x]` beside it, save this file,",
+        "and run:",
         "",
         "```",
         "python -m carelite.kb.review --signoff --reviewer <your-name>",
         "```",
         "",
-        "Entries left unticked stay `human_verified = FALSE`. Nothing is deleted by",
-        "signing off, so an entry you reject can be discussed rather than vanishing.",
+        "Only ticked entries change. Unticked entries stay `human_verified = FALSE`, which",
+        "is what they should be if nobody has read them. Signing off deletes nothing, so an",
+        "entry you would reject can be discussed rather than vanishing.",
         "",
         "## Coverage",
         "",
-        "| Theme | Entries | Distinct source papers |",
-        "|---|---|---|",
+        "| Theme | Entries | Source papers | Largest single source |",
+        "|---|---|---|---|",
     ]
 
-    for theme, theme_rows in sorted(by_theme.items()):
-        distinct = len({r.primary_paper for r in theme_rows})
-        flag = "  **single-source**" if distinct == 1 and len(theme_rows) > 1 else ""
-        out.append(f"| {theme} | {len(theme_rows)} | {distinct}{flag} |")
+    coverage = theme_coverage(rows)
+    for cov in coverage:
+        if cov.n_papers == 1 and cov.n_entries > 1:
+            flag = " **single-source**"
+        elif cov.single_source_in_effect:
+            flag = " **single-source in effect**"
+        else:
+            flag = ""
+        out.append(
+            f"| {cov.theme} | {cov.n_entries} | {cov.n_papers} | "
+            f"{cov.dominant_count}/{cov.n_entries} ({cov.dominant_share:.0%}) "
+            f"`{cov.dominant_paper}`{flag} |"
+        )
 
+    effective = [c for c in coverage if c.single_source_in_effect and c.n_papers > 1]
     out += [
         "",
-        "A theme marked **single-source** draws every one of its entries from one paper.",
-        "Those entries are individually well-evidenced but they are not independent of each",
-        "other, and the write-up must not present them as convergent evidence.",
+        "A theme marked **single-source** draws every entry from one paper. A theme marked",
+        "**single-source in effect** draws most of them from one paper while listing several",
+        f"— the distinct-paper count flatters it. {'Here that is: ' if effective else ''}"
+        + (
+            "; ".join(
+                f"`{c.theme}` ({c.dominant_count} of {c.n_entries} from `{c.dominant_paper}`)"
+                for c in effective
+            )
+            + "."
+            if effective
+            else "No theme is currently in that position."
+        ),
+        "Entries in either kind of theme are individually evidenced but are not independent",
+        "of each other, and the write-up must not present them as convergent evidence.",
         "",
     ]
 
-    overlaps = overlapping_pairs(rows)
-    if overlaps:
+    clusters = redundancy_clusters(rows)
+    if clusters:
+        clustered = sum(c.size for c in clusters)
         out += [
-            "## Entries that may restate each other",
+            "## Entries that restate each other",
             "",
-            "Both entries in each pair below are valid — real span, real source — but their",
-            "takeaways say close to the same thing, usually because two overlapping extraction",
-            "windows found two sentences supporting one point. Counting both would overstate",
-            "the evidence. Consider ticking one and leaving the other, or ticking both if they",
-            "really are distinct advice.",
+            f"{clustered} entr(ies) fall into {len(clusters)} cluster(s) where one paper is",
+            "making one point through several quoted sentences. Every entry in them is valid",
+            "— real span, real source — but they are not independent evidence, and counting",
+            "them as separate support overstates the knowledge base. Clustering is done within",
+            "a single (theme, paper) group, because two entries from one paper about one theme",
+            "already share their subject; the question is whether they share their *claim*.",
+            "Entries quoting the same statistics block are grouped whatever their wording.",
             "",
         ]
-        for left, right, ratio in overlaps:
-            same = "same paper" if left.primary_paper == right.primary_paper else "different papers"
+        for cluster in clusters:
+            meta = PAPER_META.get(cluster.paper_id)
+            citation = meta.short_citation if meta else cluster.paper_id
+            stats = (
+                f" — all quoting {', '.join(sorted(cluster.shared_statistics))}"
+                if cluster.shared_statistics
+                else ""
+            )
             out += [
-                f"- {ratio:.0%} similar, {same} — `{left.entry_id}` and `{right.entry_id}`",
+                f"- **{cluster.size} entries**, `{cluster.theme}`, {citation}{stats}",
+            ]
+            out += [f"  - `{r.entry_id}` — {r.practical_takeaway}" for r in cluster.rows]
+        out.append("")
+
+    cross_paper = [
+        (a, b, ratio)
+        for a, b, ratio in overlapping_pairs(rows)
+        if a.primary_paper != b.primary_paper
+    ]
+    if cross_paper:
+        out += [
+            "## Near-duplicate takeaways across different papers",
+            "",
+            "Unlike the clusters above, these are two papers arriving at the same advice, which",
+            "is convergent evidence rather than double-counting. Listed so a reader can see the",
+            "wording is nearly identical and decide whether both entries earn their place.",
+            "",
+        ]
+        for left, right, ratio in cross_paper:
+            out += [
+                f"- {ratio:.0%} similar — `{left.entry_id}` and `{right.entry_id}`",
                 f"  - {left.practical_takeaway}",
                 f"  - {right.practical_takeaway}",
             ]
+        out.append("")
+
+    low_overlap = [
+        (row, takeaway_span_overlap(row.practical_takeaway, row.verbatim_span)) for row in rows
+    ]
+    low_overlap = [(r, o) for r, o in low_overlap if o < LOW_OVERLAP_THRESHOLD]
+    if low_overlap:
+        out += [
+            "## Takeaways that share little vocabulary with their span",
+            "",
+            f"{len(low_overlap)} entr(ies) whose takeaway repeats almost none of the words in",
+            "the sentence it cites. **This is a pointer, not a defect** — a good takeaway often",
+            "paraphrases rather than echoes, and several entries here are fine. It is listed",
+            "because the one thing nobody has checked is whether a takeaway is *supported by*",
+            "its span or merely sits next to it, and low vocabulary overlap is the cheapest",
+            "place to start looking.",
+            "",
+        ]
+        for row, overlap in sorted(low_overlap, key=lambda t: t[1]):
+            out.append(f"- {overlap:.0%} — `{row.entry_id}` — {row.practical_takeaway}")
         out.append("")
 
     for theme, theme_rows in sorted(by_theme.items()):
@@ -346,16 +625,28 @@ def render_digest(
             phases = ", ".join(row.encounter_phase) or "-"
             entry_audit = audit.get(row.entry_id)
 
-            if entry_audit and entry_audit.tier_downgraded:
+            if entry_audit and entry_audit.tier_corrected:
+                direction = (
+                    "up"
+                    if _TIER_ORDER[entry_audit.claimed_tier] < _TIER_ORDER[row.evidence_tier]
+                    else "down"
+                )
                 tier_line = (
                     f"  `{row.primary_paper}` — {design}  \n"
-                    f"  Evidence tier **{row.evidence_tier}** "
-                    f"— corrected down from the model's claim of "
-                    f"*{entry_audit.claimed_tier}*, which this design does not support"
+                    f"  Evidence tier **{row.evidence_tier}**, derived from that design "
+                    f"— corrected {direction} from the model's claim of "
+                    f"*{entry_audit.claimed_tier}*"
                 )
             else:
                 tier_line = (
-                    f"  `{row.primary_paper}` — {design} — evidence tier **{row.evidence_tier}**"
+                    f"  `{row.primary_paper}` — {design} — evidence tier "
+                    f"**{row.evidence_tier}**, derived from that design"
+                )
+            if entry_audit and entry_audit.second_hand:
+                tier_line += (
+                    f"  \n  **Second-hand:** the span {entry_audit.second_hand}. The evidence "
+                    "belongs to a study outside this corpus, so the tier is capped at what "
+                    "this corpus can vouch for rather than set by the design above."
                 )
 
             out += [
@@ -475,16 +766,22 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 __all__ = [
+    "CLUSTER_THRESHOLD",
     "DIGEST_PATH",
+    "DOMINANCE_THRESHOLD",
     "EntryAudit",
+    "RedundancyCluster",
     "ReviewRow",
+    "ThemeCoverage",
     "apply_signoff",
     "build_audit",
     "fetch_review_rows",
     "overlapping_pairs",
     "parse_signoff",
     "record_signoff",
+    "redundancy_clusters",
     "render_digest",
+    "theme_coverage",
     "write_digest",
 ]
 

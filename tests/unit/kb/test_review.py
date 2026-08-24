@@ -100,7 +100,24 @@ class TestRenderDigest:
         out = render_digest([_row(tier="emerging")], audit=audit)
         assert "Evidence tier **emerging**" in out
         assert "corrected down from the model's claim of *strong*" in out
-        assert "Evidence tier corrected on 1 of 1 entries" in out
+        assert "1 differ from what the model claimed" in out
+
+    def test_an_underclaimed_tier_is_shown_as_corrected_up(self) -> None:
+        """The direction the ceiling version could not report, because it never went that way."""
+        audit = {"kb-teach_back-0123456789": EntryAudit("emerging", "strong", "exact")}
+        out = render_digest([_row(tier="strong")], audit=audit)
+        assert "corrected up from the model's claim of *emerging*" in out
+
+    def test_a_second_hand_span_is_marked_and_explained(self) -> None:
+        """A capped tier that looked arbitrary is the defect; the label is the fix."""
+        audit = {
+            "kb-teach_back-0123456789": EntryAudit(
+                "strong", "moderate", "exact", second_hand="relays one other study: A second RCT"
+            )
+        }
+        out = render_digest([_row(tier="moderate")], audit=audit)
+        assert "**Second-hand:**" in out
+        assert "outside this corpus" in out
 
     def test_a_glued_span_match_is_flagged_for_the_reviewer(self) -> None:
         audit = {"kb-teach_back-0123456789": EntryAudit("strong", "strong", "glued")}
@@ -132,6 +149,7 @@ class TestRenderDigest:
         ]
         out = render_digest(rows)
         assert "| empathy | 2 | 2 |" in out
+        assert "single-source" not in out.split("## Coverage")[1].split("|\n\n")[0]
 
     def test_warns_when_a_span_no_longer_appears_in_the_paper(self) -> None:
         """A digest must never present an unlocatable span as reviewable."""
@@ -152,16 +170,16 @@ class TestRenderDigest:
         b = _row(entry_id="kb-teach_back-0000000002")
         b.practical_takeaway = "Ask the patient to restate the plan in their own words please."
         out = render_digest([a, b])
-        assert "Entries that may restate each other" in out
+        assert "Entries that restate each other" in out
         assert "kb-teach_back-0000000001" in out
-        assert "same paper" in out
+        assert "**2 entries**" in out
 
     def test_distinct_takeaways_produce_no_overlap_section(self) -> None:
         a = _row(entry_id="kb-teach_back-0000000001")
         b = _row(entry_id="kb-empathy-0000000002", theme="empathy")
         b.practical_takeaway = "Name the emotion you have just heard before moving to the plan."
         out = render_digest([a, b])
-        assert "Entries that may restate each other" not in out
+        assert "Entries that restate each other" not in out
 
     def test_coverage_table_counts_entries_per_theme(self) -> None:
         rows = [
@@ -349,3 +367,103 @@ class TestSignoffAgainstPostgres:
         assert row is not None
         assert row["finding"] == "seeded finding, reloaded", "the reload should have happened"
         assert row["human_verified"] is True, "and must not have cleared the sign-off"
+
+
+class TestRedundancyClusters:
+    """Pairs were the wrong unit. The duplication in this corpus comes in clusters.
+
+    A pairwise scan at a threshold high enough not to drown in shared theme
+    vocabulary reported six pairs across 127 entries, which reads as a tidying
+    job. The actual shape was ten `activation_sdm` entries from one
+    motivational-interviewing meta-analysis, nine of them amounting to "use
+    motivational interviewing", three quoting the same statistics block — one
+    paper counted nine times.
+    """
+
+    def _mi_row(self, n: int, takeaway: str, span: str = SPAN) -> ReviewRow:
+        row = _row(entry_id=f"kb-activation_sdm-{n:010d}", theme="activation_sdm")
+        row.practical_takeaway = takeaway
+        row.verbatim_span = span
+        return row
+
+    def test_three_restatements_form_one_cluster_not_three_pairs(self) -> None:
+        from carelite.kb.review import redundancy_clusters
+
+        rows = [
+            self._mi_row(1, "Use motivational interviewing to support behaviour change."),
+            self._mi_row(2, "Use motivational interviewing to support behavior change."),
+            self._mi_row(3, "Use motivational interviewing to help support behaviour change."),
+        ]
+        clusters = redundancy_clusters(rows)
+        assert len(clusters) == 1
+        assert clusters[0].size == 3
+
+    def test_a_shared_statistics_block_clusters_differently_worded_takeaways(self) -> None:
+        """Two takeaways can read quite differently and still quote one result."""
+        from carelite.kb.review import redundancy_clusters
+
+        rows = [
+            self._mi_row(
+                1,
+                "Use motivational interviewing when a patient is ambivalent about change.",
+                "the pooled analysis found MD = 6.99 (95% CI 4.30 to 9.68)",
+            ),
+            self._mi_row(
+                2,
+                "Ask open questions and reflect back rather than instructing the patient.",
+                "adherence improved, MD = 6.99, across the included trials",
+            ),
+        ]
+        clusters = redundancy_clusters(rows)
+        assert len(clusters) == 1
+        assert "6.99" in clusters[0].shared_statistics
+
+    def test_entries_from_different_papers_are_never_clustered(self) -> None:
+        """Two papers reaching one conclusion is convergence, not double-counting."""
+        from carelite.kb.review import redundancy_clusters
+
+        a = self._mi_row(1, "Use motivational interviewing to support behaviour change.")
+        b = self._mi_row(2, "Use motivational interviewing to support behaviour change.")
+        b.paper_ids = ["10-1370-afm-348"]
+        assert redundancy_clusters([a, b]) == []
+
+    def test_distinct_advice_from_one_paper_is_not_clustered(self) -> None:
+        from carelite.kb.review import redundancy_clusters
+
+        rows = [
+            self._mi_row(1, "Ask the patient to explain the plan back in their own words."),
+            self._mi_row(2, "Write the two most important instructions down before they leave."),
+        ]
+        assert redundancy_clusters(rows) == []
+
+
+class TestThemeCoverage:
+    """`teach_back` at 17 entries over 4 papers is one paper's theme, not four."""
+
+    def test_a_dominant_paper_marks_a_theme_single_source_in_effect(self) -> None:
+        from carelite.kb.review import theme_coverage
+
+        rows = [_row(entry_id=f"kb-teach_back-{n:010d}") for n in range(8)]
+        rows.append(_row(entry_id="kb-teach_back-0000000099", paper_ids=["10-1370-afm-348"]))
+        (cov,) = theme_coverage(rows)
+        assert cov.n_papers == 2
+        assert cov.single_source_in_effect is True
+        assert cov.dominant_share == pytest.approx(8 / 9)
+
+    def test_an_evenly_sourced_theme_is_not_flagged(self) -> None:
+        from carelite.kb.review import theme_coverage
+
+        rows = [
+            _row(entry_id="kb-teach_back-0000000001"),
+            _row(entry_id="kb-teach_back-0000000002", paper_ids=["10-1370-afm-348"]),
+            _row(entry_id="kb-teach_back-0000000003", paper_ids=["10-3390-pharmacy6010018"]),
+        ]
+        (cov,) = theme_coverage(rows)
+        assert cov.single_source_in_effect is False
+
+    def test_the_digest_names_the_themes_that_are_single_source_in_effect(self) -> None:
+        rows = [_row(entry_id=f"kb-teach_back-{n:010d}") for n in range(8)]
+        rows.append(_row(entry_id="kb-teach_back-0000000099", paper_ids=["10-1370-afm-348"]))
+        out = render_digest(rows)
+        assert "single-source in effect" in out
+        assert "8 of 9 from" in out
