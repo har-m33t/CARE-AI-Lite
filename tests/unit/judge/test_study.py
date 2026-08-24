@@ -21,7 +21,9 @@ from carelite.eval.human.dry_run import (
     dry_run,
 )
 from carelite.eval.judge.study import (
+    EXCLUDED_CONDITIONS,
     N_SUBSET_SCENARIOS,
+    SUBSET_CONDITIONS,
     _require_train,
     agreement_against_synthetic,
     load_generations,
@@ -52,10 +54,25 @@ def test_the_subset_spans_every_challenge_type() -> None:
     assert len({s.challenge_type for s in scenarios}) == N_SUBSET_SCENARIOS
 
 
-def test_the_subset_is_sixty_responses_over_all_six_conditions() -> None:
+def test_the_subset_covers_every_condition_it_claims_to() -> None:
     scenarios, cells = select_subset()
-    assert len(cells) == len(scenarios) * len(Condition) == 60
-    assert {c.condition for c in cells} == {c.value for c in Condition}
+    assert len(cells) == len(scenarios) * len(SUBSET_CONDITIONS) == 50
+    assert {c.condition for c in cells} == {c.value for c in SUBSET_CONDITIONS}
+
+
+def test_the_excluded_condition_is_absent_and_named() -> None:
+    """LC is dropped for a measured reason (~21 min/generation on this hardware).
+    A narrowed sample that a reader cannot reconstruct is the problem; a named
+    one is a decision."""
+    _, cells = select_subset()
+    assert EXCLUDED_CONDITIONS == (Condition.LC,)
+    assert Condition.LC.value not in {c.condition for c in cells}
+    assert set(SUBSET_CONDITIONS) | set(EXCLUDED_CONDITIONS) == set(Condition)
+
+
+def test_conditions_can_be_overridden() -> None:
+    _, cells = select_subset(conditions=[Condition.A, Condition.D])
+    assert {c.condition for c in cells} == {"A", "D"}
 
 
 def test_the_subset_clears_the_threshold_s_minimum_unit_count() -> None:
