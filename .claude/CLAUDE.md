@@ -6,11 +6,33 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 CARELite AI is a research/prototyping project from the DBMI Summer Internship at the University of Arizona College of Medicine – Phoenix (June 8 – August 15, 2026). It is **primarily a documentation and knowledge-engineering repo, not an application**. The deliverables are a structured knowledge base, a behavior list, a prompt architecture, and an evaluation framework — all grounded in a corpus of ~50 peer-reviewed papers on clinician–patient communication.
 
-There is no build system, package manager, test suite, or application code. The only executable file today is `data/fetch_corpus.py`.
+The project has since been built out. There is a `carelite/` package (thirteen subpackages), a
+`pyproject.toml`, a `Makefile`, and a pytest suite in the four figures. Verify with `make check`.
+Postgres 18.6 + pgvector holds the corpus, knowledge base, scenarios, and every experimental result;
+`carelite/db/schema.sql` is the authority on its shape.
 
-## Current state vs. README
+## Orientation — read these before assuming anything
 
-`README.md` documents the *intended* layout (`literature/`, `framework/`, `knowledge_base/`, `behaviors/`, `docs/`). **None of those directories exist yet.** The working tree contains only `README.md` and `data/fetch_corpus.py`. When creating those documents, follow the README's structure and file names rather than inventing new ones.
+The single most common way to be wrong about this repository is to trust a planning document
+over the working tree. **The planning documents undercount and go stale; the tree and the
+database are the authority.** Check before you assert.
+
+- **`DECISIONS.md`** (repo root) — decisions D1–D6, each with its reasoning. Settled; raise an
+  objection rather than re-opening one in passing. Owned by the orchestrating session.
+- **`docs/limitations.md`** — what this project cannot claim, kept current.
+- **`docs/preregistration.md`** — the analysis plan, fixed in advance. It must be registered
+  before any evaluation data is generated.
+- **`.claude/agents/*.md`** — fourteen lane definitions. **The ownership table is the contract
+  that makes parallel work on `main` safe.** No agent writes a path another agent owns. If a file
+  belongs to nobody, stop and report it rather than editing it.
+
+Two decisions that change what you may write:
+
+- **D1** settled the theme count at **seven**. The "10 themes" figure in build plan v3 has no
+  referent anywhere and is retired.
+- **D4** retired the human-verification claim. The knowledge base is **LLM-assisted extraction
+  with automated verbatim-span validation and no human verification**. Never describe it, in code,
+  docstrings, prompts, or user-facing strings, as human-verified or clinician-reviewed.
 
 ## Corpus retrieval
 
