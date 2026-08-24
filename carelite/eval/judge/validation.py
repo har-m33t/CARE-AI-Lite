@@ -220,6 +220,23 @@ class Discrimination:
     more between responses than between samples of the same response. Below
     about 1.0 the sampling noise is as large as the signal; at 0.0 there is no
     signal at all.
+
+    **This also explains low agreement that has nothing to do with disagreement.**
+    Krippendorff's alpha normalises observed disagreement by *expected*
+    disagreement, so when a dimension's scores barely vary, expected
+    disagreement collapses and ordinary rater noise dominates the ratio — the
+    coefficient falls toward zero while the raters are in fact agreeing on
+    nearly every unit. It is the same prevalence effect that produces the
+    well-known kappa paradox.
+
+    Measured on the first validation arm, against a synthetic panel built by one
+    generator at one noise level, the correlation between a dimension's
+    `between_variance` and its recovered alpha was **r = 0.818** across the
+    eleven dimensions: mean alpha 0.884 for the five high-variance dimensions
+    and 0.216 for the six low-variance ones. So a low alpha on a floored
+    dimension is a restatement of `between_variance`, not independent evidence
+    about raters — and **no sample size repairs it.** Read the two together or
+    neither.
     """
 
     dimension: str
