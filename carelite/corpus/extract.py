@@ -5,15 +5,23 @@ separated by blank lines, so `carelite.corpus.chunk` needs no changes for
 either):
 
 - **PDF** (`extract_pdf`, via pymupdf): strips running headers/footers
-  (lines that repeat near the top/bottom of many pages), the reference
-  list, and figure/table captions — all heuristic, since a PDF has no
-  structure beyond page geometry.
+  (lines that repeat near the top/bottom of many pages, plus a page's own
+  "N / M" pagination line), the reference list, and figure/table captions —
+  all heuristic, since a PDF has no structure beyond page geometry.
 - **XML** (`extract_xml_jats`): PMC/Europe PMC full-text is JATS XML with
   real `<sec>`/`<p>`/`<title>` structure. References (`<back>`), figures,
   and tables are skipped by construction — walking only `<front>/abstract`
   and `<body>`, and never descending into `<fig>`/`<table-wrap>` — rather
   than pattern-matched after the fact, so this source is more reliable, not
   less, than the PDF path for the same cleanup job.
+
+Both paths finish with `_fix_layout_artefacts`, which repairs two distinct
+word-level PDF extraction artefacts — see that function's docstring and
+`_rejoin_split_words`/`_fix_glued_words` for what is and is not attempted,
+and why: a general "any glued word" detector was built and measured against
+the full corpus during development and rejected for its false-positive
+rate (it "fixed" real words like "healthcare" and names like "Pearson"
+into nonsense); what shipped is deliberately narrower.
 
 `extract_source` dispatches on file suffix; `extract_corpus` picks up every
 `.pdf` and `.xml` file in a directory. Extraction failures (a file that
@@ -29,6 +37,7 @@ import xml.etree.ElementTree as ElementTree
 from collections import Counter
 from collections.abc import Iterator
 from dataclasses import dataclass, field
+from functools import lru_cache
 from pathlib import Path
 
 import pymupdf
@@ -70,11 +79,26 @@ def _page_lines(page: pymupdf.Page) -> list[str]:
     return page.get_text("text").splitlines()
 
 
-def _detect_running_headers_footers(pages_lines: list[list[str]], edge_lines: int = 2) -> set[str]:
+def _detect_running_headers_footers(pages_lines: list[list[str]], edge_lines: int = 8) -> set[str]:
     """Lines that repeat near the top/bottom of most pages are headers/footers.
 
     A one- or two-page PDF has nothing to detect repetition against, so this
     is a no-op below `min_pages_for_detection`.
+
+    `edge_lines` was originally 2, which only ever caught a single-line
+    footer. Real running-header/footer blocks are commonly 4-9 lines
+    (journal name, short title, DOI, date, page number — each pymupdf
+    "text"-mode line is one of these), and multi-column layouts can push
+    that block several lines further in from the literal top/bottom of the
+    per-page line list (a sidebar column's tail can sort after it in
+    reading order). At `edge_lines=2` most of a PLOS ONE-style footer
+    survived uncleaned and could land mid-sentence once a page break falls
+    inside a sentence — see `extract_pdf`'s docstring. 8 was chosen by
+    measuring the known footer/header blocks in this corpus (PLOS ONE: 4
+    lines + pagination; BMJ Open: ~9-line "Downloaded from ... by guest"
+    watermark) and checking it doesn't start pulling in a repeated
+    multi-page table's column headers as if they were boilerplate — see
+    `tests/unit/corpus/test_extract.py` for both directions pinned.
     """
     n_pages = len(pages_lines)
     if n_pages < 3:
@@ -94,6 +118,20 @@ def _detect_running_headers_footers(pages_lines: list[list[str]], edge_lines: in
     return {line for line, c in counts.items() if c >= threshold}
 
 
+#: A page's own "N / M" pagination line (e.g. "5 / 16"). Unlike the rest of
+#: a running footer this text is *different on every page*, so it can never
+#: clear `_detect_running_headers_footers`'s repeated-line threshold — it
+#: needs its own pattern-based check. Validated against the whole corpus:
+#: every match is a genuine page number (the exact same three PLOS ONE
+#: papers that have a "PLOS ONE | https://doi.org/..." footer, each ratio
+#: matching `<page index> / <page count>`), and no other paper's body text
+#: matches this pattern at all — no fraction, ratio, or score written on a
+#: line by itself. Still gated on `n_pages >= 3` for consistency with the
+#: header/footer detector above, even though the pattern itself carries no
+#: repetition requirement.
+_PAGE_NUMBER_RE = re.compile(r"^\d{1,4}\s*/\s*\d{1,4}$")
+
+
 def _strip_references_section(text: str) -> str:
     """Cut everything from the first standalone 'References' heading onward."""
     lines = text.splitlines()
@@ -110,6 +148,191 @@ def _strip_figure_captions(text: str) -> str:
 
 def _collapse_blank_runs(text: str) -> str:
     return _BLANK_RUN_RE.sub("\n\n", text).strip()
+
+
+# ---------------------------------------------------------------------------
+# Word-level layout artefacts: PDF column breaks and dropped line-wrap spaces
+# ---------------------------------------------------------------------------
+#
+# pymupdf's line-based text extraction occasionally does the opposite thing
+# to a word depending on layout: a multi-column page can split one word
+# across two "lines" ("collabora" / "tive"), landing in the extracted text
+# as two space-separated fragments once lines are joined; a line-wrap can
+# instead drop the boundary entirely, landing as one glued token
+# ("healthrelated"). Both corrupt the token stream that gets embedded and
+# full-text indexed — "healthrelated" doesn't match a search for
+# "health-related", and a stray fragment like "tive" tokenises as noise.
+#
+# A general "is this token a real word" detector was the first approach
+# tried for *both* directions, backed by a large English wordlist
+# (`_wordlist.txt`, derived from the system dictionary). It works cleanly
+# for the split-and-rejoin direction (`_rejoin_split_words` below) because
+# requiring *both* space-separated fragments to be absent from the
+# wordlist, with their concatenation present, is a strict enough gate that
+# it produced zero false positives across the full corpus at introduction.
+#
+# It does not work for the glued direction. Run the mirror-image rule
+# (single token absent from the wordlist; unique two-way split where both
+# halves ARE present) against this corpus and the false-positive dictionary
+# gap dominates the output: "healthcare" -> "health"/"care",
+# "checklist" -> "check"/"list", "Pearson" -> "Pears"/"on",
+# "asking" -> "as"/"king", "became" -> "be"/"came" — genuine words, names,
+# and inflected forms that simply happen not to be one of the ~210k lemmas
+# in a general dictionary, each one a real corruption if "fixed". No
+# frequency threshold or corpus-derived vocabulary closed that gap either
+# (a real word used once in 33 papers is indistinguishable, by that
+# signal, from a genuine artefact used once) — see the commit history for
+# the measurements. Shipping that rule would trade a bounded, cosmetic
+# defect for an unbounded, silent one, which is the wrong trade.
+#
+# So the glued direction (`_fix_glued_words` below) is instead a small,
+# hand-verified lookup table of closed-class function-word pairs
+# ("inthe" -> "in the"), the one sub-pattern where every member of the
+# closed set could be checked for collisions against real content. It has
+# high precision and deliberately low recall — an open-class glue like
+# "healthrelated" is left untouched rather than guessed at. A future,
+# properly scoped fix for that case would use pymupdf's word/character
+# bounding boxes (an anomalously small or negative gap between adjacent
+# glyph runs is real evidence of a layout-induced split, independent of
+# any dictionary) rather than text-only heuristics.
+
+_WORDLIST_PATH = Path(__file__).parent / "_wordlist.txt"
+
+
+@lru_cache(maxsize=1)
+def _load_wordlist() -> frozenset[str]:
+    """General-English wordlist backing `_rejoin_split_words` (lowercase,
+    length >= 2, derived from the system dictionary). Loaded once per
+    process. Missing file degrades to "no rejoin fixes applied", not a
+    crash — this is a best-effort cleanup pass, not a required input.
+    """
+    try:
+        with _WORDLIST_PATH.open(encoding="utf-8") as f:
+            return frozenset(line.strip() for line in f if line.strip())
+    except OSError:
+        return frozenset()
+
+
+_ALPHA_TOKEN_RE = re.compile(r"[A-Za-z]+")
+_MIN_FRAGMENT_LEN = 2
+_MIN_REJOINED_LEN = 5
+
+
+def _rejoin_split_words(text: str) -> str:
+    """Repair a PDF column-break word split: "collabora tive" -> "collaborative".
+
+    Fires only when *both* space-separated fragments are absent from the
+    wordlist but their concatenation is present. That's the strict
+    direction on purpose: a pair where either side independently reads as
+    a real word (e.g. "set out", "a bout") is left alone, because that
+    ambiguity can't be resolved from text alone and a wrong merge is worse
+    than a surviving split — see the module-level note above for what this
+    traded off against. Restricted to the same line (a literal space or
+    tab, not a newline): a sentence that genuinely spans a page break is a
+    different phenomenon (the page-join itself, not a word split) and
+    isn't touched here. The length-5 floor on the merged word is a cheap
+    extra guard against short coincidental collisions (e.g. a split
+    citation fragment like "ad et" from "Mahmoudir-ad et al." very nearly
+    matched "adet" during testing) rather than a load-bearing one — the
+    both-fragments-absent gate is what does the real work.
+
+    Scans consecutive alpha tokens explicitly rather than doing a single
+    `re.sub` over a two-token pattern: `re.sub` only returns *non-overlapping*
+    matches, so a naive "word word" regex silently skips every other
+    adjacent pair (in "sta tistically across", it pairs "assessed"/"sta"
+    first and so never even looks at "sta"/"tistically" together) — this
+    was caught by `test_rejoin_split_words_joins_a_second_example` during
+    development.
+    """
+    words = _load_wordlist()
+    if not words:
+        return text
+
+    tokens = list(_ALPHA_TOKEN_RE.finditer(text))
+    merge_at: set[int] = set()
+    for i in range(len(tokens) - 1):
+        a, b = tokens[i], tokens[i + 1]
+        if b.start() - a.end() != 1 or text[a.end() : b.start()] not in (" ", "\t"):
+            continue  # must be same line, separated by exactly one space/tab
+        a_word, b_word = a.group(), b.group()
+        if len(a_word) < _MIN_FRAGMENT_LEN or len(b_word) < _MIN_FRAGMENT_LEN:
+            continue
+        whole = a_word + b_word
+        if (
+            len(whole) >= _MIN_REJOINED_LEN
+            and whole.lower() in words
+            and a_word.lower() not in words
+            and b_word.lower() not in words
+        ):
+            merge_at.add(i)
+
+    if not merge_at:
+        return text
+
+    out: list[str] = []
+    last = 0
+    i = 0
+    n = len(tokens)
+    while i < n:
+        if i in merge_at:
+            a, b = tokens[i], tokens[i + 1]
+            out.append(text[last : a.start()])
+            out.append(a.group() + b.group())
+            last = b.end()
+            i += 2
+        else:
+            i += 1
+    out.append(text[last:])
+    return "".join(out)
+
+
+#: Hand-verified PDF line-wraps that glued a closed-class function word
+#: straight onto its neighbour with no separator at all — distinct from the
+#: column-break *split* `_rejoin_split_words` handles above. Each key was
+#: checked against the full corpus before being added: none collides with a
+#: genuine word, name, or abbreviation (e.g. "isa"/"wasa" were considered
+#: and dropped — both read as plausible names/typos and neither actually
+#: occurs, so there was nothing to gain by keeping them). This is
+#: deliberately a fixed lookup, not a general rule; see the module-level
+#: note above for why a general glued-word detector was rejected.
+_GLUE_FIXES: dict[str, str] = {
+    "inthe": "in the", "ofthe": "of the", "tothe": "to the", "andthe": "and the",
+    "forthe": "for the", "withthe": "with the", "onthe": "on the", "atthe": "at the",
+    "bythe": "by the", "fromthe": "from the", "asthe": "as the", "inthis": "in this",
+    "ofthis": "of this", "tothis": "to this", "onthis": "on this", "atthis": "at this",
+    "hada": "had a", "thatthe": "that the", "whenthe": "when the", "ifthe": "if the",
+    "thisis": "this is", "amongthe": "among the", "overthe": "over the",
+    "underthe": "under the", "sincethe": "since the", "whilethe": "while the",
+    "beforethe": "before the", "afterthe": "after the", "aboutthe": "about the",
+    "aroundthe": "around the", "betweenthe": "between the", "duringthe": "during the",
+    "throughthe": "through the", "acrossthe": "across the", "withinthe": "within the",
+    "withoutthe": "without the", "towardsthe": "towards the", "towardthe": "toward the",
+}  # fmt: skip
+_GLUE_RE = re.compile(r"\b(" + "|".join(re.escape(k) for k in _GLUE_FIXES) + r")\b", re.IGNORECASE)
+
+
+def _fix_glued_words(text: str) -> str:
+    """Repair the fixed, hand-verified glued-word patterns in `_GLUE_FIXES`."""
+
+    def repl(m: re.Match[str]) -> str:
+        matched = m.group(0)
+        fixed = _GLUE_FIXES[matched.lower()]
+        if matched[0].isupper():
+            fixed = fixed[0].upper() + fixed[1:]
+        return fixed
+
+    return _GLUE_RE.sub(repl, text)
+
+
+def _fix_layout_artefacts(text: str) -> str:
+    """Repair word-level PDF/XML layout artefacts. See `_rejoin_split_words`
+    and `_fix_glued_words` for the two patterns this covers, and the
+    module-level note above them for the (larger) pattern this deliberately
+    does not attempt.
+    """
+    text = _fix_glued_words(text)
+    text = _rejoin_split_words(text)
+    return text
 
 
 def extract_pdf(pdf_path: Path | str) -> ExtractedPaper:
@@ -138,9 +361,17 @@ def extract_pdf(pdf_path: Path | str) -> ExtractedPaper:
 
         pages_lines = [_page_lines(doc[page_index]) for page_index in range(doc.page_count)]
         noise = _detect_running_headers_footers(pages_lines)
+        strip_pagination = len(pages_lines) >= 3
         cleaned_pages = []
         for lines in pages_lines:
-            kept = [ln for ln in lines if ln.strip() not in noise]
+            kept = []
+            for ln in lines:
+                stripped = ln.strip()
+                if stripped in noise:
+                    continue
+                if strip_pagination and _PAGE_NUMBER_RE.match(stripped):
+                    continue
+                kept.append(ln)
             cleaned_pages.append("\n".join(kept))
         text = "\n\n".join(cleaned_pages)
     except Exception as e:
@@ -154,6 +385,7 @@ def extract_pdf(pdf_path: Path | str) -> ExtractedPaper:
         text = _strip_references_section(text)
         text = _strip_figure_captions(text)
         text = _collapse_blank_runs(text)
+        text = _fix_layout_artefacts(text)
 
     if not text.strip() and not failures:
         failures.append(ExtractionFailure(str(pdf_path), "extraction produced no usable text"))
@@ -282,6 +514,7 @@ def extract_xml_jats(xml_path: Path | str) -> ExtractedPaper:
     text = "\n\n".join(b for b in blocks if b.strip())
     if text.strip():
         text = _collapse_blank_runs(text)
+        text = _fix_layout_artefacts(text)
 
     if not text.strip() and not failures:
         failures.append(ExtractionFailure(str(xml_path), "extraction produced no usable text"))

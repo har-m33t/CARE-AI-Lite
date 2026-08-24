@@ -3,6 +3,7 @@ with pymupdf itself so nothing here depends on a real paper being present."""
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pymupdf
@@ -312,3 +313,190 @@ def test_extract_corpus_handles_a_mixed_pdf_and_xml_directory(tmp_path):
     assert not failures
     kinds = {r.source_kind for r in results}
     assert kinds == {"pdf", "xml"}
+
+
+# ---------------------------------------------------------------------------
+# Running headers/footers that are more than one or two lines, and the
+# per-page pagination line that varies too much to be caught by repetition.
+#
+# The original `edge_lines=2` default only ever looked at the last two lines
+# of a page, so a real multi-line footer block (journal name, short title,
+# DOI line, date, page number — each its own pymupdf "text"-mode line) only
+# had its last line or two stripped. The rest survived into the extracted
+# text and, once a page break happened to fall mid-sentence, landed as
+# garbage words inside that sentence — see
+# `test_extract_pdf_removes_footer_that_would_otherwise_land_mid_sentence`
+# below, which reproduces the escalated corpus defect
+# (10-1371-journal-pone-0247259) directly.
+# ---------------------------------------------------------------------------
+
+
+def test_extract_pdf_strips_multiline_running_footer_block(tmp_path):
+    """A footer block wider than the old edge_lines=2 window must be
+    detected in full, not just its last line or two."""
+    footer_lines = (
+        "JOURNAL OF CARE\nExample Study\nJOURNAL OF CARE | https://doi.org/10.1/x\nJanuary 1, 2020"
+    )
+    pages = [f"Body text discussing empathy on page {i}.\n{footer_lines}" for i in range(1, 6)]
+    pdf = _make_pdf(tmp_path / "multiline_footer.pdf", pages)
+
+    result = extract.extract_pdf(pdf)
+
+    assert result.ok
+    for line in footer_lines.splitlines():
+        assert line not in result.text
+    assert "Body text discussing empathy on page 1" in result.text
+
+
+def test_extract_pdf_removes_footer_that_would_otherwise_land_mid_sentence(tmp_path):
+    """Regression test for the escalated corpus defect: a multi-line running
+    footer sits between the end of one page's text and the page break, right
+    where a sentence continues onto the next page. Once every footer line is
+    correctly recognised as noise, no fragment of it survives to land inside
+    the sentence when its internal newlines are later flattened to spaces
+    (as carelite.corpus.chunk's sentence splitter does)."""
+    footer_lines = (
+        "CARE JOURNAL\nEmpathy Disparities\nCARE JOURNAL | https://doi.org/10.9/y\nMarch 1, 2021"
+    )
+    pages = [
+        f"Prior sentence ends here.\nLow SES was associated with lower empathy (mean\n{footer_lines}",
+        "CARE difference = -0.87 [95% CI -1.72 to -0.02]).",
+        f"Filler page three text.\n{footer_lines}",
+        f"Filler page four text.\n{footer_lines}",
+    ]
+    pdf = _make_pdf(tmp_path / "midsentence_footer.pdf", pages)
+
+    result = extract.extract_pdf(pdf)
+
+    assert result.ok
+    for line in footer_lines.splitlines():
+        assert line not in result.text
+    flattened = " ".join(result.text.split())
+    assert "CARE JOURNAL" not in flattened
+    assert "Empathy Disparities" not in flattened
+
+
+def test_extract_pdf_strips_standalone_pagination_line(tmp_path):
+    pages = [f"Body text on page {i} about patient communication.\n{i} / 4" for i in range(1, 5)]
+    pdf = _make_pdf(tmp_path / "paginated.pdf", pages)
+
+    result = extract.extract_pdf(pdf)
+
+    assert result.ok
+    assert not re.search(r"^\s*\d+\s*/\s*4\s*$", result.text, re.MULTILINE)
+
+
+def test_extract_pdf_does_not_strip_pagination_look_alikes_in_running_text(tmp_path):
+    """A ratio embedded in a sentence must survive -- only a *standalone*
+    "N / M" line (the actual page-number footer) is treated as noise."""
+    pages = [
+        f"On page {i}, 18/22 participants completed the survey about care." for i in range(1, 4)
+    ]
+    pdf = _make_pdf(tmp_path / "ratio.pdf", pages)
+
+    result = extract.extract_pdf(pdf)
+
+    assert "18/22" in result.text
+
+
+def test_extract_pdf_does_not_strip_pagination_on_short_documents(tmp_path):
+    # Fewer than 3 pages -> no repetition/pagination heuristics apply at all,
+    # matching the existing header/footer detector's own threshold.
+    pages = ["Body text here.\n1 / 2", "More body text.\n2 / 2"]
+    pdf = _make_pdf(tmp_path / "short_paginated.pdf", pages)
+
+    result = extract.extract_pdf(pdf)
+
+    assert "1 / 2" in result.text
+
+
+# ---------------------------------------------------------------------------
+# Word-level layout artefacts: PDF column-break splits and dropped-space
+# glues. See the module-level note above `_rejoin_split_words` in
+# extract.py for why the two directions are handled so differently.
+# ---------------------------------------------------------------------------
+
+
+def test_rejoin_split_words_joins_when_both_fragments_are_not_real_words():
+    text = "The approach was highly collabora tive throughout the study."
+    fixed = extract._rejoin_split_words(text)
+    assert "collaborative" in fixed
+    assert "collabora tive" not in fixed
+
+
+def test_rejoin_split_words_joins_a_second_example():
+    text = "Results were assessed sta tistically across all sites."
+    fixed = extract._rejoin_split_words(text)
+    assert "statistically" in fixed
+    assert "sta tistically" not in fixed
+
+
+def test_rejoin_split_words_leaves_genuine_two_word_phrases_alone():
+    """Both fragments read as real words on their own ("set", "out"), so the
+    ambiguity can't be resolved from text alone -- must NOT be merged into
+    "setout", even though that concatenation happens to also be a real
+    (obscure) dictionary word. This is the deliberately conservative side of
+    the rule: an unresolved ambiguity is left as-is rather than guessed at."""
+    text = "The study protocol was set out in advance."
+    fixed = extract._rejoin_split_words(text)
+    assert "set out" in fixed
+    assert "setout" not in fixed
+
+
+def test_rejoin_split_words_does_not_cross_a_newline():
+    """A word split across a genuine page/line boundary (an explicit
+    newline, not a same-line space) is a different phenomenon -- the
+    page-join itself -- and is not this function's job."""
+    text = "collabora\ntive work continued."
+    fixed = extract._rejoin_split_words(text)
+    assert "collaborative" not in fixed
+
+
+def test_rejoin_split_words_requires_minimum_merged_length():
+    """Guards against short coincidental dictionary collisions -- e.g. a
+    split citation fragment ("ad" from "Mahmoudir-ad", followed by "et" from
+    "et al.") that would otherwise merge into the unrelated real word
+    "adet"."""
+    text = "Mahmoudir-ad et al. (2015) reported similar findings."
+    fixed = extract._rejoin_split_words(text)
+    assert "ad et" in fixed
+    assert "adet" not in fixed
+
+
+def test_fix_glued_words_inserts_dropped_space():
+    text = "This gap was noted inthe SDM group, and they hada greater role."
+    fixed = extract._fix_glued_words(text)
+    assert "in the SDM group" in fixed
+    assert "had a greater" in fixed
+    assert "inthe" not in fixed
+    assert "hada" not in fixed
+
+
+def test_fix_glued_words_preserves_sentence_initial_capitalisation():
+    text = "Inthe control group, outcomes were similar."
+    fixed = extract._fix_glued_words(text)
+    assert fixed.startswith("In the control group")
+
+
+def test_fix_glued_words_leaves_open_class_compounds_untouched():
+    """Deliberate scope limit, not an oversight: an open-class glued
+    compound like "healthrelated" or "decisionmaking" is not in the curated
+    lookup table and is left alone. See the module-level note above
+    `_rejoin_split_words` in extract.py for why a general detector for this
+    direction was built, measured against the full corpus, and rejected --
+    it "fixed" real words and names into nonsense far more often than it
+    fixed genuine artefacts."""
+    text = "Several healthrelated outcomes and decisionmaking patterns were noted."
+    fixed = extract._fix_glued_words(text)
+    assert "healthrelated" in fixed
+    assert "decisionmaking" in fixed
+
+
+def test_extract_pdf_applies_layout_artefact_fixes_end_to_end(tmp_path):
+    body = "This gap was noted inthe control group, which was highly collabora tive."
+    pdf = _make_pdf(tmp_path / "artefacts.pdf", [body])
+
+    result = extract.extract_pdf(pdf)
+
+    assert "in the control group" in result.text
+    assert "collaborative" in result.text
