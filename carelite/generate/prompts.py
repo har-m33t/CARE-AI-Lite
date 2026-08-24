@@ -17,12 +17,16 @@ including for the degraded control, which is degraded on communication quality
 and not on safety.
 
 **Content addressing.** `git_sha` on a `prompt_version` row is the git *blob*
-hash of the assembled text, not a commit hash. A commit hash records when a
-prompt was written; a blob hash records what it said, is computable with no
-repository present, and can be checked afterwards with `git cat-file -p <sha>`.
-`verify_committed()` is the check that the blob is really in the object
-database, which is how "every prompt version is committed" becomes something
-tested rather than something claimed.
+hash of the prompt file's own bytes, not a commit hash and not a hash of the
+assembled text. A commit hash records when a prompt was written; a blob hash
+records what it said, is computable with no repository present, and resolves
+afterwards with `git cat-file -p <sha>`. It has to name the file rather than the
+assembly, because the assembly — chain plus body plus constraints — is the
+content of no file and is therefore a blob git has never stored; the assembled
+text is kept in full in `prompt_version.text` instead. `verify_committed()`
+checks that every file contributing to a prompt is in the object database, which
+is how "every prompt version is committed" becomes something tested rather than
+something claimed.
 
 **Refusing silent edits.** `register()` writes a `prompt_version` row, and if a
 row with that `prompt_id` already exists carrying different text it raises
@@ -98,8 +102,28 @@ class PromptTemplate:
         return assembled_text(self.prompt_id)
 
     def git_sha(self) -> str:
-        """Blob hash of the assembled system text. See the module docstring."""
-        return blob_sha(self.assemble())
+        """Blob hash of **this file's bytes**. See the module docstring.
+
+        Not the assembled text: the assembly is `extends` chain + body +
+        constraints, which is not the content of any file and therefore is not
+        a blob git has ever stored. The assembled text is what
+        `prompt_version.text` holds in full; `git_sha` is the pointer back into
+        history, so it has to name something history contains.
+        """
+        if self.path is None:  # pragma: no cover - only for synthesised templates
+            raise PromptError(f"{self.prompt_id} has no source file to hash")
+        return blob_sha(self.path.read_text(encoding="utf-8"))
+
+    def dependencies(self) -> tuple[str, ...]:
+        """This prompt and every file that contributes text to its assembly."""
+        chain: list[str] = [self.prompt_id]
+        node = self
+        while node.extends:
+            node = load(node.extends)
+            chain.append(node.prompt_id)
+        if self.constraints:
+            chain.append(self.constraints)
+        return tuple(chain)
 
 
 # ---------------------------------------------------------------------------
@@ -242,13 +266,18 @@ def blob_sha(text: str) -> str:
 
 
 def verify_committed(prompt_ids: list[str] | None = None) -> dict[str, bool]:
-    """Which prompts' assembled text exists as a blob in the git object database.
+    """Whether every file contributing to each prompt is in the object database.
 
-    `False` means the prompt has been edited since the last commit that
-    contained it, so a result generated now could not be recovered from
+    A prompt's assembled text is its `extends` chain plus its body plus the
+    shared constraints, so checking one blob would leave the other two free to
+    be edited without the check noticing. `dependencies()` names all of them and
+    every one has to be present.
+
+    `False` means some contributing file has been edited since the last commit
+    that contained it, so a result generated now could not be recovered from
     history. The runner refuses to start on a `False` under
-    `--require-committed`, which is the enforcement behind "every prompt
-    version is committed".
+    `--require-committed`, which is the enforcement behind "every prompt version
+    is committed".
 
     A missing `git` binary, or a directory that is not a repository, yields
     `False` for everything rather than raising: this is a check, and a check
@@ -258,19 +287,24 @@ def verify_committed(prompt_ids: list[str] | None = None) -> dict[str, bool]:
     ids = prompt_ids if prompt_ids is not None else sorted(load_all())
     out: dict[str, bool] = {}
     for prompt_id in ids:
-        sha = blob_sha(assembled_text(prompt_id))
-        try:
-            result = subprocess.run(
-                ["git", "cat-file", "-e", f"{sha}^{{blob}}"],
-                cwd=PROMPTS_DIR,
-                capture_output=True,
-                timeout=10,
-                check=False,
-            )
-            out[prompt_id] = result.returncode == 0
-        except (OSError, subprocess.SubprocessError):  # pragma: no cover
-            out[prompt_id] = False
+        out[prompt_id] = all(
+            _blob_present(load(dep).git_sha()) for dep in load(prompt_id).dependencies()
+        )
     return out
+
+
+def _blob_present(sha: str) -> bool:
+    try:
+        result = subprocess.run(
+            ["git", "cat-file", "-e", f"{sha}^{{blob}}"],
+            cwd=PROMPTS_DIR,
+            capture_output=True,
+            timeout=10,
+            check=False,
+        )
+        return result.returncode == 0
+    except (OSError, subprocess.SubprocessError):  # pragma: no cover
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -291,13 +325,14 @@ def registered_rows(prompt_ids: list[str] | None = None) -> list[dict[str, str]]
     rows: list[dict[str, str]] = []
     for prompt_id in ids:
         template = load(prompt_id)
-        text = assembled_text(prompt_id)
         rows.append(
             {
                 "prompt_id": prompt_id,
                 "condition": ",".join(template.conditions),
-                "text": text,
-                "git_sha": blob_sha(text),
+                # `text` is the assembled text, exactly as sent. `git_sha` is the
+                # blob of the source file, which is what history actually holds.
+                "text": assembled_text(prompt_id),
+                "git_sha": template.git_sha(),
             }
         )
     return rows

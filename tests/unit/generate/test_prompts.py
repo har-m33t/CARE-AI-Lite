@@ -85,18 +85,47 @@ def test_the_project_positions_are_stated_in_every_condition() -> None:
 
 def test_blob_sha_matches_git_hash_object() -> None:
     """The recorded `git_sha` has to be resolvable with real git, or it is decoration."""
-    text = prompts.assembled_text("condition_b.v1")
+    template = prompts.load("condition_b.v1")
+    assert template.path is not None
     try:
         out = subprocess.run(
-            ["git", "hash-object", "--stdin"],
-            input=text.encode("utf-8"),
+            ["git", "hash-object", str(template.path)],
             capture_output=True,
             check=True,
             timeout=10,
+            cwd=prompts.PROMPTS_DIR,
         )
     except (OSError, subprocess.SubprocessError):  # pragma: no cover
         pytest.skip("git is not available")
-    assert out.stdout.decode().strip() == prompts.blob_sha(text)
+    assert out.stdout.decode().strip() == template.git_sha()
+
+
+def test_git_sha_names_the_file_not_the_assembly() -> None:
+    """The assembled text is chain + body + constraints, which is the content of
+    no file. Hashing it would produce a `git_sha` that git can never resolve."""
+    template = prompts.load("condition_c.v1")
+    assert template.git_sha() != prompts.blob_sha(prompts.assembled_text("condition_c.v1"))
+    assert template.path is not None
+    assert template.git_sha() == prompts.blob_sha(template.path.read_text(encoding="utf-8"))
+
+
+def test_dependencies_name_every_file_that_contributes_text() -> None:
+    """A check on one blob would leave the other two free to be edited unnoticed."""
+    assert prompts.load("condition_c.v1").dependencies() == (
+        "condition_c.v1",
+        "condition_b.v1",
+        "constraints.v1",
+    )
+    assert prompts.load("selfcheck.v1").dependencies() == ("selfcheck.v1",)
+
+
+def test_every_prompt_in_the_tree_is_committed() -> None:
+    """ "Every prompt version is committed" is the reproducibility claim; this is
+    the check behind it. A failure here means an edited prompt in the working
+    tree, and a result generated now could not be recovered from history."""
+    status = prompts.verify_committed()
+    uncommitted = sorted(p for p, ok in status.items() if not ok)
+    assert not uncommitted, f"uncommitted prompt files: {uncommitted}"
 
 
 def test_registered_rows_carry_condition_and_sha() -> None:

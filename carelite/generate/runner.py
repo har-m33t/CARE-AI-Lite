@@ -2,6 +2,7 @@
 
     python -m carelite.generate.runner --store postgres
     python -m carelite.generate.runner --store jsonl --conditions A,B --limit 5
+    python -m carelite.generate.runner --split train --store jsonl   # 40 x 6 x 3
 
 **It will be interrupted.** A run of this size on local inference takes hours,
 the machine will sleep, the daemon will be restarted, and someone will press
@@ -21,6 +22,42 @@ ctrl-C. So resumption is the design rather than a feature bolted on afterwards:
 There is deliberately no checkpoint file and no run-level state. A checkpoint is
 one more thing that can disagree with the data; `completed_keys()` asks the
 store what is actually there.
+
+**Which split, and why the two cannot contaminate each other.**
+
+`--split holdout` is the default and generates the 60 held-out scenarios;
+`--split train` generates the 40 training scenarios, which is what the v3 §13
+judge-validation study is scored against. That is the only difference between
+the two runs: same plan builder, same cache key, same graph, same seeds.
+
+*They cannot collide in the cache key.* The key's first field is `scenario_id`;
+`scenarios.bank.load_bank` raises on a duplicate id anywhere in the 100 records;
+and the splits are a partition of exactly those records. So no train cell and no
+holdout cell can ever produce the same key. A resumed run of either split reads
+the whole store — including the other split's rows — and simply finds keys that
+are not in its plan, which is a no-op. Nothing skips a cell it owns and nothing
+adopts a cell it does not.
+
+*For the same reason the split is never passed to `config.seed_for`.* A seed is
+a property of the cell — `(scenario_id, condition, sample_idx)` — not of the run
+that asked for it. A scenario would keep its seeds even if it were ever moved
+between splits, and a train run and a holdout run agree on every seed whose
+inputs they share. `tests/unit/generate/test_runner_split.py` asserts both
+halves of this rather than leaving them to the reader.
+
+*The split is recorded on every row,* in `extra["split"]`, taken from the
+scenario record itself rather than from the run's flag. The frozen `generation`
+table has no split column and this lane does not own the schema, so the sidecar
+is where it goes; the point is that a table holding both can be read back
+without a join to the bank, because the pre-registration turns on exactly that
+distinction.
+
+**Do not start a holdout run before the OSF pre-registration is submitted.**
+That is a project gate recorded in `DECISIONS.md`, not something this module
+enforces — `--split holdout` stays the default because every existing invocation
+means it. `main()` prints the split it is about to generate, and warns on
+holdout, so the gate is visible at the top of the log rather than discovered
+afterwards.
 
 **Digests are resolved before the plan is built,** because `model_digest` is
 part of the key. If the daemon is restarted mid-run with re-pulled weights, the
@@ -63,9 +100,23 @@ from carelite.generate.graph import (
 )
 from carelite.generate.model import DIGEST_UNAVAILABLE, GenerationClient
 from carelite.generate.store import CacheKey, GenerationRecord, GenerationStore, JsonlStore
-from carelite.types import Condition, GuidanceRequest, Scenario
+from carelite.types import Condition, GuidanceRequest, Scenario, Split
 
-__all__ = ["Cell", "RunReport", "build_plan", "main", "run"]
+__all__ = ["Cell", "RunReport", "build_plan", "main", "run", "scenarios_for_split"]
+
+
+def scenarios_for_split(split: Split | str) -> list[Scenario]:
+    """The bank's scenarios for one split, narrowed to the frozen contract.
+
+    The two loaders live in `carelite.scenarios.bank` and this is the only place
+    the runner names either of them, so "which split am I about to generate" has
+    exactly one answer per run instead of one per call site.
+    """
+    from carelite.scenarios.bank import holdout_scenarios, train_scenarios
+
+    chosen = Split(split)
+    loader = train_scenarios if chosen is Split.TRAIN else holdout_scenarios
+    return [s.to_scenario() for s in loader()]
 
 
 @dataclass(frozen=True, slots=True)
@@ -104,12 +155,39 @@ class RunReport:
     errors: list[str] = field(default_factory=list)
     blocked_scenarios: list[str] = field(default_factory=list)
 
+    split_counts: dict[str, int] = field(default_factory=dict)
+    """Planned cells per split, read off the scenarios rather than off the flag.
+    A run handed a hand-built list is described correctly, and a list that
+    accidentally mixed splits is visible instead of averaged away."""
+
+    routes: dict[str, int] = field(default_factory=dict)
+    """Observed router outcome per generated cell. `route` runs for every
+    condition, so this is the distribution over the turns this run actually
+    saw. It is here because a router that quietly sends everything down
+    `emotional_only` turns condition C into condition B, and the resulting run
+    looks entirely healthy: same row count, same latencies, no errors."""
+
+    @property
+    def split_label(self) -> str:
+        return "+".join(sorted(self.split_counts)) or "none"
+
     def summary(self) -> str:
         return (
-            f"planned={self.planned} skipped={self.skipped} generated={self.generated} "
-            f"gate_blocked={self.gate_blocked} input_blocked={self.input_blocked} "
-            f"failed={self.failed} elapsed={self.elapsed_s:.0f}s"
+            f"split={self.split_label} planned={self.planned} skipped={self.skipped} "
+            f"generated={self.generated} gate_blocked={self.gate_blocked} "
+            f"input_blocked={self.input_blocked} failed={self.failed} "
+            f"elapsed={self.elapsed_s:.0f}s"
         )
+
+    def route_summary(self) -> str:
+        if not self.routes:
+            return "routes: none observed"
+        total = sum(self.routes.values())
+        parts = ", ".join(
+            f"{name}={count} ({count / total:.0%})"
+            for name, count in sorted(self.routes.items(), key=lambda kv: -kv[1])
+        )
+        return f"routes over {total} generated cells: {parts}"
 
 
 def build_plan(
@@ -156,6 +234,9 @@ def _extra_payload(cell: Cell, state: dict[str, Any]) -> dict[str, Any]:
     extra: dict[str, Any] = {
         "scenario_id": cell.scenario.scenario_id,
         "condition": cell.spec.condition.value,
+        # From the scenario record, never from the run's --split flag: the flag
+        # says what was asked for, the record says what this row actually is.
+        "split": cell.scenario.split.value,
         "sample_idx": cell.sample_idx,
         "num_ctx": state.get("num_ctx"),
         "prompt_chars": state.get("prompt_chars"),
@@ -182,6 +263,7 @@ def _extra_payload(cell: Cell, state: dict[str, Any]) -> dict[str, Any]:
 def run(
     *,
     store: GenerationStore,
+    split: Split | str | None = None,
     scenarios: Sequence[Scenario] | None = None,
     conditions: Sequence[Condition] | None = None,
     samples: int | None = None,
@@ -197,7 +279,13 @@ def run(
 
     Args:
         store: where finished cells go and where completed keys come from.
-        scenarios: defaults to the 60 held-out scenarios from the frozen bank.
+        split: which half of the frozen bank to generate — `Split.HOLDOUT`
+            (the default, 60 scenarios) or `Split.TRAIN` (40). Mutually
+            exclusive with `scenarios`: passing both would let the flag and the
+            data disagree about what the run is, which is the one thing the
+            pre-registration cannot tolerate.
+        scenarios: an explicit list, for tests and ablations. Defaults to the
+            held-out scenarios from the frozen bank.
         conditions: defaults to all six.
         samples: defaults to `settings.experiment.samples_per_cell`.
         deps: graph collaborators. The default drives real Ollama; the
@@ -213,10 +301,13 @@ def run(
     started = time.monotonic()
     report = RunReport()
 
+    if scenarios is not None and split is not None:
+        raise ValueError(
+            "pass `split` or `scenarios`, not both: the split of an explicit list is "
+            "read off its scenarios, so a `split` argument here could only contradict it."
+        )
     if scenarios is None:
-        from carelite.scenarios.bank import holdout_scenarios
-
-        scenarios = [s.to_scenario() for s in holdout_scenarios()]
+        scenarios = scenarios_for_split(Split.HOLDOUT if split is None else split)
     if conditions is None:
         conditions = list(SPEC)
     if samples is None:
@@ -242,6 +333,9 @@ def run(
 
     plan = build_plan(scenarios, conditions, samples=samples, digests=digests)
     report.planned = len(plan)
+    for cell in plan:
+        name = cell.scenario.split.value
+        report.split_counts[name] = report.split_counts.get(name, 0) + 1
 
     done = store.completed_keys()
     todo = [c for c in plan if c.key not in done]
@@ -290,6 +384,10 @@ def run(
             )
             continue
 
+        observed = (final.get("context_note") or {}).get("route")
+        if observed:
+            report.routes[str(observed)] = report.routes.get(str(observed), 0) + 1
+
         gate = final.get("output_safety")
         if gate is not None and not gate.allowed:
             report.gate_blocked += 1
@@ -325,7 +423,18 @@ def _parse_conditions(raw: str | None) -> list[Condition] | None:
 def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - CLI wrapper
     parser = argparse.ArgumentParser(
         prog="carelite.generate.runner",
-        description="Generate the held-out evaluation set. Safe to interrupt and rerun.",
+        description=(
+            "Generate an evaluation set. Safe to interrupt and rerun. "
+            "Defaults to the held-out split; --split train generates the 40 "
+            "training scenarios instead, which is what the judge-validation "
+            "study is scored against."
+        ),
+    )
+    parser.add_argument(
+        "--split",
+        choices=tuple(s.value for s in Split),
+        default=Split.HOLDOUT.value,
+        help="which half of the frozen bank to generate (default: holdout)",
     )
     parser.add_argument("--store", choices=("postgres", "jsonl"), default="postgres")
     parser.add_argument("--journal", type=Path, default=None, help="path for --store jsonl")
@@ -338,16 +447,34 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - CLI wr
     args = parser.parse_args(argv)
 
     settings = get_settings()
+    split = Split(args.split)
+
+    # The two splits get different default filenames. Correctness does not need
+    # it — the cache key already keeps them apart — but a 1,080-row holdout
+    # journal and a judge-validation train journal are read by different people
+    # for different reasons, and holdout keeps the historical name so every
+    # existing invocation lands exactly where it always did.
+    suffix = "" if split is Split.HOLDOUT else f"-{split.value}"
     if args.store == "jsonl":
-        path = args.journal or (settings.runs_dir / "generate" / "generations.jsonl")
+        path = args.journal or (settings.runs_dir / "generate" / f"generations{suffix}.jsonl")
         store: GenerationStore = JsonlStore(path=path)
     else:
         from carelite.generate.store import PostgresStore
 
-        store = PostgresStore()
+        sidecar = settings.runs_dir / "generate" / f"metadata{suffix}.jsonl"
+        store = PostgresStore(sidecar=sidecar)
         if args.register_prompts:
             inserted = prompts.register()
             print(f"prompt_version rows inserted: {inserted}")
+
+    print(f"split={split.value}", flush=True)
+    if split is Split.HOLDOUT and not args.dry_run:
+        print(
+            "  NOTE: this is the held-out split. DECISIONS.md gates it on the OSF "
+            "pre-registration being submitted; this runner does not enforce that.",
+            file=sys.stderr,
+            flush=True,
+        )
 
     def progress(cell: Cell, index: int, total: int) -> None:
         print(
@@ -359,6 +486,7 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - CLI wr
     try:
         report = run(
             store=store,
+            split=split,
             conditions=_parse_conditions(args.conditions),
             samples=args.samples,
             limit=args.limit,
@@ -370,6 +498,7 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - CLI wr
         store.close()
 
     print(report.summary())
+    print(f"  {report.route_summary()}")
     for err in report.errors[:20]:
         print(f"  error: {err}", file=sys.stderr)
     if report.blocked_scenarios:
