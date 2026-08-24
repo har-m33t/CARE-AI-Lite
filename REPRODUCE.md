@@ -214,6 +214,23 @@ similarity between unrelated one-word queries from 0.52 to 0.72–0.84 and flatt
 If you patch a prefix back in because a tutorial told you to, retrieval quality will degrade
 silently rather than error. See `docs/limitations.md` §5.
 
+**Verified state of this project's own index build, as a reference point for your own run:**
+471/471 chunks embedded; the 342 embeddings that predated the corpus lane's extraction fixes were
+confirmed byte-identical against a fresh embed (0 mismatches) rather than silently left stale;
+mean pairwise cosine across the corpus is 0.5788 with no discontinuity between old and new
+embeddings; and 10/10 hand-picked retrieval probes pass, including two that only pass because the
+extraction fixes landed first (`teach-back` now matches inside the Talevski systematic review,
+`disparit` inside the PLOS empathy-disparities paper). If your own run's numbers look wildly
+different, check that the corpus and KB steps in §5 actually completed before this step ran, not
+that this step is broken.
+
+**One reconciliation trap, not a bug:** `index_embedding_state` legitimately carries a few more
+rows for `kind='chunk'` than `chunk` has rows — 475 against 471 as of this writing — left over from
+chunk-ID renumbering. Scoped (`only_ref_ids`) embedding calls skip orphan pruning by design, since
+a targeted call has no way to know a stale ID was ever valid; only a whole-table pass sweeps them.
+It's harmless to retrieval and only worth knowing so you don't spend an hour chasing a row-count
+mismatch that isn't a bug.
+
 ---
 
 ## 7. Generate and score

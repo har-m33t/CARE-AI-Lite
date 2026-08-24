@@ -28,7 +28,7 @@ CARELite AI is designed to close part of that gap.
 
 ## Communication Frameworks
 
-The system is built on seven evidence-based communication categories derived from synthesis of approximately fifty peer-reviewed studies. These categories were not selected from existing frameworks — they were identified through pattern analysis across the literature and then validated against the strongest findings in the corpus.
+The system is built on seven evidence-based communication categories derived from synthesis of the peer-reviewed literature (33 papers retrieved into the corpus as of this writing — see "Literature Corpus" below). These categories were not selected from existing frameworks — they were identified through pattern analysis across the literature and then validated against the strongest findings in the corpus.
 
 ### 1. Empathy — Responsive, Not Just Warm
 Empathy is treated here as a behavioral skill, not a personality trait. The evidence shows that high-empathy clinicians use activating, cognitively-oriented communication — not more emotional language. The system supports empathy by detecting missed acknowledgments and generating responses that name emotional states before offering clinical information.
@@ -67,13 +67,13 @@ Every finding from the literature is stored as a structured entry containing sev
 | Evidence Strength | Strong, Moderate, or Emerging |
 | AI Action Type | Detection, Generation, or Reframing |
 
-The knowledge base currently contains fifteen sample entries spanning all seven themes. It is designed to be extended, versioned, and refined as the project develops.
+The knowledge base currently holds 115 entries spanning all seven themes, loaded into PostgreSQL from the retrieved paper corpus. Entries are produced by **LLM-assisted extraction with automated verbatim-span provenance validation, not human curation or clinician review**: every entry's quoted span is mechanically confirmed to appear in the extracted text of the paper it cites before the entry is accepted, and an entry whose span cannot be located is rejected as a fabrication rather than repaired. That check is real and enforced in code (`carelite/kb/validate.py`), and it is also specific about what it does not claim — no person has reviewed whether a given finding follows from its quoted span, `human_verified` is `false` on every loaded entry, and any result built on the knowledge base inherits that limitation. `docs/limitations.md` records the measured fabrication rate, the theme-coverage skew this produces, and the full provenance accounting; `docs/decisions/README.md` records why the knowledge base is derived this way rather than hand-authored to a planning-time count. Counts here will keep moving as extraction is corrected — treat this paragraph as a snapshot, not a target.
 
 ---
 
 ## Actionable Behavior System
 
-The knowledge base feeds into a master list of thirty-three actionable behaviors organized into three functional categories.
+Every knowledge-base entry is tagged with one of three functional categories — `AI Action Type` in the table above — rather than being organized into a separate, curated master list of behaviors as originally planned. As of this writing that tagging spans the 115 loaded entries: 72 generation, 25 reframing, 18 detection. A refined, prioritized, non-overlapping behavior list distilled from these tags remains a planned deliverable — see "Expected Outcomes" below — not a finished artifact.
 
 **Detection behaviors** — the system monitors the conversation and flags something the clinician might miss. Examples include detecting emotional blocking patterns, flagging jargon, and identifying conversations that end without a teach-back check.
 
@@ -109,51 +109,102 @@ The system is also not a script generator. The literature is explicit on this po
 
 ## Project Structure
 
+The layout below is the actual current tree, not the intended one — the version this section
+described until 2026-08-24 documented four directories (`literature/`, `framework/`, `behaviors/`,
+and most of `docs/`'s planned contents) that were never created, alongside a status table that
+called the project further along than it was. This is a build in progress; some of the directories
+below are still empty or mid-build, and that is noted rather than hidden.
+
 ```
 carelite-ai/
 │
-├── README.md                          # This file
-├── literature/
-│   ├── Literature_Synthesis.md        # Full synthesis across ~50 papers
-│   └── Literature_Notes.pdf           # Annotated source citations
+├── README.md                    # This file
+├── REPRODUCE.md                 # Cold-start reproduction instructions
+├── DECISIONS.md                 # Dated record of project-owner decisions (D1-D6)
+├── Makefile                     # install / check / db-up / eval-smoke / reproduce
+├── pyproject.toml, uv.lock      # Toolchain: Python 3.13, uv-managed
 │
-├── framework/
-│   ├── Communication_Themes_Framework.md     # Seven category definitions
-│   └── Evidence_Summaries.md                # Per-theme evidence + examples
+├── carelite/                    # The application and evaluation-harness code
+│   ├── types.py, config.py      # Frozen contracts: controlled vocabularies, model roster, seeds
+│   ├── db/                      # PostgreSQL + pgvector schema and connection helpers
+│   ├── corpus/                  # Fetch, extract, chunk the paper corpus
+│   ├── kb/                      # Knowledge-base extraction, verbatim-span provenance, load
+│   ├── scenarios/                # The 100-scenario bank; the frozen 60-scenario holdout split
+│   ├── index/                   # Dense (pgvector) + lexical (tsvector) indexing
+│   ├── retrieval/                # Hybrid retrieval: RRF fusion, rerank, CRAG, HyDE
+│   ├── generate/                 # The six experimental conditions; generation orchestration
+│   ├── prompts/                  # Versioned prompt files per condition
+│   ├── eval/
+│   │   ├── rubric/               # The 11-dimension NURSE / Four Habits rubric, deterministic scorers
+│   │   ├── judge/                 # LLM-as-judge and its v3 §13 validation study
+│   │   └── human/                 # Blinded human-rating harness (synthetic-rater-exercised)
+│   ├── safety/                    # Input/output safety: injection, PHI, red-flag screens
+│   ├── cli/                       # The Typer + Rich terminal interface
+│   └── repro.py                   # `make reproduce` entry point
+│
+├── data/
+│   ├── fetch_corpus.py           # Thin shim -> carelite.corpus.fetch
+│   └── pdfs/                     # Retrieved PDFs (gitignored) + _manual_needed.csv
 │
 ├── knowledge_base/
-│   ├── KB_Structure.md                # Field definitions and design rationale
-│   └── KB_Sample_Entries.md           # 15 sample entries across all themes
+│   ├── TAXONOMY.md               # Seven-theme taxonomy proposal (accepted, DECISIONS.md D1)
+│   ├── review/                    # Generated human-review digest (0/115 signed off as of writing)
+│   └── cache/                     # Extraction cache (gitignored)
 │
-├── behaviors/
-│   └── Evidence_Based_Communication_Behaviors.md   # Master list of 33 behaviors
+├── scenarios/
+│   ├── EQUITY_REVIEW.md          # Equity-stratum review packet and outcome (D2, D5)
+│   ├── bank.jsonl                 # The 100-scenario bank
+│   └── holdout.lock               # Per-record digests behind HOLDOUT_DIGEST
 │
-└── docs/
-    ├── project_notes.md               # Running notebook and reflections
-    └── changelog.md                   # Version history and design decisions
+├── docs/
+│   ├── rubric.md                  # The rating rubric humans and the judge are scored against
+│   ├── preregistration.md         # OSF pre-registration draft — NOT YET REGISTERED
+│   ├── limitations.md             # Kept-current limitations record (build plan v3 §17)
+│   ├── decisions/                 # Dated decision log (foundational build decisions)
+│   └── reporting/                 # TRIPOD-LLM and CHART checklists, completed as an appendix
+│
+├── figures/                       # Regenerated by `make reproduce` (carelite-viz; not yet built)
+├── runs/                          # Local run artifacts: caches, journals, repro status (gitignored)
+└── tests/
+    ├── unit/                      # ~1,660 tests, one directory per carelite package
+    └── security/                  # Adversarial input corpus (injection, PHI, red-flag)
 ```
 
 ---
 
 ## Literature Corpus
 
-The knowledge base is grounded in approximately fifty peer-reviewed sources including randomized controlled trials, systematic reviews, meta-analyses, observational studies, study protocols, and conceptual pieces. Key anchoring papers include Flickinger et al. (2016) on empathy and medication self-efficacy, Wilson et al. (2010) on shared decision-making and asthma adherence, Yen and Leasure (2019) and Talevski et al. (2020) on teach-back, Roberts et al. (2021) on the SES empathy gap, and Park et al. (2020) on racial disparities in emotion response. Full citations are available in the literature notes file.
+The knowledge base is grounded in 33 retrieved peer-reviewed sources, not the “approximately fifty” earlier planning estimated. The manifest lists 43 unique DOIs; 10 did not resolve to an open-access PDF (nine are `nihms*` manuscripts both Unpaywall and the NCBI ID-converter report as not licensed for programmatic retrieval, readable on PMC in a browser but not fetchable) and are not in the corpus. That loss is not evenly spread across the seven themes — `docs/limitations.md` has the coverage table — and it cost the corpus some frequently-cited anchors specifically: Flickinger et al. (2016) on empathy and medication self-efficacy, Yen and Leasure (2019) on teach-back, and Park et al. (2020) on racial disparities in emotion response are all in the unresolved set and are **not** in this project's evidence base, however often they appear in the surrounding literature. What the retrieved corpus does anchor: Wilson et al. (2010) on shared decision-making and asthma adherence, Talevski et al. (2020) — a systematic review that alone accounts for 13 of the 17 teach-back knowledge-base entries — and Roberts et al. (2021) on the socioeconomic and racial empathy gap. `data/fetch_corpus.py` rebuilds this corpus from its embedded DOI manifest; `data/pdfs/_manual_needed.csv` is the honest record of what did not resolve.
 
 ---
 
 ## Status
 
+This table describes what is actually built and running today, queried against the live database
+and the repository as of 2026-08-24, not a plan. See `docs/decisions/README.md` for the decisions
+behind each of these and `docs/limitations.md` for what each one does not yet claim.
+
 | Component | Status |
 |---|---|
-| Literature review and annotation | Complete |
-| Communication themes framework | Complete |
-| Evidence summaries | Complete |
-| Knowledge base structure | Complete |
-| Knowledge base sample entries | Complete |
-| Master behavior list | Complete |
-| Behavior refinement and prioritization | In progress |
-| Prompt architecture prototype | Not started |
-| Evaluation framework | Not started |
+| Corpus retrieval | Built — 33 of 43 manifest DOIs resolved; the rest are documented as genuinely unavailable, not silently dropped |
+| Knowledge base extraction and provenance validation | Built — 115 entries as of this writing (moving; see `knowledge_base/review/kb_review_digest.md`), verbatim-span-validated; **not human-reviewed** (`human_verified = false` on all of them) |
+| Equity knowledge-base re-extraction (`DECISIONS.md` D3) | Not started — approved and sequenced, has not run |
+| Scenario bank and frozen holdout split | Complete — 100 scenarios (40 train / 60 holdout), checksummed and write-once |
+| Dense + lexical index | Built and verified — 471/471 chunks embedded, 10/10 retrieval probes passing |
+| Hybrid retrieval (RRF, rerank, CRAG, HyDE) | Built |
+| Curated graph layer | Not started |
+| Safety screens (input/output, injection, PHI, red-flag) | Built |
+| Rubric (11-dimension NURSE / Four Habits) | Built, with anchored examples and a calibration set |
+| Generation orchestration (six experimental conditions) | In progress |
+| LLM-as-judge and its validation study | Built; validation cannot run until human-rating data exists |
+| Human-rating harness | Built, exercised only against synthetic raters — **no real human rating has occurred** |
+| Terminal (CLI) interface | Built |
+| Full evaluation run (1,080 holdout generations) | **Not started — blocked on OSF pre-registration by design** |
+| OSF pre-registration | Drafted (`docs/preregistration.md`); **not yet registered** |
+| Statistical analysis (Friedman/Wilcoxon/Holm-Bonferroni, mixed-effects) | Not started |
+| Figures | Not started |
+| Reporting checklists (TRIPOD-LLM, CHART) | Drafted as a living appendix (`docs/reporting/`); items that depend on results are marked pending, not filled in |
+| `make reproduce` | Built — regenerates pipeline-stage status from the database now; will regenerate statistical tables and figures once those two components land |
 
 ---
 

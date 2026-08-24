@@ -58,9 +58,11 @@ the largest single constraint on how many entries the corpus can support per the
 
 **The knowledge base is LLM-extracted from primary sources with no human verification, not
 hand-curated as build plan v3 assumed.** `DECISIONS.md` D4 records the decision to drop the planned
-human sign-off gate rather than claim it falsely: `human_verified` is `FALSE` on all 127 loaded
-entries, and that is the honest record, not a pending checkbox. Any result that depends on
-knowledge-base quality inherits this limitation.
+human sign-off gate rather than claim it falsely: `human_verified` is `FALSE` on all 115 loaded
+entries (as of this writing — this figure moves as `carelite-kb` corrects the pipeline; see
+`knowledge_base/review/kb_review_digest.md` for the live count), and that is the honest record,
+not a pending checkbox. Any result that depends on knowledge-base quality inherits this
+limitation.
 
 What the pipeline in `carelite/kb/validate.py` and `carelite/kb/spans.py` *can* substantiate, precisely:
 
@@ -84,30 +86,41 @@ What the pipeline in `carelite/kb/validate.py` and `carelite/kb/spans.py` *can* 
 - **Entries are rejected for a fabricated span, a span too short to carry evidence, an
   unrecognized vocabulary value, or a non-actionable takeaway** — the actionability check rejects
   awareness statements ("clinicians should be mindful that...") because awareness is not something
-  the system can detect, generate, or reframe. **An overclaimed evidence tier is corrected rather
-  than rejected**: 48 of 127 loaded entries had their tier lowered to what the source paper's study
-  design supports (`carelite/kb/papers.py` maps design to tier; `validate.py` checks the entry's
-  claim against it), because the span, theme, finding, and takeaway are untouched by a tier error
-  and there is a derivable right answer to substitute — unlike a fabricated quote, which has none.
+  the system can detect, generate, or reframe. Two further checks landed after the figures above
+  were first measured: candidates are now also rejected for citing a subject `knowledge_base/TAXONOMY.md`
+  places out of scope, and for a finding the quoted span does not actually report. **An overclaimed
+  evidence tier is corrected rather than rejected, and as of this writing is derived from the source
+  paper's study design outright rather than merely capped at it**: 58 of the current 115 entries
+  carry a tier that differs from what the extraction model originally claimed
+  (`carelite/kb/papers.py` maps design to tier; `validate.py` enforces it). This is a stronger rule
+  than the project's first version, which only lowered an overclaim and left an underclaim alone —
+  under that version, two entries citing the same paper could carry different tiers, which
+  `README.md`'s own definition of evidence strength as a property of the source does not allow. A
+  second, related check now also caps tier for **second-hand findings** — an entry whose quoted span
+  itself cites another study by number (e.g. a bare `(18)` marker) is capped at what *this* corpus's
+  paper can vouch for, not the tier of the study it is relaying. In every case the span, theme,
+  finding, and takeaway are untouched by a tier correction, and there is a derivable right answer to
+  substitute — unlike a fabricated quote, which has none.
 - **No human read any entry for whether the finding follows from the span.** That is the
   specific judgment an automated check cannot make and it is not claimed here. The review
   machinery in `carelite/kb/review.py` exists and is exercised (`knowledge_base/review/kb_review_digest.md`
-  is generated from the live database), but it is an available tool, not a completed gate: 0 of 127
+  is generated from the live database), but it is an available tool, not a completed gate: 0 of 115
   entries are signed off as of this writing.
 
-**Concentration is worse than the theme totals suggest.** The equity theme holds 3 entries as of
-this writing, drawn from a corpus where the literature *describes* a disparity rather than a
-compensating move — a faithful extraction of "clinicians should be aware of empathy gaps in
-low-SES patients" is an awareness statement, and the actionability gate correctly rejects it.
-`DECISIONS.md` D3 approved a re-extraction with a revised prompt that instructs the extractor to
+**Concentration is worse than the theme totals suggest.** The equity theme holds 4 entries as of
+this writing (up from 3 at an earlier pass, moved by the scope and second-hand-evidence checks
+above, not by new extraction), drawn from a corpus where the literature *describes* a disparity
+rather than a compensating move — a faithful extraction of "clinicians should be aware of empathy
+gaps in low-SES patients" is an awareness statement, and the actionability gate correctly rejects
+it. `DECISIONS.md` D3 approved a re-extraction with a revised prompt that instructs the extractor to
 name the compensating move rather than the disparity, sequenced to run once `carelite-corpus`'s
 extraction fixes land. **That re-extraction has not run as of this writing** — `PROMPT_VERSION` in
-`carelite/kb/extract.py` is still `kb-extract-v1`, and the equity count above is the pre-D3 figure.
-This document will be updated with the post-re-extraction count and, per D3's own stated risk, with
-whether the individually-read equity entries hold up under the stricter guard against a takeaway
-that drifts beyond its span. Separately, teach-back's 17 entries are concentrated: 13 of them come
-from a single systematic review (Talevski 2020), so what reads as convergent evidence within the
-theme is largely one source cited many times.
+`carelite/kb/extract.py` is still `kb-extract-v1`, and the equity count above is still the pre-D3
+figure. This document will be updated with the post-re-extraction count and, per D3's own stated
+risk, with whether the individually-read equity entries hold up under the stricter guard against a
+takeaway that drifts beyond its span. Separately, teach-back's 15 entries are concentrated: 12 of
+them come from a single systematic review (Talevski 2020), so what reads as convergent evidence
+within the theme is largely one source cited many times.
 
 ---
 
@@ -188,6 +201,35 @@ validate against, so it cannot run until human rating happens, which has not yet
   content terms by default rather than treating the phrase as a bag of alternatives. Query
   construction for the lexical leg of retrieval accounts for this rather than passing the raw
   utterance through.
+- **Index build is complete and independently verified: 471/471 chunks embedded.** The 342
+  pre-existing embeddings were confirmed byte-identical against a fresh embed, 0 mismatches, and
+  mean pairwise cosine across the corpus is 0.5788 (decomposing to old-old 0.5755, new-new 0.6100,
+  cross 0.5773 — no discontinuity at the seam, which is the shape a degenerate partial rebuild
+  would have shown). 10/10 retrieval probes pass, including two that depend directly on
+  `carelite-corpus`'s extraction fixes landing: the `teach-back` probe now matches inside the
+  Talevski systematic review and the `disparit` probe inside the PLOS empathy-disparities paper.
+  **One bookkeeping artefact, harmless but worth knowing before reconciling row counts:**
+  `index_embedding_state` carries 475 rows for `kind='chunk'` against 471 actual chunks — 4
+  orphaned rows left over from chunk-ID renumbering. Scoped `only_ref_ids` embedding calls
+  deliberately skip orphan pruning (a targeted call has no way to know a stale ID was ever valid),
+  so these persist until a whole-table pass sweeps them; they do not affect retrieval, only the
+  state table's row count.
+- **A candidate lexical-matching gap was investigated and found not to exist, within the scope
+  searched.** It was reasonable to worry that words split or joined across a PDF column or line
+  break (`show ing`, `healthrelated`) would survive into the indexed chunk text and silently fail
+  to match their correctly-spaced or hyphenated forms in lexical search. A general repair rule for
+  this was considered for the indexing pipeline and rejected — not because the artefact doesn't
+  matter, but because the rule's measured false-positive rate broke real words more often than it
+  fixed anything (`healthcare` → `health`/`care`, `Pearson` → `Pears`/`on`, `asking` → `as`/`king`).
+  A targeted search then checked whether the artefact class that rule would have addressed is
+  actually present: the two named examples plus a ten-suffix sweep (`-based`, `-making`,
+  `-related`, `-centered`, `-focused`, `-informed`, `-oriented`, `-driven`, `-friendly`,
+  `-sensitive`) across all 471 indexed chunks, matching zero glued occurrences of that pattern —
+  the only hits were real words such as `interrelated`. **This rules out that specific artefact
+  class in the current corpus; it is not a claim that no glued word of any shape exists anywhere in
+  it**, since the sweep is suffix-pattern-based rather than exhaustive. No retrieval penalty from
+  this artefact class is implied or has been observed, and none should be inferred from earlier,
+  less precise statements of this finding.
 
 ---
 
