@@ -4,10 +4,10 @@ Decisions that the build plan routed to the project owner, recorded here with th
 reasoning that produced them. A decision listed here is settled; a lane that
 disagrees should raise it rather than re-open it in passing.
 
-Decisions were delegated to the orchestrating session on 2026-08-24. Two gates in
-the build plan are **not** recorded here because they cannot be delegated: the
-`human_verified` sign-off on knowledge base entries, and OSF pre-registration. See
-"Gates that remain with a person" at the end.
+Decisions were delegated to the orchestrating session on 2026-08-24. One gate in
+the build plan is **not** recorded here because it cannot be delegated: OSF
+pre-registration. See "Gates that remain with a person" at the end. The knowledge
+base sign-off gate was removed rather than delegated — see D4.
 
 ---
 
@@ -127,17 +127,51 @@ is accepted.
 
 ---
 
+## D4 — The knowledge base is not human-verified, and will not claim to be
+
+**Decision (2026-08-24, project owner): drop the human-verification gate. The
+provenance claim is amended to what is actually true — "LLM-assisted extraction
+with automated verbatim-span validation, no human verification" — and the build
+proceeds. `human_verified` stays `FALSE` on all 127 entries as the honest record
+of that.**
+
+The gate was blocking, and the alternative to blocking on it was ticking it
+falsely, which would have put an untrue sentence in the methods section of a
+write-up whose whole argument is that its provenance is checkable. Removing the
+claim is the honest resolution; the entries are exactly as good or as bad as they
+were, and now the documentation says so.
+
+What the knowledge base *can* still claim is not nothing, and the write-up should
+state it precisely rather than retreating to a vague disclaimer:
+
+- Every entry's `verbatim_span` was located in the extracted text of the paper it
+  cites, and what is stored is a literal slice of that source rather than the
+  model's rendering of it. This was verified against the database, and separately
+  spot-checked by re-extracting sampled papers from their original files.
+- Entries were rejected for a fabricated span, an unsupported evidence tier, a
+  non-actionable takeaway, or a span too short to carry evidence. The genuine
+  fabrication rate over all candidates was measured, not estimated.
+- No human read the entries for whether the *finding* follows from the *span*.
+  That is the specific thing an automated check cannot do and that is now not
+  claimed.
+
+The review machinery in `carelite/kb/review.py` is kept rather than deleted. It
+cost little, it is tested, and it is what a later reviewer would need. It is now
+an available tool rather than a required gate, and the digest should stop
+describing itself as something that must be completed.
+
+**This becomes a limitations entry, not a footnote.** `docs/limitations.md` must
+record it in the same register as the corpus shortfall: the knowledge base is
+machine-extracted and machine-validated, a documented share of candidates were
+rejected as fabrications, and the surviving entries carry provenance that is
+mechanically checkable but semantically unreviewed. Any result that depends on
+knowledge base quality inherits that limitation.
+
+---
+
 ## Gates that remain with a person
 
-**The knowledge base `human_verified` sign-off.** This field means a person read the
-entry. Setting it any other way would make the provenance claim — "LLM-assisted
-extraction, human-verified" — false in a write-up that depends on it. It stays
-`FALSE` on all 127 entries until a person ticks it. What *can* be delegated is the
-work behind it, and that has been done: see `knowledge_base/review/` and the review
-findings routed to the `carelite-kb` lane, which reduce the entries needing a human
-judgement call to a much smaller set than 127.
-
-**OSF pre-registration.** Agents draft it; registration is an account-holder action
-and an irreversible public act. It must happen before inference lane III generates
-any evaluation data — the argument that an against-you naturalness result is
-credible rests entirely on the analysis having been fixed in advance.
+**OSF pre-registration.** Agents draft it; registration is an account-holder
+action and an irreversible public act. It must happen before inference lane III
+generates any evaluation data — the argument that an against-you naturalness
+result is credible rests entirely on the analysis having been fixed in advance.
