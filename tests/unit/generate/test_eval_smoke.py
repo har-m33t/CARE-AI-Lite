@@ -23,7 +23,7 @@ from typing import Any
 import pytest
 
 from carelite.eval import smoke as smoke_mod
-from carelite.eval.smoke import HoldoutGateError, SmokeResult, smoke
+from carelite.eval.smoke import PreflightRefusal, SmokeResult, smoke
 from carelite.generate.conditions import SPEC
 from carelite.generate.graph import GraphDeps, InputPolicy, build_graph
 from carelite.generate.longcontext import CorpusPack
@@ -150,8 +150,8 @@ def test_a_healthy_pipeline_passes_all_six_conditions(tmp_path: Path) -> None:
 
 
 def test_it_defaults_to_the_train_split(tmp_path: Path) -> None:
-    """A smoke test that spent held-out scenarios would leak the holdout before
-    the pre-registration exists, which DECISIONS.md gates."""
+    """A wiring check exercises the same code path either way, so there is no
+    reason for it to spend held-out scenarios."""
     result = _smoke(tmp_path)
     assert result.report.split_counts == {"train": 3 * len(SPEC)}
     assert all(r.extra["split"] == "train" for r in result.records)
@@ -303,33 +303,26 @@ def test_the_render_names_every_condition_and_its_prompt(tmp_path: Path) -> None
         assert spec.prompt_id in rendered
 
 
-def test_the_default_split_is_train(tmp_path: Path) -> None:
+def test_the_default_split_is_train() -> None:
     assert smoke.__kwdefaults__["split"] is Split.TRAIN
-    assert smoke.__kwdefaults__["preregistration_is_submitted"] is False
 
 
-def test_a_holdout_smoke_run_refuses(tmp_path: Path) -> None:
-    """A smoke test is run casually, repeatedly, and often late. That makes it
-    the last place worth letting five held-out cells through: the rows are just
-    as irreversible as the other 1,080."""
-    journal = tmp_path / "smoke.jsonl"
-    with pytest.raises(HoldoutGateError, match=r"DECISIONS\.md"):
-        _smoke(tmp_path, split=Split.HOLDOUT, n_scenarios=2)
-    assert not journal.exists(), "the refusal must land before the journal is truncated"
-
-
-def test_a_holdout_smoke_dry_run_is_allowed(tmp_path: Path) -> None:
-    result = _smoke(tmp_path, split=Split.HOLDOUT, n_scenarios=2, dry_run=True)
-    assert result.report.planned == 2 * len(SPEC)
-
-
-def test_the_override_lets_a_registered_study_smoke_the_holdout(tmp_path: Path) -> None:
-    result = _smoke(tmp_path, split=Split.HOLDOUT, n_scenarios=2, preregistration_is_submitted=True)
+def test_either_split_is_reachable(tmp_path: Path) -> None:
+    """D10 retired the registration gate; holdout is now a plain option that
+    the default simply does not choose."""
+    result = _smoke(tmp_path, split=Split.HOLDOUT, n_scenarios=2)
     assert result.report.split_counts == {"holdout": 2 * len(SPEC)}
     assert all(r.extra["split"] == "holdout" for r in result.records)
 
 
-def test_the_smoke_cli_refuses_with_the_same_exit_code_as_the_runner(tmp_path: Path) -> None:
-    argv = ["--split", "holdout", "--journal", str(tmp_path / "s.jsonl")]
-    assert smoke_mod.main(argv) == 2
-    assert smoke_mod.main([*argv, "--dry-run"]) == 0
+def test_the_smoke_cli_still_exits_2_when_it_refuses_before_generating(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The exit-2 convention outlives the gate that introduced it: a script has
+    to be able to tell "refused, nothing ran" from "ran, some cells failed"."""
+    monkeypatch.setattr(
+        smoke_mod,
+        "run",
+        lambda **_kw: (_ for _ in ()).throw(PreflightRefusal("no digest for gemma4:12b")),
+    )
+    assert smoke_mod.main(["--journal", str(tmp_path / "s.jsonl")]) == 2

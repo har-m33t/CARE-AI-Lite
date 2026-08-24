@@ -49,32 +49,27 @@ halves of this rather than leaving them to the reader.
 scenario record itself rather than from the run's flag. The frozen `generation`
 table has no split column and this lane does not own the schema, so the sidecar
 is where it goes; the point is that a table holding both can be read back
-without a join to the bank, because the pre-registration turns on exactly that
+without a join to the bank, because the analysis plan turns on exactly that
 distinction.
 
-**A holdout run refuses to start until the OSF pre-registration is submitted.**
+**There is no longer a registration gate on the held-out split** (D10). This
+module used to refuse a holdout run until an OSF pre-registration was
+submitted, on the argument that generating those rows was a one-way door: once
+they exist, the plan cannot be registered ahead of them. That reasoning was
+sound and the decision behind it has changed — the project is a local proof of
+concept with no audience to extend it credibility, so the gate was buying
+nothing and blocking the remaining work. `docs/preregistration.md` is kept as a
+git-timestamped record of the plan and the analysis still follows it; it is
+simply not called a pre-registration, and **every result here is descriptive
+rather than confirmatory.**
 
-This is the one place where changing existing behaviour is the right trade,
-because generating held-out data is a one-way door. The moment those rows
-exist, `docs/preregistration.md` can never be registered *as* a
-pre-registration, and build plan v3 §10's entire argument for why an
-against-you naturalness result is credible collapses with it. Nothing recovers
-that — not deleting the rows, not starting over.
+The gate was removed rather than defeated with its own override flag, which is
+why `--preregistration-is-submitted` is gone too instead of being passed. Its
+name was an assertion, and asserting something false to unblock a run is the
+habit these guards exist to prevent.
 
-A warning is the wrong instrument for an irreversible act, because its failure
-mode is someone scrolling past it at 2am. So `--split holdout` plans, counts and
-dry-runs freely, and refuses to generate without
-`--preregistration-is-submitted`. That flag is deliberately long, unabbreviated
-and phrased as a claim the caller is making about the world rather than a knob
-they are turning; it is not something typed by muscle memory. After
-registration it costs one flag on one command, forever.
-
-The gate applies to the production path — a run that resolved its scenarios
-from a split. A caller passing an explicit `scenarios` list has already named
-what it wants one scenario at a time, and every test and harness in the tree
-does exactly that.
-
-**A run also refuses to start on an unresolved model digest.** `resolve_digest`
+**A run still refuses to start on an unresolved model digest,** which never had
+anything to do with registration. `resolve_digest`
 returns `DIGEST_UNAVAILABLE` rather than raising, which is right for provenance
 and wrong as a thing to discover 1,080 generations later: those rows key on a
 non-identity and can never be attributed to a model afterwards. Since
@@ -127,12 +122,10 @@ from carelite.generate.store import CacheKey, GenerationRecord, GenerationStore,
 from carelite.types import Condition, GuidanceRequest, Scenario, Split
 
 __all__ = [
-    "HOLDOUT_OVERRIDE_FLAG",
     "Cell",
-    "HoldoutGateError",
+    "PreflightRefusal",
     "RunReport",
     "assert_digests_resolved",
-    "assert_holdout_registered",
     "build_plan",
     "main",
     "run",
@@ -140,45 +133,14 @@ __all__ = [
 ]
 
 
-#: The override for the held-out gate. Long, unabbreviated, and phrased as an
-#: assertion about the world rather than a setting, because the act it unlocks
-#: cannot be undone.
-HOLDOUT_OVERRIDE_FLAG = "--preregistration-is-submitted"
+class PreflightRefusal(RuntimeError):
+    """A run was refused before its first cell, so nothing was written.
 
-
-class HoldoutGateError(RuntimeError):
-    """A holdout generation was requested before the pre-registration exists."""
-
-
-def assert_holdout_registered(
-    split: Split | str,
-    *,
-    preregistration_is_submitted: bool,
-    dry_run: bool = False,
-) -> None:
-    """Refuse to generate held-out data before the pre-registration is submitted.
-
-    Planning, counting and `--dry-run` are always allowed: they touch nothing,
-    write nothing, and answering "how big is this run" is not the act being
-    gated. Only producing the rows is.
-
-    Raises:
-        HoldoutGateError: on a real holdout run with no override.
+    Distinct from a cell failing mid-run, and `main` maps it to exit code 2 for
+    exactly that reason: a script needs to tell "refused, nothing ran" from
+    "ran, and some cells failed". Everything that raises it is checked before
+    the loop starts.
     """
-    if Split(split) is not Split.HOLDOUT or dry_run or preregistration_is_submitted:
-        return
-    raise HoldoutGateError(
-        "refusing to generate held-out data.\n\n"
-        "DECISIONS.md gates the held-out split on the OSF pre-registration being "
-        "submitted, and this is a one-way door: the moment these rows exist, "
-        "docs/preregistration.md can never be registered as a pre-registration, and "
-        "the credibility argument for the naturalness result goes with it. Deleting "
-        "the rows afterwards does not undo it.\n\n"
-        "Nothing was generated and nothing was written.\n\n"
-        "  --dry-run                        plan and count; always allowed\n"
-        "  --split train                    the 40 training scenarios; always allowed\n"
-        f"  {HOLDOUT_OVERRIDE_FLAG}   assert the registration exists, and proceed"
-    )
 
 
 def assert_digests_resolved(digests: dict[Condition, str]) -> None:
@@ -194,7 +156,7 @@ def assert_digests_resolved(digests: dict[Condition, str]) -> None:
     missing = sorted(c.value for c, digest in digests.items() if digest in ("", DIGEST_UNAVAILABLE))
     if not missing:
         return
-    raise RuntimeError(
+    raise PreflightRefusal(
         f"the daemon did not report a digest for these conditions' models: {missing}. "
         "Every row generated now would key on a non-identity and could never be "
         "attributed to a model afterwards. Check that the daemon is up and that "
@@ -313,6 +275,15 @@ def build_plan(
     return cells
 
 
+def _duration(seconds: float) -> str:
+    """Compact wall time. Seconds under a minute, minutes under an hour, else hours."""
+    if seconds < 60:
+        return f"{seconds:.1f}s"
+    if seconds < 3600:
+        return f"{seconds / 60:.1f}m"
+    return f"{seconds / 3600:.1f}h"
+
+
 def _trace_payload(state: dict[str, Any]) -> dict[str, Any] | None:
     trace = state.get("trace")
     if trace is None:
@@ -371,7 +342,6 @@ def run(
     limit: int | None = None,
     dry_run: bool = False,
     require_committed: bool = False,
-    preregistration_is_submitted: bool = False,
     on_cell: Callable[[Cell, int, int], None] | None = None,
 ) -> RunReport:
     """Generate every planned cell that is not already stored.
@@ -382,7 +352,7 @@ def run(
             (the default, 60 scenarios) or `Split.TRAIN` (40). Mutually
             exclusive with `scenarios`: passing both would let the flag and the
             data disagree about what the run is, which is the one thing the
-            pre-registration cannot tolerate.
+            analysis cannot tolerate.
         scenarios: an explicit list, for tests and ablations. Defaults to the
             held-out scenarios from the frozen bank.
         conditions: defaults to all six.
@@ -395,14 +365,10 @@ def run(
             a blob in the git object database. Use it for the real run: a
             result produced by a prompt that exists only in a working tree is
             not reproducible.
-        preregistration_is_submitted: the caller's assertion that the OSF
-            pre-registration exists. Required to generate the held-out split;
-            see `assert_holdout_registered`.
-
     Raises:
-        HoldoutGateError: a real holdout run with no override.
-        RuntimeError: an uncommitted prompt under `require_committed`, or a
-            model digest the daemon would not name.
+        PreflightRefusal: an uncommitted prompt under `require_committed`, or a
+            model digest the daemon would not name. Both are checked before the
+            first cell, so nothing has been written when they fire.
     """
     settings = get_settings()
     started = time.monotonic()
@@ -414,16 +380,7 @@ def run(
             "read off its scenarios, so a `split` argument here could only contradict it."
         )
     if scenarios is None:
-        # The production path: the split was asked for by name, so this is the
-        # invocation the gate exists for. An explicit `scenarios` list is a
-        # caller naming what it wants one record at a time, and is left alone.
-        chosen_split = Split.HOLDOUT if split is None else Split(split)
-        assert_holdout_registered(
-            chosen_split,
-            preregistration_is_submitted=preregistration_is_submitted,
-            dry_run=dry_run,
-        )
-        scenarios = scenarios_for_split(chosen_split)
+        scenarios = scenarios_for_split(Split.HOLDOUT if split is None else split)
     if conditions is None:
         conditions = list(SPEC)
     if samples is None:
@@ -437,7 +394,7 @@ def run(
         status = prompts.verify_committed(prompt_ids)
         missing = sorted(p for p, ok in status.items() if not ok)
         if missing:
-            raise RuntimeError(
+            raise PreflightRefusal(
                 "these prompts are not committed, so a result generated now could not be "
                 f"recovered from history: {missing}. Commit them, or drop "
                 "--require-committed and accept that the run is not reproducible."
@@ -548,9 +505,9 @@ def _build_parser() -> argparse.ArgumentParser:
             "training scenarios instead, which is what the judge-validation "
             "study is scored against."
         ),
-        # argparse abbreviates long options by default, which would make
-        # `--prereg` unlock the held-out split. An override that can be
-        # shortened is not the override this gate was asked for.
+        # argparse abbreviates long options by default, so `--req` would pass
+        # `--require-committed` and `--reg` would pass `--register-prompts`.
+        # Options that change what a run writes should have to be typed.
         allow_abbrev=False,
     )
     parser.add_argument(
@@ -566,14 +523,6 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--limit", type=int, default=None, help="stop after N new cells")
     parser.add_argument("--dry-run", action="store_true", help="plan and count, generate nothing")
     parser.add_argument("--require-committed", action="store_true")
-    parser.add_argument(
-        HOLDOUT_OVERRIDE_FLAG,
-        action="store_true",
-        help=(
-            "assert that the OSF pre-registration has been submitted. Required to "
-            "generate the held-out split; see DECISIONS.md."
-        ),
-    )
     parser.add_argument("--register-prompts", action="store_true", help="upsert prompt_version")
     return parser
 
@@ -584,18 +533,6 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - CLI wr
 
     settings = get_settings()
     split = Split(args.split)
-
-    # Checked before the store is even opened, so a refusal leaves no journal,
-    # no connection and no sidecar behind.
-    try:
-        assert_holdout_registered(
-            split,
-            preregistration_is_submitted=args.preregistration_is_submitted,
-            dry_run=args.dry_run,
-        )
-    except HoldoutGateError as exc:
-        print(f"carelite.generate.runner: {exc}", file=sys.stderr)
-        return 2
 
     # The two splits get different default filenames. Correctness does not need
     # it — the cache key already keeps them apart — but a 1,080-row holdout
@@ -617,10 +554,33 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - CLI wr
 
     print(f"split={split.value}", flush=True)
 
+    # Every line is timestamped and carries how long the previous cell took.
+    #
+    # This exists because of a real incident: a sibling lane's run went silent
+    # for forty minutes under daemon contention and was nearly killed as hung.
+    # It was not hung — it was queued behind another lane, and it resumed and
+    # finished on its own. Waiting was the correct behaviour, so this
+    # deliberately does not abort; what was missing was any way to tell
+    # starvation from a crash without reconstructing it by hand from `wc -l` on
+    # a cache file.
+    #
+    # `on_cell` fires *before* a cell runs, so the gap between two lines is the
+    # duration of the cell between them, and the wall clock on the last line is
+    # when the cell now in flight started. `tail -1` plus the current time
+    # therefore answers "is it stuck, or just slow?" — which is the whole
+    # question — with no background thread and nothing to abort by mistake.
+    last_started: float | None = None
+    run_started = time.monotonic()
+
     def progress(cell: Cell, index: int, total: int) -> None:
+        nonlocal last_started
+        now = time.monotonic()
+        previous = "" if last_started is None else f" prev {_duration(now - last_started)}"
+        last_started = now
         print(
-            f"[{index}/{total}] {cell.scenario.scenario_id} "
-            f"{cell.spec.condition.value} sample={cell.sample_idx}",
+            f"[{index}/{total}] {time.strftime('%H:%M:%S')} "
+            f"{cell.scenario.scenario_id} {cell.spec.condition.value} "
+            f"sample={cell.sample_idx}{previous} elapsed {_duration(now - run_started)}",
             flush=True,
         )
 
@@ -633,10 +593,11 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - CLI wr
             limit=args.limit,
             dry_run=args.dry_run,
             require_committed=args.require_committed,
-            preregistration_is_submitted=args.preregistration_is_submitted,
             on_cell=progress,
         )
-    except HoldoutGateError as exc:  # belt and braces: `run` gates too
+    except PreflightRefusal as exc:
+        # Refused before the first cell: nothing was generated and nothing was
+        # written. Exit 2 so a script can tell that from "ran, some cells failed".
         print(f"carelite.generate.runner: {exc}", file=sys.stderr)
         return 2
     finally:

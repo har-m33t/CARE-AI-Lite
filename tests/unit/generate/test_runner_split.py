@@ -9,22 +9,24 @@ is left to the reader.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any
 
 import pytest
 
 from carelite.config import seed_for
+from carelite.generate import runner as runner_mod
+from carelite.generate.conditions import spec_for
 from carelite.generate.graph import GraphDeps, build_graph
 from carelite.generate.model import DIGEST_UNAVAILABLE, GenerationClient
 from carelite.generate.runner import (
-    HOLDOUT_OVERRIDE_FLAG,
-    HoldoutGateError,
+    Cell,
+    PreflightRefusal,
+    RunReport,
     _build_parser,
     assert_digests_resolved,
-    assert_holdout_registered,
     build_plan,
-    main,
     run,
     scenarios_for_split,
 )
@@ -207,94 +209,48 @@ def test_the_route_distribution_is_reported(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-class TestTheHoldoutGate:
-    """Generating held-out data is a one-way door.
+class TestWhatTheSplitFlagDoes:
+    """D10 retired the registration gate. What remains is a plain selector.
 
-    The moment those rows exist, `docs/preregistration.md` can never be
-    registered *as* a pre-registration and build plan v3 section 10's argument
-    for why an against-you naturalness result is credible collapses with it.
-    Nothing recovers that. So the refusal is the default and the override is an
-    assertion the caller makes, not a knob it turns.
-
-    What must stay true, and is asserted below rather than described: planning
-    and counting are never gated, the train split is never gated, an explicit
-    scenario list is never gated, the override cannot be abbreviated into
-    existence, and a refusal writes nothing at all.
+    These used to assert a refusal. The decision they enforced was reversed —
+    this is a local proof of concept with no audience, so the gate was blocking
+    the remaining work in exchange for credibility nobody will be asked to
+    extend. What is worth keeping is the evidence that removing it did not take
+    anything else with it: both splits still run, both are still labelled, and
+    the option-abbreviation fix outlives the flag it was written for.
     """
 
-    def test_a_real_holdout_run_refuses(self, tmp_path: Path) -> None:
-        journal = tmp_path / "g.jsonl"
-        with pytest.raises(HoldoutGateError):
-            _run_by_split(journal, split=Split.HOLDOUT, conditions=[Condition.A], samples=1)
-        assert not journal.exists(), "a refusal must not leave a journal behind"
-
-    def test_the_refusal_names_the_decision_the_reason_and_the_way_through(self) -> None:
-        with pytest.raises(HoldoutGateError) as exc:
-            assert_holdout_registered(Split.HOLDOUT, preregistration_is_submitted=False)
-        message = str(exc.value)
-        assert "DECISIONS.md" in message
-        assert "one-way door" in message
-        assert "Nothing was generated and nothing was written." in message
-        assert HOLDOUT_OVERRIDE_FLAG in message
-        assert "--split train" in message
-        assert "--dry-run" in message
-
-    def test_planning_and_counting_are_never_gated(self, tmp_path: Path) -> None:
-        """`--dry-run` writes nothing and reaches no model, so it is not the act
-        being gated. Someone has to be able to ask how big the run is."""
-        report = _run_by_split(tmp_path / "g.jsonl", split=Split.HOLDOUT, samples=3, dry_run=True)
-        assert report.planned == 1080
-
-    def test_the_train_split_is_never_gated(self, tmp_path: Path) -> None:
-        report = _run_by_split(
-            tmp_path / "g.jsonl", split=Split.TRAIN, conditions=[Condition.A], samples=1, limit=2
+    def test_both_splits_generate(self, tmp_path: Path) -> None:
+        holdout = _run_by_split(
+            tmp_path / "h.jsonl", split=Split.HOLDOUT, conditions=[Condition.A], samples=1, limit=2
         )
-        assert report.generated == 2
-
-    def test_the_override_lets_a_registered_study_through(self, tmp_path: Path) -> None:
-        report = _run_by_split(
-            tmp_path / "g.jsonl",
-            split=Split.HOLDOUT,
-            conditions=[Condition.A],
-            samples=1,
-            limit=2,
-            preregistration_is_submitted=True,
+        train = _run_by_split(
+            tmp_path / "t.jsonl", split=Split.TRAIN, conditions=[Condition.A], samples=1, limit=2
         )
-        assert report.generated == 2
+        assert holdout.generated == train.generated == 2
+        assert holdout.split_counts == {"holdout": 60}
+        assert train.split_counts == {"train": 40}
 
-    def test_an_explicit_scenario_list_is_not_gated(self, tmp_path: Path) -> None:
-        """The documented carve-out. A caller passing records one at a time has
-        already named what it wants, and every harness in the tree does that —
-        including the resumability child, which drives holdout-shaped
-        scenarios through the real loop."""
-        holdout = scenarios_for_split(Split.HOLDOUT)[:2]
-        report, _ = _run(list(holdout), tmp_path / "g.jsonl")
-        assert report.generated == 2
-        assert report.split_counts == {"holdout": 2}
+    def test_no_flag_asserts_something_about_a_registration(self) -> None:
+        """The gate was removed rather than defeated with its own override, so
+        the flag went with it: a flag nobody should ever pass is worse than no
+        flag. Its name was an assertion, and passing it after D10 would have
+        asserted something false in order to unblock a run."""
+        options = {
+            option for action in _build_parser()._actions for option in action.option_strings
+        }
+        assert not [o for o in options if "prereg" in o or "registration" in o]
 
-    def test_the_gate_function_is_the_same_one_smoke_uses(self) -> None:
-        """One implementation, so the runner and the smoke target cannot drift
-        into disagreeing about what is allowed."""
-        from carelite.eval import smoke as smoke_mod
-
-        assert smoke_mod.assert_holdout_registered is assert_holdout_registered
-
-    def test_the_override_is_phrased_as_an_assertion_and_cannot_be_shortened(self) -> None:
-        """A flag that can be abbreviated to `--prereg` is not an override that
-        resists muscle memory, and argparse abbreviates long options by
-        default."""
-        assert HOLDOUT_OVERRIDE_FLAG == "--preregistration-is-submitted"
+    def test_options_still_cannot_be_abbreviated(self) -> None:
+        """Kept on its own merits after the flag it was written for went away.
+        argparse would otherwise let `--req` pass `--require-committed` and
+        `--reg` pass `--register-prompts`, either of which changes what a run
+        writes."""
         parser = _build_parser()
-        with pytest.raises(SystemExit):
-            parser.parse_args(["--prereg"])
-        assert parser.parse_args([HOLDOUT_OVERRIDE_FLAG]).preregistration_is_submitted is True
-
-    def test_the_cli_refuses_with_its_own_exit_code(self, tmp_path: Path) -> None:
-        """2, not 1: "refused, nothing ran" is a different outcome from "ran and
-        some cells failed", and a script should be able to tell them apart."""
-        argv = ["--store", "jsonl", "--journal", str(tmp_path / "g.jsonl")]
-        assert main(argv) == 2
-        assert main([*argv, "--dry-run"]) == 0
+        for abbreviation in ("--req", "--reg", "--sp"):
+            with pytest.raises(SystemExit):
+                parser.parse_args([abbreviation])
+        assert parser.parse_args(["--require-committed"]).require_committed is True
 
 
 # ---------------------------------------------------------------------------
@@ -307,7 +263,7 @@ def test_a_run_refuses_to_key_itself_on_an_unresolved_digest(tmp_path: Path) -> 
     weights produced it. `DIGEST_UNAVAILABLE` is an honest record of not knowing
     and a useless thing to discover after 1,080 generations: every affected cell
     has to be regenerated, because its key was never the key it should be."""
-    with pytest.raises(RuntimeError, match="did not report a digest"):
+    with pytest.raises(PreflightRefusal, match="did not report a digest"):
         assert_digests_resolved({Condition.A: "sha256:real", Condition.B: DIGEST_UNAVAILABLE})
 
     assert_digests_resolved({Condition.A: "sha256:real"})  # the healthy case is silent
@@ -320,7 +276,7 @@ def test_the_digest_gate_is_reached_when_the_runner_resolves_them_itself(
     test guardrail in `model.py` a real client resolves nothing, which is
     exactly the shape of a wedged daemon."""
     store = JsonlStore(path=tmp_path / "g.jsonl")
-    with pytest.raises(RuntimeError, match="did not report a digest"):
+    with pytest.raises(PreflightRefusal, match="did not report a digest"):
         run(
             store=store,
             scenarios=scenarios_for_split(Split.TRAIN)[:1],
@@ -330,3 +286,61 @@ def test_the_digest_gate_is_reached_when_the_runner_resolves_them_itself(
             graph=build_graph(prefer_langgraph=False),
         )
     store.close()
+
+
+# ---------------------------------------------------------------------------
+# Telling starvation from a crash
+# ---------------------------------------------------------------------------
+
+
+def test_the_progress_line_timestamps_every_cell_and_times_the_previous_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: Any
+) -> None:
+    """A sibling lane's run went silent for forty minutes under daemon
+    contention and was nearly killed as hung. It was queued, not hung, and it
+    finished on its own — so the runner deliberately does not abort. What was
+    missing was any way to tell the two apart without reconstructing it by hand
+    from `wc -l` on a cache file.
+
+    `on_cell` fires before a cell runs, so the wall clock on the last line is
+    when the cell still in flight started, and the gap between two lines is how
+    long the cell between them took. `tail -1` plus the current time then
+    answers "stuck, or just slow?".
+    """
+    cells = [
+        Cell(
+            scenario=_scenario("SC-P01", Split.TRAIN),
+            spec=spec_for(Condition.A),
+            sample_idx=i,
+            seed=1,
+            model_digest="sha256:x",
+        )
+        for i in range(3)
+    ]
+
+    def fake_run(**kwargs: Any) -> RunReport:
+        on_cell = kwargs["on_cell"]
+        for index, cell in enumerate(cells, start=1):
+            on_cell(cell, index, len(cells))
+        return RunReport(planned=3, generated=3)
+
+    monkeypatch.setattr(runner_mod, "run", fake_run)
+    assert runner_mod.main(["--store", "jsonl", "--journal", str(tmp_path / "g.jsonl")]) == 0
+
+    lines = [ln for ln in capsys.readouterr().out.splitlines() if ln.startswith("[")]
+    assert len(lines) == 3
+    for index, line in enumerate(lines, start=1):
+        assert line.startswith(f"[{index}/3] ")
+        # HH:MM:SS, so a reader can compare the last line against the clock.
+        assert re.search(r"\[\d/3\] \d{2}:\d{2}:\d{2} SC-P01 A sample=", line)
+        assert "elapsed " in line
+    # The first cell has no predecessor to have timed; every later one does.
+    assert "prev " not in lines[0]
+    assert all("prev " in line for line in lines[1:])
+
+
+def test_duration_stays_readable_across_the_scales_a_long_run_spans() -> None:
+    assert runner_mod._duration(8.42) == "8.4s"
+    assert runner_mod._duration(150) == "2.5m"
+    assert runner_mod._duration(40 * 60) == "40.0m"
+    assert runner_mod._duration(3 * 3600) == "3.0h"
