@@ -1,14 +1,27 @@
 """End-to-end tests of the Typer commands, driven entirely through
-`StubEngine` (via `resolve_engine`'s fallback — there is no
-`carelite.generate.engine` in this checkout, so every invocation here uses
-the stub). No live model, no database required."""
+`StubEngine`. `carelite.generate.engine` is real now (`73071d5`), so
+`resolve_engine()` on its own would hand every command a live `CareliteEngine`
+— a live Ollama call and a live HuggingFace Hub retrieval fetch per
+invocation. The `runner` fixture in `conftest.py` pins `resolve_engine` to
+`StubEngine` for every test in this module, which is what actually keeps
+these tests off the model and the network; nothing here relies on the real
+engine being absent. No live model, no database required."""
 
 from __future__ import annotations
 
+import pytest
 from typer.testing import CliRunner
 
+import carelite.cli.main as cli_main
 from carelite.cli.main import app
-from carelite.types import Condition, GuidanceResponse
+from carelite.types import (
+    Condition,
+    CRAGGrade,
+    GuidanceRequest,
+    GuidanceResponse,
+    RetrievalTrace,
+    Route,
+)
 
 
 def test_ask_prints_disclaimer_and_guidance(runner: CliRunner):
@@ -33,7 +46,34 @@ def test_ask_json_validates_against_guidance_response_schema(runner: CliRunner):
     assert response.trace is not None
 
 
-def test_ask_json_exposes_fallback_flag(runner: CliRunner):
+def test_ask_json_exposes_fallback_flag(runner: CliRunner, monkeypatch: pytest.MonkeyPatch):
+    """The --json surface must report `trace.fell_back_to_b` faithfully.
+
+    This used to reach that state by phrasing the utterance so retrieval's
+    live CRAG grading fell back to condition B — a retrieval-lane decision no
+    file under `carelite/cli/` controls, and one retrieval now correctly
+    grades RELEVANT for that query, which is exactly the fragility: the
+    assertion could flip for reasons that have nothing to do with whether
+    this lane's JSON surface is faithful. Instead, pin the engine to a fake
+    that hands back a trace with `fell_back_to_b=True` by construction, and
+    check only that the CLI's JSON output preserves it.
+    """
+    fallback_trace = RetrievalTrace(
+        route=Route.MIXED,
+        crag_grade=CRAGGrade.NONE,
+        fell_back_to_b=True,
+    )
+
+    class _FallbackEngine:
+        def guide(self, request: GuidanceRequest) -> GuidanceResponse:
+            return GuidanceResponse(
+                text="guidance under condition B",
+                condition=Condition.C,
+                trace=fallback_trace,
+            )
+
+    monkeypatch.setattr(cli_main, "resolve_engine", _FallbackEngine)
+
     result = runner.invoke(
         app, ["ask", "there is no evidence for this obscure condition", "--json"]
     )
