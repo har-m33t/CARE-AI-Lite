@@ -210,3 +210,108 @@ def test_build_kb_entries_handles_empty_scope_without_calling_embedder():
     )
     assert stats.total == 0
     assert not embedder.calls
+
+
+@pytest.fixture
+def _temp_kb_entry():
+    """One throwaway paper + kb_entry, cleaned up (state row included) after
+    the test. Mirrors `_temp_chunk`: every `build_kb_entries` call here passes
+    `only_ref_ids=[entry_id]`, so — same rationale as `_temp_chunk`'s docstring
+    — nothing outside this fixture is ever read or written. This is the real
+    row exercise `test_build_kb_entries_handles_empty_scope_without_calling_
+    embedder` above deliberately doesn't attempt (it only proves the empty
+    path never calls Ollama); the gap this fills is proving the actual
+    embed-and-store path — the one that sat unexercised against a populated
+    `kb_entry` table until this incident (see `build.py`'s module docstring)
+    — works end to end against real Postgres.
+    """
+    ensure_state_table()
+    paper_id = "test-index-build-kb-paper"
+    entry_id = "test-index-build-kb-entry"
+    with transaction() as conn:
+        conn.execute(
+            "INSERT INTO paper (paper_id, apa_citation, evidence_tier) "
+            "VALUES (%s, %s, 'strong') ON CONFLICT (paper_id) DO NOTHING",
+            [paper_id, "Test, T. (2026). A fixture paper."],
+        )
+        conn.execute(
+            "INSERT INTO kb_entry (entry_id, theme, finding, practical_takeaway, "
+            "example_behavior, evidence_tier, action_type, verbatim_span) "
+            "VALUES (%s, 'teach_back', %s, %s, %s, 'strong', 'generation', %s) "
+            "ON CONFLICT (entry_id) DO UPDATE SET "
+            "finding = EXCLUDED.finding, practical_takeaway = EXCLUDED.practical_takeaway, "
+            "example_behavior = EXCLUDED.example_behavior, embedding = NULL",
+            [
+                entry_id,
+                "Fixture finding for carelite-index build tests.",
+                "Fixture practical takeaway.",
+                "Fixture example behavior.",
+                "Fixture finding for carelite-index build tests.",
+            ],
+        )
+    yield entry_id
+    with transaction() as conn:
+        conn.execute(
+            "DELETE FROM index_embedding_state WHERE ref_id = %s AND kind = 'kb_entry'",
+            [entry_id],
+        )
+        conn.execute("DELETE FROM kb_entry WHERE entry_id = %s", [entry_id])
+        conn.execute("DELETE FROM paper WHERE paper_id = %s", [paper_id])
+
+
+@pytest.mark.db
+def test_build_kb_entries_embeds_a_new_row_and_records_state(_temp_kb_entry):
+    embedder = FakeEmbedder(digest="digest-v1")
+    stats = build_kb_entries(embedder, batch_size=8, only_ref_ids=[_temp_kb_entry])
+    assert stats.total == 1
+    assert stats.embedded == 1
+    assert embedder.calls  # actually called
+
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT embedding IS NOT NULL AS has_embedding FROM kb_entry WHERE entry_id = %s",
+            [_temp_kb_entry],
+        ).fetchone()
+        assert row["has_embedding"]
+        state = conn.execute(
+            "SELECT model_digest, content_hash FROM index_embedding_state "
+            "WHERE ref_id = %s AND kind = 'kb_entry'",
+            [_temp_kb_entry],
+        ).fetchone()
+        assert state["model_digest"] == "digest-v1"
+
+
+@pytest.mark.db
+def test_build_kb_entries_is_resumable_skips_current_rows(_temp_kb_entry):
+    embedder = FakeEmbedder(digest="digest-v1")
+    build_kb_entries(embedder, batch_size=8, only_ref_ids=[_temp_kb_entry])
+
+    # Second run, same digest, unchanged text: nothing new to embed.
+    embedder2 = FakeEmbedder(digest="digest-v1")
+    stats2 = build_kb_entries(embedder2, batch_size=8, only_ref_ids=[_temp_kb_entry])
+    assert not embedder2.calls
+    assert stats2.skipped_current == 1
+    assert stats2.embedded == 0
+
+
+@pytest.mark.db
+def test_build_kb_entries_reembeds_on_digest_change(_temp_kb_entry):
+    build_kb_entries(FakeEmbedder(digest="digest-v1"), batch_size=8, only_ref_ids=[_temp_kb_entry])
+    embedder2 = FakeEmbedder(digest="digest-v2")
+    stats2 = build_kb_entries(embedder2, batch_size=8, only_ref_ids=[_temp_kb_entry])
+    assert embedder2.calls  # model changed -> re-embedded
+    assert stats2.embedded == 1
+
+
+@pytest.mark.db
+def test_build_kb_entries_reembeds_on_text_change(_temp_kb_entry):
+    build_kb_entries(FakeEmbedder(digest="digest-v1"), batch_size=8, only_ref_ids=[_temp_kb_entry])
+    with transaction() as conn:
+        conn.execute(
+            "UPDATE kb_entry SET finding = %s WHERE entry_id = %s",
+            ["Edited fixture finding — content changed, digest did not.", _temp_kb_entry],
+        )
+    embedder2 = FakeEmbedder(digest="digest-v1")
+    stats2 = build_kb_entries(embedder2, batch_size=8, only_ref_ids=[_temp_kb_entry])
+    assert embedder2.calls  # text changed under the same digest -> re-embedded
+    assert stats2.embedded == 1

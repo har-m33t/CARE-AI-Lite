@@ -13,8 +13,11 @@ import pytest
 from carelite.index.probes import PROBES, run_all_probes
 
 
-def test_there_are_exactly_ten_probes():
-    assert len(PROBES) == 10
+def test_there_are_exactly_twelve_probes():
+    """10 chunk probes (written while kb_entry was still empty) plus 2
+    kb_entry probes (lexical + dense) added once kb_entry.embedding was
+    actually populated — see probes.py's module docstring."""
+    assert len(PROBES) == 12
 
 
 def test_probe_ids_are_unique():
@@ -37,9 +40,17 @@ def test_probes_cover_both_lexical_and_dense_modes():
     assert modes == {"lexical", "dense"}
 
 
+def test_probes_cover_both_chunk_and_kb_entry_targets():
+    """Guards against the exact regression this lane shipped: a probe suite
+    that only ever queries `chunk` cannot detect `kb_entry.embedding IS
+    NULL` on every row, because it never issues a `kb_entry` query at all."""
+    targets = {p.target for p in PROBES}
+    assert targets == {"chunk", "kb_entry"}
+
+
 @pytest.mark.db
 @pytest.mark.inference
-def test_all_ten_probes_pass_against_the_live_corpus():
+def test_all_twelve_probes_pass_against_the_live_corpus():
     results = run_all_probes()
     failed = [r for r in results if not r.passed]
     assert not failed, "\n".join(str(r) for r in failed)

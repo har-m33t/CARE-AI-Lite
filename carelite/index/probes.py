@@ -25,10 +25,15 @@ substring that's true of the corpus content is far more durable than one
 keyed to an identifier that's an implementation detail of how many chunks a
 paper split into today.
 
-All ten probes currently target `chunk`, because `kb_entry` is empty until
-`carelite-kb` finishes (see `build.py`). The runner is written generically
-over `target` so kb_entry probes can be added the moment that lane lands,
-without changing the harness.
+Probes 1-10 target `chunk`; they were written while `kb_entry` was still
+empty (`carelite-kb` had not finished, and `kb_entry.embedding` was
+consequently NULL on every row — see `build.py`'s module docstring for the
+incident where that stayed true silently well past the point `kb_entry` was
+populated). Probes 11-12 target `kb_entry` and exist specifically to prove
+the dense KB leg now returns real hits rather than the silent nothing it
+returned before that gap was closed — a chunk-only probe suite cannot
+detect a `kb_entry.embedding IS NULL` regression, since it never queries
+that column.
 
 Run it directly for a human-readable report:
 
@@ -66,7 +71,7 @@ class Probe:
 
 
 # ---------------------------------------------------------------------------
-# The 10 probes.
+# The 12 probes.
 #
 # 1-5 are lexical, exercising the exact framework terms named in the brief
 #     and in fts.py's docstring. Grounded against real hit counts in the live
@@ -76,6 +81,13 @@ class Probe:
 #     a natural question that deliberately does NOT quote the expected
 #     substring, so a pass demonstrates real semantic retrieval rather than
 #     an accidental lexical match riding along on the dense path.
+# 11-12 target kb_entry rather than chunk (see the module docstring): 11 is
+#     lexical, 12 is dense/semantic, both against the 15-entry teach_back
+#     cluster, which is large enough in this 116-row table to be a stable
+#     target. 12 in particular is the probe that would have caught the
+#     `kb_entry.embedding IS NULL` regression this lane shipped silently —
+#     it is a direct check that dense KB retrieval is alive, not just that
+#     the query pipeline runs without error.
 # ---------------------------------------------------------------------------
 PROBES: tuple[Probe, ...] = (
     Probe(
@@ -156,6 +168,29 @@ PROBES: tuple[Probe, ...] = (
         "as it spells the phrase out ('implementation of SDM in practice'); "
         "the original ('activation', 'shared decision') AND-tuple demanded "
         "wording the top hits legitimately don't use.",
+    ),
+    Probe(
+        probe_id="p11_teach_back_lexical_kb",
+        query="teach-back method",
+        mode="lexical",
+        must_contain=("teach-back",),
+        target="kb_entry",
+        note="kb_entry analogue of p02; confirms the hyphenated compound "
+        "survives kb_entry.tsv's tokenization the same way it survives "
+        "chunk.tsv's.",
+    ),
+    Probe(
+        probe_id="p12_teach_back_dense_kb",
+        query="Confirming a patient truly understood their care instructions "
+        "by having them explain it back in their own words",
+        mode="dense",
+        must_contain=("teach-back",),
+        target="kb_entry",
+        note="paraphrased, no literal 'teach-back' in the query. This is the "
+        "probe that exercises kb_entry.embedding directly — a NULL "
+        "embedding on every row (the actual incident this lane shipped and "
+        "carelite-retrieval caught) would make this probe fail with zero "
+        "hits, since the query filters WHERE embedding IS NOT NULL.",
     ),
 )
 
