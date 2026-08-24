@@ -197,7 +197,133 @@ class TestParseSignoff:
 
 @pytest.mark.db
 class TestSignoffAgainstPostgres:
+    SEED_PAPER = "10.1/kb-review-signoff-test"
+    SEED_ENTRY = "kb-teach_back-0000000042"
+
+    @pytest.fixture
+    def _seeded(self):
+        """One entry of our own to sign off, removed afterwards.
+
+        The database holds the real knowledge base and other lanes' work, so
+        this must never tick a row it did not create.
+        """
+        from carelite.db import connect
+
+        with connect(autocommit=True) as conn:
+            conn.execute(
+                "INSERT INTO paper (paper_id, doi, apa_citation, evidence_tier) "
+                "VALUES (%s, %s, %s, 'strong') ON CONFLICT (paper_id) DO NOTHING",
+                (self.SEED_PAPER, self.SEED_PAPER, "review signoff test paper"),
+            )
+            conn.execute(
+                "INSERT INTO kb_entry (entry_id, theme, finding, practical_takeaway, "
+                "example_behavior, evidence_tier, action_type, verbatim_span) "
+                "VALUES (%s, 'teach_back', %s, %s, %s, 'strong', 'generation', %s) "
+                "ON CONFLICT (entry_id) DO NOTHING",
+                (
+                    self.SEED_ENTRY,
+                    "seeded finding",
+                    "Ask the patient to restate the plan in their own words.",
+                    "Inviting a restatement before closing.",
+                    SPAN,
+                ),
+            )
+            conn.execute(
+                "INSERT INTO kb_entry_source (entry_id, paper_id) VALUES (%s, %s) "
+                "ON CONFLICT DO NOTHING",
+                (self.SEED_ENTRY, self.SEED_PAPER),
+            )
+        yield
+        with connect(autocommit=True) as conn:
+            conn.execute("DELETE FROM kb_entry WHERE entry_id = %s", (self.SEED_ENTRY,))
+            conn.execute("DELETE FROM paper WHERE paper_id = %s", (self.SEED_PAPER,))
+
     def test_record_signoff_returns_zero_for_an_empty_list(self) -> None:
         from carelite.kb.review import record_signoff
 
         assert record_signoff([]) == 0
+
+    def test_a_ticked_digest_flips_human_verified_and_an_unticked_one_does_not(
+        self, _seeded, tmp_path
+    ) -> None:
+        """The gate, end to end: a reviewer's tick is what sets `human_verified`.
+
+        This is the only place in the pipeline where a human's judgment enters,
+        so the round-trip is worth testing in the form the reviewer performs it
+        — editing the Markdown file and running the sign-off command — rather
+        than by calling `record_signoff` directly with an id.
+        """
+        from carelite.db import connect
+        from carelite.kb.review import apply_signoff
+
+        def verified() -> bool:
+            with connect() as conn:
+                row = conn.execute(
+                    "SELECT human_verified FROM kb_entry WHERE entry_id = %s", (self.SEED_ENTRY,)
+                ).fetchone()
+            assert row is not None
+            return bool(row["human_verified"])
+
+        assert verified() is False
+
+        digest = tmp_path / "digest.md"
+        digest.write_text(f"- [ ] `{self.SEED_ENTRY}`\n", encoding="utf-8")
+        result = apply_signoff(digest, reviewer="tester")
+        assert result["approved"] == 0
+        assert verified() is False, "an unticked entry must never be recorded as reviewed"
+
+        digest.write_text(f"- [x] `{self.SEED_ENTRY}`\n", encoding="utf-8")
+        result = apply_signoff(digest, reviewer="tester")
+        assert result["approved"] == 1
+        assert result["rows_updated"] == 1
+        assert verified() is True
+
+    def test_reloading_an_entry_does_not_undo_its_signoff(self, _seeded) -> None:
+        """The failure this lane most needs to not have: a quiet un-verify.
+
+        Adding `human_verified` to the loader's ON CONFLICT clause would break
+        nothing visibly and would silently discard every review decision on the
+        next load. `test_upsert_never_touches_human_verified` checks the SQL;
+        this checks the behaviour against a live database.
+        """
+        from carelite.db import connect
+        from carelite.kb.load import load_entries
+        from carelite.kb.review import record_signoff
+        from carelite.kb.validate import ValidatedEntry
+        from carelite.types import ActionType, EvidenceTier, KBEntry, Theme
+
+        assert record_signoff([self.SEED_ENTRY]) == 1
+
+        entry = KBEntry(
+            entry_id=self.SEED_ENTRY,
+            theme=Theme.TEACH_BACK,
+            finding="seeded finding, reloaded",
+            practical_takeaway="Ask the patient to restate the plan in their own words.",
+            example_behavior="Inviting a restatement before closing.",
+            evidence_tier=EvidenceTier.STRONG,
+            action_type=ActionType.GENERATION,
+            verbatim_span=SPAN,
+            source_paper_ids=[self.SEED_PAPER],
+        )
+        load_entries(
+            [
+                ValidatedEntry(
+                    entry=entry,
+                    paper_id=self.SEED_PAPER,
+                    span_start=0,
+                    span_end=len(SPAN),
+                    span_was_exact=True,
+                    paper_sha256=hashlib.sha256(b"x").hexdigest(),
+                    claimed_tier=EvidenceTier.STRONG,
+                )
+            ]
+        )
+
+        with connect() as conn:
+            row = conn.execute(
+                "SELECT finding, human_verified FROM kb_entry WHERE entry_id = %s",
+                (self.SEED_ENTRY,),
+            ).fetchone()
+        assert row is not None
+        assert row["finding"] == "seeded finding, reloaded", "the reload should have happened"
+        assert row["human_verified"] is True, "and must not have cleared the sign-off"
