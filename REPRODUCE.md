@@ -231,6 +231,18 @@ a targeted call has no way to know a stale ID was ever valid; only a whole-table
 It's harmless to retrieval and only worth knowing so you don't spend an hour chasing a row-count
 mismatch that isn't a bug.
 
+**Condition LC is `LC-sample`, not the whole corpus stuffed into context, per `DECISIONS.md` D7 —
+know this before you run §7's generation step.** 471 chunks is ~326,526 tokens against a
+128,000-token context window (255% utilisation), so build plan v3 §3's original LC specification is
+not implementable against this corpus. What actually runs is a fixed, **query-independent**
+round-robin selection across all 33 papers at a pinned seed
+(`carelite.retrieval.ablation.lc_sample`): 169 chunks, 35.9% of the corpus. Round-robin rather than
+random sampling guarantees every paper is represented, so LC's content is not an accident of the
+seed. **Any selection rule is itself a form of retrieval** — LC-sample therefore does not test
+"retrieval vs. no retrieval" against Condition C. It tests whether Condition C's *query-dependent*
+selection beats LC-sample's *fixed* context, which is a real question and a narrower one. See
+`docs/preregistration.md` §2 and §4 for the full statement this document only summarizes.
+
 ---
 
 ## 7. Generate and score

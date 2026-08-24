@@ -142,6 +142,36 @@ drifted into. **The consequence for this document and for any results write-up: 
 never be presented as independent evidence, and a retrieval hit on several entries from one theme
 is frequently one finding retrieved several times, not several findings.**
 
+**Two of the eleven scored rubric dimensions have zero knowledge-base grounding, and this bears
+directly on the primary evaluation outcome — `DECISIONS.md` D8.** The behavior-to-framework mapping
+(which entries instantiate which NURSE or Four Habits component) is complete across all 116
+entries: `ie` 40, `epp` 17, `name` 15, `ib` 6, `explore` 5, `understand` 5, `de` 4, **`respect` 0,
+`support` 0**, with 40 entries instantiating none of the nine. Nothing in the 33 retrieved papers
+turns NURSE Respecting (crediting the patient for something specific) or Supporting (partnership
+made concrete — who does what, how to reach someone) into a finding with a quotable span and an
+actionable takeaway. The zeros survived a correction that would have hidden them: an earlier
+mapping filled both and looked plausible until every assignment was read against its source entry,
+which found seven false positives, two of them exactly here (*"verbal affirmations to show you're
+listening"* is a backchannel cue, not crediting; *"collaborative partnership"* is a stance with none
+of Supporting's concrete half). A regression test pins each zero and a companion test confirms the
+matcher still fires on a genuine crediting move. **Consequence: the primary outcome (composite
+NURSE, Condition A vs. B — `docs/preregistration.md` §3) averages five dimensions, two of which
+retrieval structurally cannot ground**, so any Condition C advantage on `respect` or `support`
+specifically has some cause other than retrieval. This is declared in the pre-registration itself,
+before any evaluation data exists, rather than surfacing as a post-hoc explanation. Separately: 13
+entries are flagged `equity_relevant` while the `equity` theme (below) holds 3 — 10 of the 13 sit in
+`plain_language` (5), `teach_back` (3), and `trust_continuity` (2). Reporting only the theme count
+understates what the base holds about equity; reporting only the flag would overstate how much of
+it is centrally *about* a disparity. Both numbers belong together, not either alone.
+
+**The knowledge base's graph layer is populated: 715 edges** across `belongs_to` (116),
+`supports` (116), `has` (149), `appropriate_in` (160), `instantiates` (92, following directly from
+the coverage above), and `restates` (82, the redundancy clusters above materialized as edges rather
+than only as digest prose). **All 116 entries are embedded**, mean pairwise cosine similarity 0.623
+— consistent with, not independent evidence against, the redundancy finding above: a corpus where
+a third of the entries restate each other should show elevated average similarity, and it does.
+Chunk embeddings are unchanged at 471/471 (§5 below has the full index-verification detail).
+
 **The equity knowledge base holds 3 entries, and — this is a finding, not a gap awaiting a
 fix — `DECISIONS.md` D3's outcome establishes that this is a property of the corpus, not of the
 extraction.** D3 approved re-extracting equity entries with a prompt asking for the *compensating
@@ -165,13 +195,11 @@ progress while being a regression.
 move was there to quote, and the model quoted one. Roberts is a meta-analysis: it quantifies a gap
 and correctly never states what closes it. Asked for a move anyway, the model invented one — not a
 prompt defect, and no prompt fixes it, because the literature that measures a disparity is not the
-literature that prescribes a remedy, and this corpus holds the former. **This converges with D5's
-finding about the `racial_ethnic` scenario axis (§3 below) narrowing to a single mechanism.** Both
-are independent measurements of the same underlying gap, worth stating once, plainly, together,
-rather than apologized for separately across sections: **this corpus documents disparities in
-clinician communication considerably better than it documents what to do about them.** Any equity
-subgroup result this project reports should be read with that ceiling in mind, not just the small
-sample size.
+literature that prescribes a remedy, and this corpus holds the former. **This is one of three
+independent measurements of the same gap — §3 below states all three together** rather than
+scattering them as separate caveats: this corpus and this scenario bank measure disparity in
+clinician communication considerably more thoroughly than they measure how to close it, or how to
+power a confirmatory test of closing it.
 
 Concentration is worse than the theme totals suggest for teach-back too, and the redundancy finding
 above sharpens it rather than merely restating it: 12 of its 15 entries come from the single
@@ -193,6 +221,23 @@ Per `DECISIONS.md` D2 and D5, and detailed in `scenarios/EQUITY_REVIEW.md`:
   clinician accordingly — so what the axis actually measures is response to *anticipated dismissal
   and patient credibility-management*, not race-based disparity in communication generally. The
   label is kept for continuity with the frozen split; the description is not.
+- **The confirmatory equity subgroup is n = 20, not the 35 that carry `equity_stratum = true`
+  across the full bank.** `DECISIONS.md` D9(1): confirmatory analysis is restricted to the holdout
+  split, and 15 of the 35 equity scenarios sit in train. Holdout equity composition is `ses` 10,
+  `lep` 4, `racial_ethnic` 6. **At n = 20 the subgroup resolves only large effects (dz ≈ 0.68), and
+  `racial_ethnic` at n = 6 supports no statistical claim at all** — `docs/preregistration.md` §8.5
+  states this and calls the equity analysis descriptive rather than confirmatory for exactly this
+  reason.
+- **Three independent measurements now converge on one finding about this evidence base, and it is
+  stated here once rather than as three separate caveats:** `DECISIONS.md` D3 found the equity
+  knowledge-base theme holds 3 entries as a property of the corpus, not an unfinished extraction
+  (§2 above); the `racial_ethnic` axis bullet immediately above narrows to a single mechanism
+  rather than the disparity its label names; and this bullet's n = 20 (n = 6 for `racial_ethnic`)
+  means the confirmatory subgroup test cannot be powered even where the scenarios exist. **This
+  corpus and this scenario bank measure disparity in clinician communication considerably more
+  thoroughly than they measure how to close it, or how to power a confirmatory test of closing
+  it.** Any equity subgroup result this project reports should be read with that ceiling in mind,
+  not only the small sample size.
 - **The `emotion_intensity = 1` cell is empty in the equity stratum.** SC-010, the only equity
   scenario at that intensity, was reclassified out of the `lep` axis for grammatically rather than
   situationally signaling LEP (D2). Emotionally flat turns are still tested — 12 of the 100
@@ -259,6 +304,20 @@ validate against, so it cannot run until human rating happens, which has not yet
   content terms by default rather than treating the phrase as a bag of alternatives. Query
   construction for the lexical leg of retrieval accounts for this rather than passing the raw
   utterance through.
+- **Condition LC cannot be "the whole corpus stuffed into context" as build plan v3 §3 specifies,
+  and is redefined rather than silently approximated — `DECISIONS.md` D7.** 471 chunks is
+  approximately 326,526 tokens against a 128,000-token context window: 255% utilisation. Reserving
+  16K for the system prompt, patient turn, and response leaves room for roughly a third of the
+  corpus. **LC is now `LC-sample`**: a fixed, query-independent round-robin selection across all 33
+  papers at a pinned seed (`carelite.retrieval.ablation.lc_sample`), 169 chunks, 35.9% of the
+  corpus. Round-robin rather than random sampling guarantees every paper is represented, so LC's
+  content is not an accident of the seed. **The point that must not be quietly absorbed: any
+  selection rule is itself a form of retrieval.** LC was meant to ask whether curated retrieval
+  beats stuffing everything in; it can now only ask whether *query-dependent* selection (Condition
+  C) beats a *fixed* context (LC-sample) — a real and interesting question, arguably closer to what
+  a practitioner would actually build, but a different one from what build plan v3 posed. This
+  distinction is carried in `docs/preregistration.md` §2 and §4 rather than left to a results-section
+  footnote.
 - **Index build is complete and independently verified: 471/471 chunks embedded.** The 342
   pre-existing embeddings were confirmed byte-identical against a fresh embed, 0 mismatches, and
   mean pairwise cosine across the corpus is 0.5788 (decomposing to old-old 0.5755, new-new 0.6100,
