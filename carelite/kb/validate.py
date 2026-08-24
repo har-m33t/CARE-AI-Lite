@@ -74,6 +74,7 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 
 from carelite.kb.extract import CandidateEntry
+from carelite.kb.frameworks import map_components
 from carelite.kb.papers import PaperText, load_paper_texts, strongest_tier, tier_at_most
 from carelite.kb.scope import (
     ScopeFinding,
@@ -633,6 +634,7 @@ def validate_candidate(
     assert match is not None and paper is not None
 
     phases = [p for p in (_coerce(x, _PHASE_ALIASES) for x in candidate.encounter_phase) if p]
+    components = map_components(candidate.practical_takeaway, candidate.example_behavior)
 
     entry = KBEntry(
         entry_id=entry_id_for(theme, paper.paper_id, match.source_text),
@@ -647,6 +649,15 @@ def validate_candidate(
         verbatim_span=match.source_text,
         source_paper_ids=paper_ids,
         encounter_phase=phases,
+        # The behavior-to-framework mapping, derived here rather than asked of
+        # the model. `carelite.kb.frameworks` reads the act the entry
+        # prescribes and matches it against the rubric lane's own definitions,
+        # so the component an entry instantiates is checkable against the
+        # entry's own words instead of being a second thing to trust the
+        # extractor about. An entry that instantiates none of the nine gets
+        # empty lists, which is what the coverage report is for.
+        nurse_component=list(components.nurse),
+        four_habits=list(components.four_habits),
         equity_relevant=bool(candidate.equity_relevant) or theme is Theme.EQUITY,
     )
     return ValidatedEntry(

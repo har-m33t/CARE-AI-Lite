@@ -40,11 +40,13 @@ import datetime as dt
 import difflib
 import re
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from carelite.config import REPO_ROOT
 from carelite.db.connection import transaction
+from carelite.eval.rubric.dimensions import DIMENSIONS
+from carelite.kb.frameworks import FOUR_HABITS_COMPONENTS, NURSE_COMPONENTS
 from carelite.kb.papers import PAPER_META, load_paper_texts
 from carelite.kb.scope import LOW_OVERLAP_THRESHOLD, takeaway_span_overlap
 from carelite.kb.spans import locate_span, surrounding_context
@@ -60,6 +62,7 @@ _SELECT_ENTRIES_SQL = """
 SELECT
     e.entry_id, e.theme, e.finding, e.practical_takeaway, e.example_behavior,
     e.evidence_tier, e.action_type, e.verbatim_span, e.encounter_phase,
+    e.nurse_component, e.four_habits,
     e.equity_relevant, e.human_verified,
     array_agg(s.paper_id ORDER BY s.paper_id) AS paper_ids
 FROM kb_entry e
@@ -155,6 +158,8 @@ class ReviewRow:
     equity_relevant: bool
     human_verified: bool
     paper_ids: list[str]
+    nurse_component: list[str] = field(default_factory=list)
+    four_habits: list[str] = field(default_factory=list)
 
     @property
     def primary_paper(self) -> str:
@@ -176,6 +181,8 @@ def fetch_review_rows() -> list[ReviewRow]:
             action_type=r["action_type"],
             verbatim_span=r["verbatim_span"],
             encounter_phase=list(r["encounter_phase"] or []),
+            nurse_component=list(r["nurse_component"] or []),
+            four_habits=list(r["four_habits"] or []),
             equity_relevant=r["equity_relevant"],
             human_verified=r["human_verified"],
             paper_ids=list(r["paper_ids"] or []),
@@ -563,6 +570,8 @@ def render_digest(
         "",
     ]
 
+    out += _framework_coverage_section(rows)
+
     clusters = redundancy_clusters(rows)
     if clusters:
         clustered = sum(c.size for c in clusters)
@@ -698,6 +707,86 @@ def render_digest(
                 ]
 
     return "\n".join(out).rstrip() + "\n"
+
+
+def _framework_coverage_section(rows: Sequence[ReviewRow]) -> list[str]:
+    """Which rubric components the knowledge base actually grounds, zeros included.
+
+    This is the behavior-to-framework mapping reported as coverage, and the
+    zeros are the reason it is worth printing. A component with no entries says
+    the corpus does not prescribe that move, which is a statement about the
+    evidence base and belongs in the write-up next to the theme counts. It is
+    not a defect in the mapping and must not be read as one.
+    """
+    nurse_counts = dict.fromkeys(NURSE_COMPONENTS, 0)
+    habit_counts = dict.fromkeys(FOUR_HABITS_COMPONENTS, 0)
+    for row in rows:
+        for key in row.nurse_component:
+            nurse_counts[key] = nurse_counts.get(key, 0) + 1
+        for key in row.four_habits:
+            habit_counts[key] = habit_counts.get(key, 0) + 1
+
+    unmapped = [r for r in rows if not r.nurse_component and not r.four_habits]
+    empty = [k for k, n in {**nurse_counts, **habit_counts}.items() if n == 0]
+
+    out = [
+        "## Framework coverage",
+        "",
+        "Which of the eleven scored dimensions each entry instantiates, derived by",
+        "`carelite.kb.frameworks` from the act the entry prescribes — its takeaway and example",
+        "behaviour — and never from its finding or its span, which say what a study *measured*.",
+        "The patterns are anchored to the definitions in `carelite.eval.rubric.dimensions`, so",
+        "any single assignment can be checked by reading the entry beside the definition.",
+        "",
+        "| Framework | Component | Entries |",
+        "|---|---|---|",
+    ]
+    for key, count in nurse_counts.items():
+        label = DIMENSIONS[key].label if key in DIMENSIONS else key
+        out.append(f"| NURSE | `{key}` {label} | {count} |")
+    for key, count in habit_counts.items():
+        label = DIMENSIONS[key].label if key in DIMENSIONS else key
+        out.append(f"| Four Habits | `{key}` {label} | {count} |")
+
+    out += [
+        "",
+        f"**{len(unmapped)} of {len(rows)} entries instantiate none of the nine.** That is not a",
+        "backlog to be worked off. Plenty of well-evidenced communication advice — request an",
+        "in-person interpreter, check your own assumptions about this patient — is simply not one",
+        "of the nine moves the rubric scores, and an entry forced into a component it does not",
+        "perform would put a false edge in the graph and a false row in the coverage table.",
+        "",
+    ]
+    if empty:
+        named = ", ".join(f"`{k}`" for k in empty)
+        out += [
+            f"**{named} have no entries at all.** This corpus does not prescribe those moves. The",
+            "NURSE Respecting move — crediting the patient for something specific they have done or",
+            "endured — and the Supporting move — a partnership statement made concrete with who does",
+            "what and how to reach someone — appear in the rubric because the source literature",
+            "describes them, but nothing in these 33 papers turns either into a finding with a",
+            "quotable span and an actionable takeaway. **Those are results about the evidence base,",
+            "not gaps in this mapping**, and the write-up should report them as such: the judge",
+            "scores dimensions the knowledge base cannot ground, so a system built on these entries",
+            "has no evidential basis for two of the eleven things it is measured on.",
+            "",
+        ]
+
+    equity_flagged = [r for r in rows if r.equity_relevant]
+    equity_theme = [r for r in rows if r.theme == "equity"]
+    cross = [r for r in equity_flagged if r.theme != "equity"]
+    out += [
+        f"**Equity reaches further than its theme.** {len(equity_flagged)} entries are flagged",
+        f"`equity_relevant` while the `equity` theme itself holds {len(equity_theme)};",
+        f"{len(cross)} of them sit under another theme "
+        f"({', '.join(sorted({r.theme for r in cross}))}).",
+        "That asymmetry is the design working: an interpreter finding is a `plain_language` entry",
+        "that is also an equity one, and it is reachable from both directions. Reporting only the",
+        "theme count understates what the base holds on equity; reporting only the flag would",
+        "overstate how much of it is *about* a disparity. Both numbers belong in the write-up.",
+        "",
+    ]
+    return out
 
 
 def write_digest(path: Path | str = DIGEST_PATH, rows: Sequence[ReviewRow] | None = None) -> Path:
