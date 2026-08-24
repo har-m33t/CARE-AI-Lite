@@ -489,3 +489,68 @@ class _NoCall:
 
     def chat(self, messages, *, temperature, seed=None):  # type: ignore[no-untyped-def]
         raise AssertionError("must not be called")
+
+
+# ---------------------------------------------------------------------------
+# Balanced judging order
+# ---------------------------------------------------------------------------
+
+
+def _generations(scenarios: int, conditions: Sequence[str]) -> list:
+    from carelite.types import Generation
+
+    return [
+        Generation(
+            generation_id=f"gen-{s:02d}-{c}",
+            scenario_id=f"SC-{s:03d}",
+            condition=Condition(c),
+            prompt_id="p",
+            model="gemma4:12b",
+            model_digest="d",
+            seed=1,
+            temperature=0.7,
+            sample_idx=0,
+            response="r",
+        )
+        for s in range(scenarios)
+        for c in conditions
+    ]
+
+
+def test_a_prefix_of_the_judging_order_covers_every_condition() -> None:
+    """An interrupted run must leave a smaller version of the study, not a
+    different one. The journal is scenario-major, so judging in journal order
+    would leave a prefix of whole scenarios and lose most challenge types."""
+    from carelite.eval.judge.study import balanced_order
+
+    conditions = ["A", "A2", "B", "C", "LC", "D"]
+    ordered = balanced_order(_generations(10, conditions))
+    prefix = ordered[: len(conditions)]
+    assert {g.condition.value for g in prefix} == set(conditions)
+
+
+def test_a_half_length_prefix_covers_every_scenario() -> None:
+    from carelite.eval.judge.study import balanced_order
+
+    conditions = ["A", "A2", "B", "C", "LC", "D"]
+    ordered = balanced_order(_generations(10, conditions))
+    half = ordered[: len(ordered) // 2]
+    assert len({g.scenario_id for g in half}) == 10
+
+
+def test_balanced_order_is_a_permutation_and_loses_nothing() -> None:
+    from carelite.eval.judge.study import balanced_order
+
+    items = _generations(10, ["A", "A2", "B", "C", "LC", "D"])
+    ordered = balanced_order(items)
+    assert len(ordered) == len(items)
+    assert {g.generation_id for g in ordered} == {g.generation_id for g in items}
+
+
+def test_balanced_order_handles_a_ragged_plan() -> None:
+    """A partially generated journal has uneven condition counts."""
+    from carelite.eval.judge.study import balanced_order
+
+    items = _generations(4, ["A", "C"]) + _generations(1, ["LC"])
+    ordered = balanced_order(items)
+    assert len(ordered) == len(items)

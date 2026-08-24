@@ -89,6 +89,7 @@ __all__ = [
     "N_REVERSED",
     "N_SUBSET_SCENARIOS",
     "SubsetCell",
+    "balanced_order",
     "judge_subset",
     "load_generations",
     "main",
@@ -282,6 +283,48 @@ def load_generations(journal: Path) -> tuple[list[Generation], dict[str, str], d
 # ---------------------------------------------------------------------------
 # Judging
 # ---------------------------------------------------------------------------
+
+
+def balanced_order(generations: Sequence[Generation]) -> list[Generation]:
+    """Reorder so that *any prefix* is spread across scenarios and conditions.
+
+    The journal is written scenario-major — SC-002 in all six conditions, then
+    SC-017, and so on — because that is the order `build_plan` produces. Judging
+    in that order means an interrupted run leaves a prefix that is a handful of
+    whole scenarios: stop halfway through sixty and five of the ten challenge
+    types are missing entirely, which is the one property the subset was chosen
+    to avoid.
+
+    Round-robin over conditions, taking scenarios in rotation within each, so
+    the first six items are six conditions on six different scenarios and the
+    first thirty cover every scenario and every condition. A partial run is then
+    a smaller version of the study rather than a different one, and the number
+    of judged generations is the only thing that has to be discounted.
+    """
+    by_condition: dict[str, list[Generation]] = {}
+    for generation in generations:
+        by_condition.setdefault(generation.condition.value, []).append(generation)
+    for bucket in by_condition.values():
+        bucket.sort(key=lambda g: g.scenario_id)
+
+    order = sorted(by_condition)
+    out: list[Generation] = []
+    index = 0
+    while len(out) < len(generations):
+        progressed = False
+        for offset, condition in enumerate(order):
+            bucket = by_condition[condition]
+            if not bucket:
+                continue
+            # Rotate the scenario cursor per condition so consecutive items do
+            # not land on the same scenario.
+            pick = (index + offset) % len(bucket)
+            out.append(bucket.pop(pick))
+            progressed = True
+        if not progressed:
+            break
+        index += 1
+    return out
 
 
 def judge_subset(
@@ -780,7 +823,8 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - CLI wr
 
     if args.stage in {"judge", "reversed"}:
         order = OptionOrder.ASCENDING if args.stage == "judge" else OptionOrder.DESCENDING
-        items = generations if order is OptionOrder.ASCENDING else generations[: args.n_reversed]
+        ordered = balanced_order(generations)
+        items = ordered if order is OptionOrder.ASCENDING else ordered[: args.n_reversed]
         run = judge_subset(
             items,
             scenario_texts,
@@ -818,7 +862,7 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - CLI wr
         return 0
 
     descending = replay_from_cache(
-        generations[: args.n_reversed],
+        balanced_order(generations)[: args.n_reversed],
         scenario_texts,
         order=OptionOrder.DESCENDING,
         cache_path=out / "validation-descending.jsonl",
