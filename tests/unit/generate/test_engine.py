@@ -3,7 +3,15 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
+
+import pytest
+
+if os.environ.get("CARELITE_ENGINE", "").strip().lower() == "stub":
+    # The switch means "the real engine is off", so `carelite.generate.engine`
+    # deliberately refuses to import and there is nothing here to test.
+    pytest.skip("CARELITE_ENGINE=stub pins the CLI to the stub", allow_module_level=True)
 
 from carelite.cli.engine import resolve_engine
 from carelite.generate.engine import CareliteEngine, build_engine
@@ -93,3 +101,28 @@ def test_one_engine_reuses_its_collaborators_across_turns(tmp_path: Path) -> Non
     engine.guide(GuidanceRequest(utterance="And what happens next?", condition=Condition.A))
     assert engine.deps is before
     assert len(client.prompts_seen) == 2
+
+
+def test_the_stub_switch_makes_the_module_refuse_to_import() -> None:
+    """`CARELITE_ENGINE=stub` has to fail as an `ImportError`, because that is
+    the only failure `resolve_engine()` is contracted to fall back on."""
+    import subprocess
+    import sys
+
+    from carelite.config import REPO_ROOT
+
+    code = (
+        "from carelite.cli.engine import resolve_engine;"
+        "from carelite.cli.stub import StubEngine;"
+        "e = resolve_engine();"
+        "print(type(e).__name__)"
+    )
+    out = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        cwd=REPO_ROOT,
+        check=True,
+        env={"CARELITE_ENGINE": "stub", "PATH": "/usr/bin:/bin"},
+    )
+    assert out.stdout.strip() == "StubEngine"

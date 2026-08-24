@@ -16,23 +16,40 @@ corpus pack, instead of rebuilding them on every turn.
 Nothing here raises for a blocked turn. A red flag, an injection block or a
 withheld output all return a `GuidanceResponse` whose safety verdicts say so,
 which is what `carelite ask` reads to exit 3.
+
+**`CARELITE_ENGINE=stub` pins the CLI to the fixture engine.** Setting it makes
+this module refuse to import, which `resolve_engine()` already handles — its
+contract is that *any* `ImportError` falls back to `StubEngine`. It exists
+because the real engine calls a local model on every turn, so a test or a demo
+that wants deterministic fixture output needs a way to ask for one that does not
+involve deleting this file.
 """
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from typing import Any
 
-from carelite.config import seed_for
-from carelite.generate.graph import (
+ENGINE_ENV_VAR = "CARELITE_ENGINE"
+
+if os.environ.get(ENGINE_ENV_VAR, "").strip().lower() == "stub":
+    raise ImportError(
+        f"{ENGINE_ENV_VAR}=stub: the real engine is switched off, so "
+        "carelite.cli.engine.resolve_engine() falls back to StubEngine. Unset "
+        f"{ENGINE_ENV_VAR} to use the real pipeline."
+    )
+
+from carelite.config import seed_for  # noqa: E402
+from carelite.generate.graph import (  # noqa: E402
     GraphDeps,
     build_graph,
     initial_state,
     to_guidance_response,
 )
-from carelite.types import GuidanceRequest, GuidanceResponse
+from carelite.types import GuidanceRequest, GuidanceResponse  # noqa: E402
 
-__all__ = ["NUM_PREDICT", "CareliteEngine", "build_engine"]
+__all__ = ["ENGINE_ENV_VAR", "NUM_PREDICT", "CareliteEngine", "build_engine"]
 
 #: Output budget for one clinician turn. A turn is a few sentences; 512 tokens is
 #: roughly four times that, which leaves room for a model that warms up before it
