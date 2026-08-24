@@ -29,6 +29,7 @@ the evidence it was made on.
 from __future__ import annotations
 
 import datetime as dt
+import difflib
 import re
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
@@ -194,6 +195,36 @@ def _context_block(row: ReviewRow) -> str:
     return "\n".join(f"> {line}" for line in (body,))
 
 
+#: Takeaway similarity above which two entries are worth a reviewer's attention.
+#: Tuned against the loaded knowledge base: at 0.72 it surfaces two pairs out of
+#: 95 entries, both of them the same paper making the same point through two
+#: different sentences. Lower and it starts flagging any two entries that share
+#: a theme vocabulary; higher and it misses genuine restatements.
+OVERLAP_THRESHOLD = 0.72
+
+
+def overlapping_pairs(
+    rows: Sequence[ReviewRow], *, threshold: float = OVERLAP_THRESHOLD
+) -> list[tuple[ReviewRow, ReviewRow, float]]:
+    """Entry pairs whose takeaways say close to the same thing.
+
+    Overlapping extraction windows mean one paper can yield two entries that
+    quote different sentences in support of the same practical advice. The
+    validator cannot reject these — both spans are real and both entries are
+    well-formed — but counting them as two pieces of evidence overstates the
+    knowledge base, so the reviewer is told where they are and decides.
+    """
+    out: list[tuple[ReviewRow, ReviewRow, float]] = []
+    for i, a in enumerate(rows):
+        for b in rows[i + 1 :]:
+            ratio = difflib.SequenceMatcher(
+                None, a.practical_takeaway.lower(), b.practical_takeaway.lower()
+            ).ratio()
+            if ratio >= threshold:
+                out.append((a, b, ratio))
+    return sorted(out, key=lambda t: -t[2])
+
+
 def render_digest(
     rows: Sequence[ReviewRow],
     *,
@@ -205,8 +236,9 @@ def render_digest(
     audit = {} if audit is None else audit
     total = len(rows)
     verified = sum(1 for r in rows if r.human_verified)
-    downgraded = sum(1 for r in rows if (a := audit.get(r.entry_id)) and a.tier_downgraded)
-    glued = sum(1 for r in rows if (a := audit.get(r.entry_id)) and a.span_via == "glued")
+    audits = [audit.get(r.entry_id) for r in rows]
+    downgraded = sum(1 for x in audits if x and x.tier_downgraded)
+    glued = sum(1 for x in audits if x and x.span_via == "glued")
 
     by_theme: dict[str, list[ReviewRow]] = {}
     for row in rows:
@@ -282,6 +314,27 @@ def render_digest(
         "other, and the write-up must not present them as convergent evidence.",
         "",
     ]
+
+    overlaps = overlapping_pairs(rows)
+    if overlaps:
+        out += [
+            "## Entries that may restate each other",
+            "",
+            "Both entries in each pair below are valid — real span, real source — but their",
+            "takeaways say close to the same thing, usually because two overlapping extraction",
+            "windows found two sentences supporting one point. Counting both would overstate",
+            "the evidence. Consider ticking one and leaving the other, or ticking both if they",
+            "really are distinct advice.",
+            "",
+        ]
+        for left, right, ratio in overlaps:
+            same = "same paper" if left.primary_paper == right.primary_paper else "different papers"
+            out += [
+                f"- {ratio:.0%} similar, {same} — `{left.entry_id}` and `{right.entry_id}`",
+                f"  - {left.practical_takeaway}",
+                f"  - {right.practical_takeaway}",
+            ]
+        out.append("")
 
     for theme, theme_rows in sorted(by_theme.items()):
         out += [f"## {theme}", ""]
@@ -428,6 +481,7 @@ __all__ = [
     "apply_signoff",
     "build_audit",
     "fetch_review_rows",
+    "overlapping_pairs",
     "parse_signoff",
     "record_signoff",
     "render_digest",

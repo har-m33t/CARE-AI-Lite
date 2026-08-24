@@ -141,6 +141,28 @@ class TestRenderDigest:
         assert "WARNING" in out
         assert "Do not sign off" in out
 
+    def test_flags_two_entries_whose_takeaways_restate_each_other(self) -> None:
+        """Both entries are valid; counting both as evidence is what is wrong.
+
+        The validator cannot reject these — real span, real source, well-formed
+        entry — so the only place the overlap can be caught is a human's eye,
+        and the digest has to point at it.
+        """
+        a = _row(entry_id="kb-teach_back-0000000001")
+        b = _row(entry_id="kb-teach_back-0000000002")
+        b.practical_takeaway = "Ask the patient to restate the plan in their own words please."
+        out = render_digest([a, b])
+        assert "Entries that may restate each other" in out
+        assert "kb-teach_back-0000000001" in out
+        assert "same paper" in out
+
+    def test_distinct_takeaways_produce_no_overlap_section(self) -> None:
+        a = _row(entry_id="kb-teach_back-0000000001")
+        b = _row(entry_id="kb-empathy-0000000002", theme="empathy")
+        b.practical_takeaway = "Name the emotion you have just heard before moving to the plan."
+        out = render_digest([a, b])
+        assert "Entries that may restate each other" not in out
+
     def test_coverage_table_counts_entries_per_theme(self) -> None:
         rows = [
             _row(entry_id="kb-teach_back-0000000001"),
