@@ -402,3 +402,60 @@ communication-skills *training* studies, teach-back rests on one paper, equity o
 three entries. Those on-domain rejections are the gate reporting a real property of
 the corpus, and they belong in `docs/limitations.md` rather than in a retuned
 threshold.
+
+---
+
+## D8 — Two of the eleven scored dimensions cannot be grounded in this corpus
+
+**Finding, recorded before registration because it bears on the primary outcome:
+NURSE `respect` and `support` have zero knowledge base entries. The judge scores
+them; retrieval cannot help with them. This must be stated in
+`docs/preregistration.md`, not discovered in the results.**
+
+`carelite-kb` derived the behavior-to-framework mapping from each entry's
+`practical_takeaway` and `example_behavior` — what the clinician is told to *do* —
+deliberately never from `finding` or `verbatim_span`, which say what a study
+*measured*. That distinction does real work: an entry drawn from an empathy trial
+can prescribe a comprehension check, and matching on the finding would file it
+under `de` when the act is `ie`.
+
+Final coverage across 116 entries: `ie` 40, `epp` 17, `name` 15, `ib` 6, `explore`
+5, `understand` 5, `de` 4, **`respect` 0, `support` 0**. Forty entries instantiate
+none of the nine and keep empty fields — "request an in-person interpreter" is good
+advice and is not one of the nine moves.
+
+**The zeros survived a correction that would have hidden them.** The lane's first
+mapping filled `respect` and `support` and looked plausible. Reading every
+assignment against its entry found seven false positives, two of which were exactly
+those: *"verbal affirmations to show you're listening"* matched `respect` but is a
+backchannel cue, not crediting the patient for anything specific; *"collaborative
+partnership"* matched `support` but is a stance with none of the concrete half —
+who does what, how to reach someone. Removing them took both dimensions to zero,
+and they stayed there.
+
+Nothing in the 33 papers turns NURSE Respecting or Supporting into a finding with a
+quotable span and an actionable takeaway. A regression test pins each zero, and a
+companion test proves the pattern still fires on a genuine crediting move — so the
+zero is a property of the corpus, not a broken matcher, and a future change that
+fills them has to argue with a failing test.
+
+**Why this reaches the pre-registration rather than only the limitations record.**
+The primary outcome is composite NURSE adherence, which averages `name`,
+`understand`, `respect`, `support` and `explore`. Two of those five have no
+evidential support in the retrievable base. Condition C's advantage on the primary
+composite therefore cannot come from retrieval on two-fifths of its constituent
+dimensions, and any C-over-B effect there has some other cause — prompt framing,
+generator behaviour, or noise. Stated in advance that is a sharp, interpretable
+constraint on the primary result. Discovered afterwards it would look like an
+excuse.
+
+The composite is **not** being redefined to drop them. Redefining a primary outcome
+after seeing which dimensions are convenient is precisely what pre-registration
+exists to prevent, and the rubric measures what a clinician does regardless of
+whether this corpus can teach it. The dimensions stay; the constraint is declared.
+
+**A related asymmetry the digest now carries:** 13 entries are flagged
+`equity_relevant` while the `equity` theme holds 3, with 10 of those spread across
+`plain_language`, `teach_back` and `trust_continuity`. Reporting only the theme
+count understates what the base holds; reporting only the flag would overstate how
+much of it is *about* a disparity. Both numbers, or neither.
