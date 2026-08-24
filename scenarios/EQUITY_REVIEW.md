@@ -4,10 +4,13 @@ Build plan v3, sprint 7, gates the scenario bank on *"every stratum cell populat
 reviewed by a second person."* This file is what that second person reads. It exists because the
 equity scenarios are the ones most likely to be wrong in a way the author cannot see.
 
-**Status: reviewed and closed on 2026-08-24.** The review was completed and the decision recorded
-in `DECISIONS.md` D2. Read the outcome section below before the packet itself; the packet is kept
-in full because the criteria it states are what the decision was made on, and a decision is only
-checkable against the criteria that produced it.
+**Status: reviewed and closed on 2026-08-24.** The review was completed and its decision recorded
+in `DECISIONS.md` D2. Acting on D2 cost the stratum two things D2 did not anticipate, both surfaced
+by the coverage audit rather than by the gate meant to catch them; `DECISIONS.md` D5 decided to name
+those honestly rather than repair them, and both are pre-specified as limitations below. Read the
+outcome section before the packet itself; the packet is kept in full because the criteria it states
+are what the decisions were made on, and a decision is only checkable against the criteria that
+produced it.
 
 35 of the 100 scenarios carry `equity_stratum = true`. The `scenario` table stores only that
 boolean; `scenarios/bank.jsonl` additionally records `equity_kind`, which is the axis the scenario
@@ -22,6 +25,14 @@ represents and the thing a reviewer actually needs.
 These are the baseline the system is designed to correct, not to reproduce — README theme 7. A
 scenario in this stratum is a communication situation in which the literature says the response is
 measurably worse, and the question the evaluation asks is whether Condition C narrows that gap.
+
+**The `racial_ethnic` label is broader than what its nine scenarios measure.** The right-hand column
+above records the finding each axis was *drawn from*, not the thing it now tests. `DECISIONS.md` D5
+settled that this axis is named wrong rather than populated wrong: what its nine scenarios measure
+is the clinician's response to *anticipated dismissal and patient credibility-management*. Read
+"What the `racial_ethnic` axis actually measures" below before using the label in an analysis, a
+figure, or a sentence about results. `equity_kind` keeps its current values for continuity with the
+frozen split; only the description changes.
 
 ## Outcome of the review
 
@@ -76,9 +87,11 @@ SC-010 among them — but only outside the equity subgroup.
 (`EQUITY_MIN_PER_CHALLENGE`). The floor is met, not breached. It is worth knowing that it is now
 met exactly: any further reclassification out of `emotional_cue` fails the audit.
 
-### Whether the two axes still span what they were designed to span
+### What the two axes actually span
 
-This was not part of the decision and is the reviewing lane's own reading of the amended bank.
+This began as the reviewing lane's own reading of the amended bank. `DECISIONS.md` D5 adjudicated
+it and is the authority for the conclusion; the reading is kept here in full because this is the
+file a reviewer opens.
 
 **`lep` still spans its mechanisms.** Ten scenarios carry seven distinct mechanisms: an interpreter
 absent or gone mid-encounter (SC-033, SC-059, SC-079), a family member interpreting ad hoc (SC-042,
@@ -92,9 +105,11 @@ longer tests the LEP case that consists only of absent uptake — the encounter 
 and whose comprehension failure is invisible. The phenomenon is still in the bank; it is no longer
 in the stratum.
 
-**`racial_ethnic` has narrowed, and this is the finding worth acting on.** Nine scenarios, but
-eight of them turn on one underlying mechanism: the patient has already been disbelieved, or
-expects to be, and manages the clinician accordingly. Four name a prior dismissal outright (SC-004,
+#### What the `racial_ethnic` axis actually measures
+
+**The axis has narrowed to a single mechanism.** Nine scenarios, but eight of them turn on the same
+underlying thing: the patient has already been disbelieved, or expects to be, and manages the
+clinician accordingly. Four name a prior dismissal outright (SC-004,
 SC-048, SC-056, SC-083); three do pre-emptive credibility work (SC-024, SC-088, SC-099); one is a
 repetition burden across clinicians (SC-081); one is prognostic non-disclosure (SC-014). SC-077 was
 the only scenario in the axis whose difficulty originated outside the clinic — a decision made
@@ -105,14 +120,33 @@ The risk that creates is specific: a system that scores well across this axis ma
 *handle a guarded patient* rather than on the disparity the axis claims to measure. That is a
 mechanism confound rather than a topic confound, and the audit does not detect it — the audit
 measures challenge type, phase, intensity and literacy, none of which distinguish a guarded patient
-from an unguarded one. The secondary analysis should carry this caveat whatever else is decided.
+from an unguarded one. The secondary analysis carries this caveat as a pre-specified limitation.
 
-**No replacement scenario has been written, and that is deliberate.** Adding one to the held-out
-split is a protocol amendment of a different order than a metadata change and needs its own
-decision. Adding one to the train split would be free — the train split is outside the freeze — but
-it would not help, because the pre-specified equity subgroup analysis runs on the held-out set.
-There is no cheap version of this fix, and pretending otherwise by writing a train-split scenario
-would produce coverage that looks better without measuring more.
+**Two repairs were considered and both were rejected.** Neither is available, and the reasons are
+what force the conclusion.
+
+*Strip SC-077's church reference and keep it in the stratum* — the alternative this packet itself
+offered — does not work. The external-origin mechanism **is** the community-source detail. Take it
+out and what remains is a patient pre-emptively dismissing himself, which is the same
+guarded-patient mechanism as the other eight. The mechanism cannot be preserved without preserving
+the coding problem D2 removed.
+
+*Write a replacement held-out scenario* is worse. Nothing in the 33-paper corpus documents
+community-sourced health information as a disparity mechanism at all. The axis draws on documented
+emotional blocking of minority patients (Park et al. 2020) and the SES and race empathy gap
+(Roberts et al. 2021), and neither anchors it. Writing the scenario anyway would be inventing
+coverage the literature does not support — the same failure this project rejected when it declined
+to invent three themes to reach ten. A train-split scenario would be free, since the train split is
+outside the freeze, but it would not help either: the pre-specified equity subgroup analysis runs on
+the held-out set. There is no cheap version of this fix, and producing one would make the coverage
+look better without measuring more.
+
+**So the axis is described as what it is.** What these nine scenarios measure is the clinician's
+response to *anticipated dismissal and patient credibility-management*. That is real, documented,
+and important — and it is narrower than "race-based disparity in communication". The analysis plan,
+the OSF pre-registration, and the results write-up all say the narrower thing. `equity_kind` keeps
+its stored values so the frozen split stays intact; what changes is every sentence that describes
+them.
 
 ## The line this packet is asking you to check
 
@@ -188,6 +222,12 @@ outcome.
 
 ## Limitations to record
 
+Two of these are **pre-specified limitations of the equity subgroup analysis** under `DECISIONS.md`
+D5, marked below. Both must be declared in the OSF pre-registration *before* any evaluation data
+exists. The reason is not procedural: a limitation named in advance is a limitation, and the same
+sentence written after seeing the results is an excuse. No evaluation data existed when they were
+written, which is what makes them worth anything.
+
 **The signal has to be in the text, or it does nothing.** These utterances reach the model as bare
 text with no patient metadata. An equity scenario whose context lives only in `equity_kind` would
 be, to the model, an ordinary scenario — and the stratum would measure nothing. That constraint is
@@ -200,11 +240,24 @@ counts run 2 to 6, with `trust_rupture` at 6 and `adherence_barrier` at 5, becau
 the literature locates the disparity. The audit enforces a floor of 2 per type so equity cannot
 become a proxy for one topic. It is a mild confound and the secondary analysis should say so.
 
-**The equity stratum spans four of the five intensity levels, not five.** See "What the change
-cost" above. It spans all five encounter phases and all four literacy signals.
+**PRE-SPECIFIED (D5). The equity stratum contains no `emotion_intensity = 1` scenario.** It spans
+intensities 2-5, all five encounter phases, and all four literacy signals. The consequence is that
+the equity subgroup cannot say whether the disparity behaves differently on an emotionally flat
+turn — which is the turn where a system that over-reads emotion does its worst work. Flat turns are
+still tested, twelve of them, but outside the equity subgroup. The coverage audit reports this cell
+on every run as an accepted gap naming D2 rather than passing silently; see `ACCEPTED_EMPTY_CELLS`
+in `carelite/scenarios/audit.py`, pinned to this one cell by a unit test.
 
-**The `racial_ethnic` axis leans on one mechanism.** See "Whether the two axes still span" above.
-This is the caveat most likely to matter to how a positive result on the equity subgroup is read.
+**PRE-SPECIFIED (D5). The `racial_ethnic` axis measures one mechanism, and its label overstates
+it.** The axis contains no `adherence_barrier`, `decision_conflict`, or `false_comprehension`
+scenario, and every one of its nine scenarios presents a patient who is already guarded. A system
+that scores well across this axis may therefore be scoring on *handles a guarded patient* rather
+than on the disparity the axis claims to measure. That is a mechanism confound rather than a topic
+confound, and the coverage audit cannot detect it — the audit measures challenge type, phase,
+intensity and literacy, none of which distinguish a guarded patient from an unguarded one. This is
+the caveat most likely to matter to how a positive result on the equity subgroup is read, and it is
+why the axis is described as anticipated dismissal and credibility-management rather than as
+race-based disparity. See "What the two axes actually span" above.
 
 **The review was not an independent second reader.** See the sign-off below. This is a real
 limitation of the sprint 7 gate as performed, and it belongs in the limitations record rather than

@@ -130,8 +130,8 @@ EQUITY_MIN_PER_CHALLENGE = 2
 ACCEPTED_EMPTY_CELLS: Final[dict[tuple[str, CellKey], str]] = {
     ("equity_stratum x emotion_intensity", (True, 1)): (
         "DECISIONS.md D2 (2026-08-24) -- SC-010 left the equity stratum and was its only "
-        "intensity-1 scenario. Accepted as a known gap, not filled: see "
-        "scenarios/EQUITY_REVIEW.md."
+        "intensity-1 scenario. D5 accepted this as a permanent, pre-specified limitation of "
+        "the equity subgroup analysis rather than repairing it: see scenarios/EQUITY_REVIEW.md."
     ),
 }
 
