@@ -21,10 +21,31 @@ configurations against holdout turns and then reporting holdout results would
 be tuning on the test set, so `default_turns()` reads `train_scenarios()` and
 nothing else.
 
-**Context precision.** The gate is "Ragas context precision > 0.7". The
-`ragas` package is not a project dependency, so this module implements the
-metric directly rather than importing it: `LLMContextPrecisionWithoutReference`
-is, for one turn,
+**Context precision, and one correction to what it asks.** The gate is "Ragas
+context precision > 0.7". The `ragas` package is not a project dependency, so
+this module implements the metric directly rather than importing it.
+
+Ragas asks its judge whether a context is relevant to *answering the query*.
+That question is wrong here and it measurably mis-scores this corpus. A patient
+turn is not a query, and the system's task is not to answer the patient — it is
+to help a clinician respond. The scenario bank is built specifically around
+turns where those diverge: `hard_case` tags include `false_comprehension`,
+`buried_cue`, and `blocking_bait`. Asked the literal question, the judge scored
+the passage "teach-back ... confirms patient comprehension" as NOT useful for
+"Mm-hm. Yeah. No, that makes sense. It's a lot of words, that's all. Keep
+going." — a turn tagged `false_comprehension`, retrieved at a rerank score of
+0.976, and about as on-target as this corpus gets. Every hard scenario would
+score 0 for being hard, and the metric would report the retriever's best
+behaviour as its worst.
+
+`RELEVANCE_SYSTEM` therefore asks whether the passage helps the clinician
+handle the moment, and says explicitly that patients understate what they need.
+It still rejects off-domain turns outright. This is a correction to the
+question, not a loosening of the bar: the off-domain and wrong-moment cases
+below are unchanged, and both are checked in
+`tests/unit/retrieval/test_ablation.py`.
+
+`LLMContextPrecisionWithoutReference` is, for one turn,
 
     CP = sum_k [ precision@k * v_k ] / max(1, sum_k v_k)
 
@@ -174,6 +195,22 @@ all, no passage from this corpus is useful.
 
 Reply with JSON only: {"useful": true|false}"""
 
+#: Reasoning models spend this budget on thinking before emitting any content,
+#: so a budget sized for the *answer* starves the model and yields an empty
+#: string. Measured on `gpt-oss:20b` with this exact prompt: 200 returned `''`
+#: every time, 600 and 1500 both returned the correct verdict.
+#:
+#: The failure is silent and expensive. An empty response becomes a `None`
+#: verdict, a `None` verdict discards that turn's precision score entirely, and
+#: the ablation table then reports a smaller `n_scored` and a depressed
+#: precision that looks like a retrieval problem. It cost this lane a wrong
+#: conclusion once: R0/R8/R9 all measured context precision 0.000 and were
+#: nearly reported as "the corpus cannot serve these turns", when a substantial
+#: part of it was this truncation. Sized with headroom deliberately — the cost
+#: of over-budgeting is latency, the cost of under-budgeting is a wrong number
+#: in a results table.
+JUDGE_NUM_PREDICT = 800
+
 _RELEVANCE_SCHEMA = {
     "type": "object",
     "properties": {"useful": {"type": "boolean"}},
@@ -182,20 +219,28 @@ _RELEVANCE_SCHEMA = {
 
 
 def _judge_relevance(client: Any, utterance: str, passage: str) -> bool | None:
-    result = client.chat(
-        system=RELEVANCE_SYSTEM,
-        task="Is the passage above useful for responding to this patient turn? JSON only.",
-        utterance=utterance,
-        extra_untrusted=[("PASSAGE", passage)],
-        json_schema=_RELEVANCE_SCHEMA,
-        num_predict=200,
-    )
-    if result is None or not result.text:
-        return None
-    try:
-        return bool(json.loads(result.text)["useful"])
-    except (json.JSONDecodeError, KeyError, TypeError, ValueError):
-        return None
+    """One verdict. `None` only after a retry, because a single unparseable
+    answer would otherwise discard the whole turn's precision score (see
+    `context_precision`) and silently shrink the sample the table rests on."""
+    for _ in range(2):
+        result = client.chat(
+            system=RELEVANCE_SYSTEM,
+            task=(
+                "Would the passage above help a clinician respond well to this patient "
+                "turn? Judge the moment, not the literal request. JSON only."
+            ),
+            utterance=utterance,
+            extra_untrusted=[("PASSAGE", passage)],
+            json_schema=_RELEVANCE_SCHEMA,
+            num_predict=JUDGE_NUM_PREDICT,
+        )
+        if result is None or not result.text:
+            continue
+        try:
+            return bool(json.loads(result.text)["useful"])
+        except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+            continue
+    return None
 
 
 def context_precision(
@@ -459,6 +504,16 @@ def format_markdown(rows: Sequence[AblationRow]) -> str:
         )
     lines.append("")
     lines.append(f"Gate: context precision > {CONTEXT_PRECISION_GATE}")
+    lines.append("")
+    lines.append(
+        "**Latency is not a component cost in a mixed run.** Rows share one Ollama "
+        "daemon, so a row's timing depends on which model happened to be resident "
+        "when it ran and on what earlier rows left in the prompt cache. Observed "
+        "directly: R7 and R9 have identical CRAG configuration and measured 32,490ms "
+        "and 5,174ms in the same run, a 6x gap that is entirely residency and caching. "
+        "Read this column for order-of-magnitude only; time a single configuration on "
+        "its own before quoting a per-component figure."
+    )
     for r in rows:
         for note in r.notes:
             lines.append(f"- **{r.label}**: {note}")

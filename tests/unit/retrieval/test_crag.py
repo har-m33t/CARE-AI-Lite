@@ -154,18 +154,22 @@ def test_score_grader_declares_its_own_limitation() -> None:
 
 
 def test_cosine_calibration_anchors_are_the_measured_ones() -> None:
-    """0.440 is the mean top-1 cosine of 15 off-domain probes and 0.647 that
-    of 12 on-domain probes. Their midpoint must fall inside the measured gap
-    between the two populations (off-domain topped out at 0.513, on-domain
-    bottomed out at 0.587, no overlap across the 27 probes), which is what
-    makes the default 0.5 threshold a measured boundary rather than a chosen
-    one. If a corpus reload moved these anchors outside that gap, the
-    calibration would no longer mean what the docstring claims."""
+    """0.437 is the mean top-1 cosine of 15 off-domain probes and 0.649 that
+    of 12 on-domain probes, measured over the rebuilt 471-chunk index. Their
+    midpoint must fall inside the measured gap between the two populations
+    (off-domain topped out at 0.513, on-domain bottomed out at 0.590, no
+    overlap across the 27 probes), which is what makes the default 0.5
+    threshold a measured boundary rather than a chosen one.
+
+    This is the assertion that caught nothing when the corpus lane reloaded 8
+    of 33 papers — the anchors moved by less than 0.003 and the gap held. It
+    exists so that a reload which *did* move them would fail loudly here
+    rather than silently degrade the gate."""
     assert calibrate_cosine(DENSE_NULL_ANCHOR) == 0.0
     assert calibrate_cosine(DENSE_SIGNAL_ANCHOR) == 1.0
     midpoint = (DENSE_NULL_ANCHOR + DENSE_SIGNAL_ANCHOR) / 2
     assert calibrate_cosine(midpoint) == pytest.approx(0.5)
-    assert 0.513 < midpoint < 0.587, midpoint
+    assert 0.513 < midpoint < 0.590, midpoint
 
 
 def test_calibration_clamps() -> None:

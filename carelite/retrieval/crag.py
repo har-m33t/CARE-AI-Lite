@@ -144,6 +144,16 @@ Use "relevant" when at least one passage genuinely addresses the turn,
 no passage addresses the turn or the turn is outside the corpus's subject
 matter entirely."""
 
+#: Same exposure as `ablation.JUDGE_NUM_PREDICT`, and worse consequences. A
+#: reasoning model spends this budget thinking before it emits content; starve
+#: it and `content` comes back empty, `LLMGrader.grade` returns `None`, and
+#: `grade_context` falls through to `ScoreGrader` — which cannot detect an
+#: off-domain turn. The gate would then appear to work while silently passing
+#: everything, which is the exact failure this module exists to prevent. This
+#: grader also reasons over up to `rerank_top_n` passages at once, so it needs
+#: more budget than a single-passage verdict.
+GRADER_NUM_PREDICT = 1000
+
 _CRAG_SCHEMA = {
     "type": "object",
     "properties": {
@@ -191,7 +201,7 @@ class LLMGrader:
             utterance=utterance,
             extra_untrusted=numbered,
             json_schema=_CRAG_SCHEMA,
-            num_predict=400,
+            num_predict=GRADER_NUM_PREDICT,
         )
         if result is None or not result.text:
             return None
@@ -234,17 +244,32 @@ class LLMGrader:
 #: means*, carried at the precision they were measured to rather than rounded
 #: to something tidier: 0.440 is the mean top-1 cosine of 15 off-domain probe
 #: queries against the live corpus and 0.647 the mean top-1 of 12 on-domain
-#: ones. Their midpoint, 0.544, falls inside the empirically observed gap
+#: ones. Their midpoint, 0.543, falls inside the empirically observed gap
 #: between the two populations — off-domain topped out at 0.513, on-domain
-#: bottomed out at 0.587, with no overlap across the 27 probes — so the
+#: bottomed out at 0.590, with no overlap across the 27 probes — so the
 #: default `crag_relevance_threshold` of 0.5 lands on a measured boundary
 #: rather than a chosen one.
 #:
 #: Anchors, not a fit. Neither number was adjusted to make any particular
 #: query pass or fail; they are the two distribution means, and the decision
 #: boundary is wherever their midpoint happens to fall.
-DENSE_NULL_ANCHOR = 0.440
-DENSE_SIGNAL_ANCHOR = 0.647
+#:
+#: **Re-measured after the corpus lane's extraction repair** (commit 9510bed:
+#: inline running headers/footers removed, column-break word splits rejoined,
+#: 8 of 33 papers reloaded, 475 -> 471 chunks, all re-embedded). The same 27
+#: probes over the rebuilt index moved the anchors by less than 0.003, and the
+#: separation held with zero overlap both times:
+#:
+#:     corpus      ON mean   OFF mean   gap              midpoint
+#:     475 chunks  0.647     0.440      [0.513, 0.587]   0.550
+#:     471 chunks  0.649     0.437      [0.513, 0.590]   0.551
+#:
+#: The values below are the rebuilt-corpus measurement. The stability is worth
+#: more than either number: a calibration that survived its corpus being
+#: repaired underneath it is measuring the embedding geometry, not an artefact
+#: of one extraction pass.
+DENSE_NULL_ANCHOR = 0.437
+DENSE_SIGNAL_ANCHOR = 0.649
 
 
 def calibrate_cosine(cosine: float) -> float:

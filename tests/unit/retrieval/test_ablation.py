@@ -90,6 +90,14 @@ def test_markdown_table_renders_every_row() -> None:
     assert "Ragas-equiv" in table
 
 
+def test_markdown_warns_that_latency_is_residency_contaminated() -> None:
+    """R7 and R9 have identical CRAG configuration and measured 32,490ms vs
+    5,174ms in one run — a 6x gap that is model residency and prompt caching,
+    not pipeline cost. The table must say so where the number is read."""
+    table = format_markdown([AblationRow("R9", "", "", mean_latency_ms=5174.0)])
+    assert "not a component cost" in table
+
+
 def test_markdown_marks_unscored_rows_as_na() -> None:
     assert "n/a" in format_markdown([AblationRow("LC", "", "", context_precision=None)])
 
