@@ -571,3 +571,101 @@ def test_balanced_order_handles_a_ragged_plan() -> None:
     items = _generations(4, ["A", "C"]) + _generations(1, ["LC"])
     ordered = balanced_order(items)
     assert len(ordered) == len(items)
+
+
+# ---------------------------------------------------------------------------
+# Discrimination: the metric self-consistency cannot substitute for
+# ---------------------------------------------------------------------------
+
+
+def _constant_results(n: int, score: int) -> list:
+    """Judge results giving every response the same score on every dimension."""
+    from carelite.eval.judge.judge import DimensionResult, JudgeResult
+
+    out = []
+    for i in range(n):
+        dims = {
+            key: DimensionResult(
+                dimension=key,
+                score=score,
+                raw_scores=(score,) * 5,
+                median=float(score),
+                variance=0.0,
+                score_range=0,
+                span="a span",
+                span_source="response",
+                span_exact=True,
+                rationale="",
+                rejections=(),
+            )
+            for key in RUBRIC_DIMENSIONS
+        }
+        out.append(
+            JudgeResult(
+                generation_id=f"gen-{i:03d}",
+                judge_model="gpt-oss:20b",
+                judge_digest="d",
+                prompt_version="p",
+                rubric_version="r",
+                temperature=0.7,
+                n_samples_requested=5,
+                order="ascending",  # type: ignore[arg-type]
+                dimensions=dims,
+                samples=(),
+            )
+        )
+    return out
+
+
+def test_a_constant_judge_is_perfectly_self_consistent_and_measures_nothing() -> None:
+    """The failure mode this metric exists for, and it is not hypothetical: on the
+    real validation arm `ie` and `ritualistic` were scored identically on all
+    twelve responses and topped the self-consistency table."""
+    from carelite.eval.judge.validation import discrimination, self_consistency
+
+    results = _constant_results(12, 1)
+    consistency = self_consistency(results)
+    disc = discrimination(results, consistency)
+
+    for key in RUBRIC_DIMENSIONS:
+        # Perfect stability...
+        assert consistency[key].mean_variance == 0.0
+        assert consistency[key].pct_unanimous == 1.0
+        # ...and no information at all.
+        assert disc[key].degenerate
+        assert disc[key].between_variance == 0.0
+        assert disc[key].n_distinct == 1
+        assert disc[key].ratio == 0.0
+
+
+def test_a_discriminating_dimension_has_a_ratio_above_one() -> None:
+    from carelite.eval.judge.validation import discrimination
+
+    results = _fake_results(40)  # scores cycle 1..5 across generations
+    disc = discrimination(results)
+    for key in RUBRIC_DIMENSIONS:
+        assert not disc[key].degenerate
+        assert disc[key].between_variance > 0.0
+
+
+def test_the_report_names_degenerate_dimensions_before_the_stability_table() -> None:
+    from carelite.eval.judge.validation import build_validation_report
+
+    report = build_validation_report(
+        validation_results=_constant_results(12, 1),
+        responses={},
+    )
+    assert set(report.degenerate_dimensions) == set(RUBRIC_DIMENSIONS)
+    text = report.render()
+    assert "DISCRIMINATION" in text
+    assert text.index("DISCRIMINATION") < text.index("dimension")
+
+
+def test_ritualistic_discrimination_is_computed_on_the_quality_scale() -> None:
+    """Reversing a scale cannot change a variance, but every table leaving the
+    module must still point one way."""
+    from carelite.eval.judge.validation import discrimination
+
+    results = _fake_results(20)
+    disc = discrimination(results)
+    assert disc["ritualistic"].n_generations == 20

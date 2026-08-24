@@ -576,6 +576,7 @@ def report_to_json(report: Any, extra: Mapping[str, Any] | None = None) -> dict[
         "n_generations": report.n_generations,
         "confirmatory_dimensions": report.confirmatory_dimensions,
         "exploratory_dimensions": report.exploratory_dimensions,
+        "degenerate_dimensions": report.degenerate_dimensions,
         "grounding": {
             "n_attempted": report.grounding.n_attempted,
             "n_admitted": report.grounding.n_admitted,
@@ -604,6 +605,7 @@ def report_to_json(report: Any, extra: Mapping[str, Any] | None = None) -> dict[
         validity = report.validity.get(key)
         consistency = report.self_consistency.get(key)
         bias = report.positional_bias.get(key)
+        disc = report.discrimination.get(key)
         out["dimensions"][key] = {
             "alpha": _finite(validity.agreement.alpha) if validity else None,
             "rho": _finite(validity.agreement.rho) if validity else None,
@@ -619,6 +621,17 @@ def report_to_json(report: Any, extra: Mapping[str, Any] | None = None) -> dict[
                 "mean_range": _finite(consistency.mean_range),
                 "pct_unanimous": _finite(consistency.pct_unanimous),
                 "pct_range_ge_2": _finite(consistency.pct_range_ge_2),
+            },
+            "discrimination": None
+            if disc is None
+            else {
+                "n_generations": disc.n_generations,
+                "between_variance": _finite(disc.between_variance),
+                "within_variance": _finite(disc.within_variance),
+                "ratio": None if math.isinf(disc.ratio) else _finite(disc.ratio),
+                "n_distinct_scores": disc.n_distinct,
+                "modal_share": _finite(disc.modal_share),
+                "degenerate": disc.degenerate,
             },
             "positional_bias": None
             if bias is None

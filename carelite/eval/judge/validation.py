@@ -61,6 +61,7 @@ __all__ = [
     "N_SPANS_TO_REVIEW",
     "VALIDATION_PLAN_VERSION",
     "DimensionValidity",
+    "Discrimination",
     "EvidenceStatus",
     "PositionalBias",
     "SelfConsistency",
@@ -70,6 +71,7 @@ __all__ = [
     "SpanSupportReport",
     "ValidationReport",
     "classify_dimension",
+    "discrimination",
     "judge_among_raters_alpha",
     "judge_human_validity",
     "positional_bias",
@@ -187,6 +189,90 @@ def self_consistency(results: Iterable[JudgeResult]) -> dict[str, SelfConsistenc
             mean_range=statistics.fmean([float(r) for r in ranges]),
             pct_unanimous=sum(1 for r in ranges if r == 0) / n,
             pct_range_ge_2=sum(1 for r in ranges if r >= 2) / n,
+        )
+    return out
+
+
+# ---------------------------------------------------------------------------
+# 1b. Discrimination — the metric self-consistency cannot substitute for
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class Discrimination:
+    """Whether a dimension's scores differ *across* responses at all.
+
+    Self-consistency measures variance **within** a generation, across the five
+    samples. It answers "is this measurement stable". It cannot answer "is this
+    measurement of anything", and the two come apart in the worst possible way:
+    **a judge that returns the same score for every response is perfectly
+    self-consistent.** It scores variance 0.0, unanimity 100%, and tops the
+    stability table while carrying no information whatsoever.
+
+    That is not hypothetical here. On the first validation arm, `ie` and
+    `ritualistic` were scored identically on all twelve responses — spanning
+    five conditions including the deliberately degraded negative control — and
+    came out as the two most "stable" dimensions in the §13 self-consistency
+    table.
+
+    So `between_variance` is reported beside `SelfConsistency.mean_variance`,
+    and `ratio` is the one to read: a dimension is informative when it varies
+    more between responses than between samples of the same response. Below
+    about 1.0 the sampling noise is as large as the signal; at 0.0 there is no
+    signal at all.
+    """
+
+    dimension: str
+    n_generations: int
+    #: Variance of the reported (median) score across generations.
+    between_variance: float
+    #: Mean within-generation sample variance, from `SelfConsistency`.
+    within_variance: float
+    #: How many distinct score values the judge actually used, of five.
+    n_distinct: int
+    #: Share of generations receiving the single most common score.
+    modal_share: float
+
+    @property
+    def ratio(self) -> float:
+        """`between / within`. `inf` when a dimension is perfectly self-consistent."""
+        if self.within_variance == 0:
+            return math.inf if self.between_variance > 0 else 0.0
+        return self.between_variance / self.within_variance
+
+    @property
+    def degenerate(self) -> bool:
+        """The judge used one value for every response. Measures nothing."""
+        return self.n_distinct <= 1
+
+
+def discrimination(
+    results: Iterable[JudgeResult],
+    consistency: Mapping[str, SelfConsistency] | None = None,
+) -> dict[str, Discrimination]:
+    """Between-generation spread per dimension, on the quality scale.
+
+    Quality scale via `quality_scores()`, so `ritualistic` points the same way
+    as its ten neighbours. Reversing a scale cannot change a variance, but it
+    keeps every table leaving this module pointing one way.
+    """
+    rows = [r.quality_scores() for r in results]
+    consistency = consistency if consistency is not None else self_consistency(results)
+
+    out: dict[str, Discrimination] = {}
+    for key in RUBRIC_DIMENSIONS:
+        values = [float(v) for row in rows if (v := row.get(key)) is not None]
+        counts = Counter(values)
+        n = len(values)
+        out[key] = Discrimination(
+            dimension=key,
+            n_generations=n,
+            between_variance=statistics.variance(values) if n > 1 else 0.0,
+            within_variance=consistency[key].mean_variance
+            if not math.isnan(consistency[key].mean_variance)
+            else 0.0,
+            n_distinct=len(counts),
+            modal_share=(counts.most_common(1)[0][1] / n) if n else math.nan,
         )
     return out
 
@@ -587,6 +673,7 @@ class ValidationReport:
     prompt_version: str
     n_generations: int
     self_consistency: Mapping[str, SelfConsistency]
+    discrimination: Mapping[str, Discrimination]
     positional_bias: Mapping[str, PositionalBias]
     grounding: SpanGroundingAudit
     span_support: SpanSupportReport | None
@@ -599,6 +686,19 @@ class ValidationReport:
     @property
     def exploratory_dimensions(self) -> list[str]:
         return [k for k, v in self.validity.items() if v.status is EvidenceStatus.EXPLORATORY]
+
+    @property
+    def degenerate_dimensions(self) -> list[str]:
+        """Dimensions where the judge used a single score for every response.
+
+        Reported separately from the threshold because it is a different kind of
+        failure and it is not visible in an agreement coefficient: a constant
+        series makes alpha and rho undefined rather than low, and
+        `classify_dimension` already treats `nan` as failing. The point of
+        naming these is that they would otherwise appear at the *top* of the
+        self-consistency table.
+        """
+        return [k for k, v in self.discrimination.items() if v.degenerate]
 
     def render(self) -> str:
         """Plain-text report. Independence first, per v3 §13's 'report it prominently'."""
@@ -649,14 +749,25 @@ class ValidationReport:
             lines.append("  Manual spot-check: NOT YET RUN — the support rate is unreported.")
         lines.append("")
 
+        degenerate = self.degenerate_dimensions
+        if degenerate:
+            lines.append("DISCRIMINATION — READ BEFORE THE STABILITY COLUMN")
+            lines.append(
+                f"  The judge used a SINGLE score for every response on: {', '.join(degenerate)}. "
+                "Those dimensions measure nothing here, and because a constant series is "
+                "perfectly self-consistent they appear as the most stable in the table below."
+            )
+            lines.append("")
+
         lines.append(
             f"{'dimension':<14}{'alpha':>8}{'rho':>8}{'n':>6}  {'status':<13}"
-            f"{'var':>7}{'unanim':>8}{'posbias':>9}"
+            f"{'var':>7}{'unanim':>8}{'btwn':>7}{'ratio':>7}{'posbias':>9}"
         )
         for key in RUBRIC_DIMENSIONS:
             v = self.validity.get(key)
             sc = self.self_consistency.get(key)
             pb = self.positional_bias.get(key)
+            dc = self.discrimination.get(key)
             alpha = v.agreement.alpha if v else math.nan
             rho = v.agreement.rho if v else math.nan
             n = v.agreement.n_units if v else 0
@@ -665,9 +776,20 @@ class ValidationReport:
                 f"{key:<14}{alpha:>8.3f}{rho:>8.3f}{n:>6}  {status:<13}"
                 f"{(sc.mean_variance if sc else math.nan):>7.2f}"
                 f"{(sc.pct_unanimous if sc else math.nan):>8.0%}"
+                f"{(dc.between_variance if dc else math.nan):>7.2f}"
+                f"{_ratio(dc.ratio if dc else math.nan):>7}"
                 f"{(pb.mean_signed_delta if pb else math.nan):>+9.2f}"
             )
         return "\n".join(lines)
+
+
+def _ratio(value: float) -> str:
+    """`inf` prints as a word; a degenerate ratio should not read as a big number."""
+    if math.isnan(value):
+        return "  n/a"
+    if math.isinf(value):
+        return "  inf"
+    return f"{value:.2f}"
 
 
 def build_validation_report(
@@ -704,7 +826,8 @@ def build_validation_report(
         prompt_version=prompt_version
         or (validation_results[0].prompt_version if validation_results else ""),
         n_generations=len(validation_results),
-        self_consistency=self_consistency(validation_results),
+        self_consistency=(_sc := self_consistency(validation_results)),
+        discrimination=discrimination(validation_results, _sc),
         positional_bias=positional_bias(validation_results, reversed_results),
         grounding=span_grounding_audit(validation_results),
         span_support=span_support_rate(span_verdicts) if span_verdicts else None,
