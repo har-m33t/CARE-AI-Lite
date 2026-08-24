@@ -58,11 +58,14 @@ the largest single constraint on how many entries the corpus can support per the
 
 **The knowledge base is LLM-extracted from primary sources with no human verification, not
 hand-curated as build plan v3 assumed.** `DECISIONS.md` D4 records the decision to drop the planned
-human sign-off gate rather than claim it falsely: `human_verified` is `FALSE` on all 115 loaded
-entries (as of this writing — this figure moves as `carelite-kb` corrects the pipeline; see
-`knowledge_base/review/kb_review_digest.md` for the live count), and that is the honest record,
-not a pending checkbox. Any result that depends on knowledge-base quality inherits this
-limitation.
+human sign-off gate rather than claim it falsely: `human_verified` is `FALSE` on all 114 loaded
+entries (as of this writing, final for now per `DECISIONS.md` D3's outcome below —
+`knowledge_base/review/kb_review_digest.md` carries the live count if it moves again), and that is
+the honest record, not a pending checkbox. Any result that depends on knowledge-base quality
+inherits this limitation.
+
+Theme distribution: activation_sdm 40, plain_language 20, teach_back 15, empathy 14,
+trust_continuity 13, emotion_response 9, equity 3.
 
 What the pipeline in `carelite/kb/validate.py` and `carelite/kb/spans.py` *can* substantiate, precisely:
 
@@ -89,38 +92,62 @@ What the pipeline in `carelite/kb/validate.py` and `carelite/kb/spans.py` *can* 
   the system can detect, generate, or reframe. Two further checks landed after the figures above
   were first measured: candidates are now also rejected for citing a subject `knowledge_base/TAXONOMY.md`
   places out of scope, and for a finding the quoted span does not actually report. **An overclaimed
-  evidence tier is corrected rather than rejected, and as of this writing is derived from the source
-  paper's study design outright rather than merely capped at it**: 58 of the current 115 entries
-  carry a tier that differs from what the extraction model originally claimed
-  (`carelite/kb/papers.py` maps design to tier; `validate.py` enforces it). This is a stronger rule
-  than the project's first version, which only lowered an overclaim and left an underclaim alone —
-  under that version, two entries citing the same paper could carry different tiers, which
-  `README.md`'s own definition of evidence strength as a property of the source does not allow. A
-  second, related check now also caps tier for **second-hand findings** — an entry whose quoted span
-  itself cites another study by number (e.g. a bare `(18)` marker) is capped at what *this* corpus's
-  paper can vouch for, not the tier of the study it is relaying. In every case the span, theme,
-  finding, and takeaway are untouched by a tier correction, and there is a derivable right answer to
-  substitute — unlike a fabricated quote, which has none.
+  evidence tier is corrected rather than rejected, and is now derived from the source paper's study
+  design outright rather than merely capped at it**: 58 of the 114 entries carry a tier that differs
+  from what the extraction model originally claimed — 52 lowered, and **6 raised**, the six being
+  ones a ceiling-only check could never have caught (`carelite/kb/papers.py` maps design to tier;
+  `validate.py` enforces it). This is a stronger rule than the project's first version, which only
+  lowered an overclaim and left an underclaim alone — under that version, two entries citing the
+  same paper could carry different tiers, which `README.md`'s own definition of evidence strength
+  as a property of the source does not allow. A second, related check now also caps tier for
+  **second-hand findings** — an entry whose quoted span itself cites another study by number (e.g.
+  a bare `(18)` marker) is capped at what *this* corpus's paper can vouch for, not the tier of the
+  study it is relaying. Three papers still legitimately carry two tiers under this rule, and
+  Talevski (the teach-back systematic review) is the clearest case: 8 entries at `strong` from its
+  own synthesis, plus 5 at `moderate` relayed from studies it summarizes but does not itself
+  produce. In every case the span, theme, finding, and takeaway are untouched by a tier correction,
+  and there is a derivable right answer to substitute — unlike a fabricated quote, which has none.
 - **No human read any entry for whether the finding follows from the span.** That is the
   specific judgment an automated check cannot make and it is not claimed here. The review
   machinery in `carelite/kb/review.py` exists and is exercised (`knowledge_base/review/kb_review_digest.md`
-  is generated from the live database), but it is an available tool, not a completed gate: 0 of 115
+  is generated from the live database), but it is an available tool, not a completed gate: 0 of 114
   entries are signed off as of this writing.
+- **Paper metadata is now complete: zero placeholder citations, zero papers missing a study
+  design.** `carelite/kb/papers.py` writes `design`, `evidence_tier`, `apa_citation`, and `year`
+  onto every `paper` row, with citations pulled from Crossref and frozen so a cold rebuild needs no
+  network call to reproduce them. Crossref also corrected several hand-written short citations in
+  the process and several manifest years that were wrong — a paper cited by its manifest filename
+  rather than its Crossref-derived citation in an older document or note may now resolve to a
+  different-looking but more accurate reference.
 
-**Concentration is worse than the theme totals suggest.** The equity theme holds 4 entries as of
-this writing (up from 3 at an earlier pass, moved by the scope and second-hand-evidence checks
-above, not by new extraction), drawn from a corpus where the literature *describes* a disparity
-rather than a compensating move — a faithful extraction of "clinicians should be aware of empathy
-gaps in low-SES patients" is an awareness statement, and the actionability gate correctly rejects
-it. `DECISIONS.md` D3 approved a re-extraction with a revised prompt that instructs the extractor to
-name the compensating move rather than the disparity, sequenced to run once `carelite-corpus`'s
-extraction fixes land. **That re-extraction has not run as of this writing** — `PROMPT_VERSION` in
-`carelite/kb/extract.py` is still `kb-extract-v1`, and the equity count above is still the pre-D3
-figure. This document will be updated with the post-re-extraction count and, per D3's own stated
-risk, with whether the individually-read equity entries hold up under the stricter guard against a
-takeaway that drifts beyond its span. Separately, teach-back's 15 entries are concentrated: 12 of
-them come from a single systematic review (Talevski 2020), so what reads as convergent evidence
-within the theme is largely one source cited many times.
+**The equity knowledge base holds 3 entries, and — this is a finding, not a gap awaiting a
+fix — `DECISIONS.md` D3's outcome establishes that this is a property of the corpus, not of the
+extraction.** D3 approved re-extracting equity entries with a prompt asking for the *compensating
+move* a disparity finding implies, rather than the awareness statement a faithful extraction of a
+disparity naturally produces. It ran, and it produced **zero net new entries**: six candidates came
+back from the two anchor papers, four were aspiration statements ("proactively work to bridge the
+empathy gap") the actionability guard correctly rejected, one duplicated an existing span exactly,
+and one was a genuine compensating move that restated advice already in the base. The variant run
+was never loaded — it was quarantined behind `--prompt-version` so an experiment reaches the
+knowledge base only once its guard has been applied, never merely because inference finished.
+Without that guard, the four aspiration statements would have loaded and equity would read 7,
+looking like progress while being a regression.
+
+**Which paper failed is the whole result.** Holdsworth *describes interactions*, so a compensating
+move was there to quote, and the model quoted one. Roberts is a meta-analysis: it quantifies a gap
+and correctly never states what closes it. Asked for a move anyway, the model invented one — not a
+prompt defect, and no prompt fixes it, because the literature that measures a disparity is not the
+literature that prescribes a remedy, and this corpus holds the former. **This converges with D5's
+finding about the `racial_ethnic` scenario axis (§3 below) narrowing to a single mechanism.** Both
+are independent measurements of the same underlying gap, worth stating once, plainly, together,
+rather than apologized for separately across sections: **this corpus documents disparities in
+clinician communication considerably better than it documents what to do about them.** Any equity
+subgroup result this project reports should be read with that ceiling in mind, not just the small
+sample size.
+
+Concentration is worse than the theme totals suggest for teach-back too: 12 of its 15 entries come
+from the single Talevski (2020) systematic review — **effectively single-source** — so what reads
+as convergent evidence within the theme is largely one source cited many times.
 
 ---
 
