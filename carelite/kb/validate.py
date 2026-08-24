@@ -237,8 +237,17 @@ _ASPIRATION_NOT_ACTION = re.compile(
     r"works? towards?|work to|seek to|endeavou?r|commit to|"
     r"ensure (equitable|equal|consistent|fair|that all)|"
     r"to all patients|"
-    r"regardless of (their )?(background|race|ethnicit|socioeconomic|status|SES)"
-    r")\b",
+    r"regardless of (their )?(background|race|ethnicit|socioeconomic|status|SES)|"
+    # A comparative with no referent, attached to a disposition rather than to
+    # anything said: "engage in **more consistent** and attentive
+    # communication". More consistent than what? The clinician cannot check it
+    # mid-encounter and an observer cannot score it, which puts it in the same
+    # category as "be mindful". Deliberately restricted to dispositions — "give
+    # **more detailed** information" modifies a thing that actually gets said
+    # and stays acceptable. Zero matches on the loaded base when added.
+    r"(more|greater|increased|better) "
+    r"(consistent|attentive|effective|empathetic|empathic|thorough|careful|sensitive|responsive)"
+    r")\w*\b",
     re.IGNORECASE,
 )
 
