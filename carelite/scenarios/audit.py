@@ -28,11 +28,20 @@ Two failure modes this is specifically built to catch:
   equity subgroup effect would be indistinguishable from a topic or intensity
   effect. The `EQUITY_*` checks below exist for that and nothing else.
 
+**One hole is accepted, and it is named.** `ACCEPTED_EMPTY_CELLS` is an allowlist
+of cells that are empty as the recorded consequence of a decision a person made,
+rather than as an oversight. It holds exactly one entry, it names the decision
+that produced it, and the audit prints it on every run instead of hiding it. It
+is not a way to lower a gate: a cell not listed there still fails, and the entry
+is pinned by a unit test so a second hole cannot be quietly added to it. The
+distinction the mechanism is drawing is between *the bank has a gap nobody noticed*
+and *the bank has a gap somebody chose*, and only the second one is survivable.
+
 Run it standalone::
 
     .venv/bin/python -m carelite.scenarios.audit
 
-Exit status 0 means every gate passed; 1 means it did not.
+Exit status 0 means every gate passed or was accepted; 1 means it did not.
 """
 
 from __future__ import annotations
@@ -41,6 +50,7 @@ import sys
 from collections import Counter
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
+from typing import Final
 
 from carelite.scenarios.bank import (
     CHALLENGE_TYPES,
@@ -55,6 +65,7 @@ from carelite.scenarios.bank import (
 from carelite.types import EncounterPhase, Split
 
 __all__ = [
+    "ACCEPTED_EMPTY_CELLS",
     "EQUITY_MIN_PER_CHALLENGE",
     "EQUITY_MIN_TOTAL",
     "MIN_PER_EQUITY_KIND",
@@ -101,6 +112,29 @@ EQUITY_MIN_TRAIN = 8
 #: Guards the confound: equity must not be a proxy for one challenge type.
 EQUITY_MIN_PER_CHALLENGE = 2
 
+#: Cells that are empty because a person decided they would be, keyed by
+#: ``(view name, cell key)`` and valued with the decision that produced them.
+#:
+#: This exists for exactly one situation and should stay that small. `DECISIONS.md`
+#: D2 moved SC-010 out of the equity stratum because its LEP signal was carried by
+#: register rather than by a situation, which the equity review packet's own rule 2
+#: forbids. SC-010 was the only equity scenario at ``emotion_intensity=1``, so the
+#: correction emptied that cell. The gap is genuine and is recorded in
+#: `scenarios/EQUITY_REVIEW.md` and in the limitations: the equity stratum now spans
+#: intensities 2-5 and the bank cannot measure whether the disparity behaves
+#: differently on an emotionally flat turn. Filling it would mean writing a new
+#: held-out scenario, which is a far larger protocol amendment than a metadata
+#: change and needs its own decision.
+#:
+#: An empty cell not listed here is still a failure.
+ACCEPTED_EMPTY_CELLS: Final[dict[tuple[str, CellKey], str]] = {
+    ("equity_stratum x emotion_intensity", (True, 1)): (
+        "DECISIONS.md D2 (2026-08-24) -- SC-010 left the equity stratum and was its only "
+        "intensity-1 scenario. Accepted as a known gap, not filled: see "
+        "scenarios/EQUITY_REVIEW.md."
+    ),
+}
+
 
 class StratumCoverageError(AssertionError):
     """One or more stratum cells are empty or under-populated."""
@@ -116,6 +150,10 @@ class AuditReport:
     marginals: dict[str, Counter[object]] = field(default_factory=dict)
     cells: dict[str, CellTable] = field(default_factory=dict)
     violations: list[str] = field(default_factory=list)
+    #: Findings that would be violations but for an entry in
+    #: `ACCEPTED_EMPTY_CELLS`. They do not fail the audit; they are printed on
+    #: every run so an accepted gap stays visible rather than becoming invisible.
+    exemptions: list[str] = field(default_factory=list)
 
     @property
     def ok(self) -> bool:
@@ -123,6 +161,20 @@ class AuditReport:
 
     def empty_cells(self, view: str) -> list[CellKey]:
         return [key for key, n in self.cells.get(view, {}).items() if n == 0]
+
+
+def _flag(report: AuditReport, view: str, key: CellKey, message: str) -> None:
+    """Record a cell-level finding as a violation, or as an accepted exemption.
+
+    Routing every cell finding through here rather than special-casing the one
+    accepted cell is deliberate: the allowlist is a policy with one entry, not a
+    hard-coded escape hatch for one gate.
+    """
+    reason = ACCEPTED_EMPTY_CELLS.get((view, key))
+    if reason is None:
+        report.violations.append(message)
+    else:
+        report.exemptions.append(f"{message}\n      ACCEPTED: {reason}")
 
 
 def _cross(
@@ -243,7 +295,12 @@ def run_audit(records: Sequence[CuratedScenario] | None = None) -> AuditReport:
     )
     for (d_ct, d_phase), n in sorted(design.items(), key=lambda kv: (str(kv[0][0]), str(kv[0][1]))):
         if n == 0:
-            v.append(f"cell challenge_type={d_ct} x encounter_phase={d_phase}: EMPTY CELL")
+            _flag(
+                report,
+                "challenge_type x encounter_phase",
+                (d_ct, d_phase),
+                f"cell challenge_type={d_ct} x encounter_phase={d_phase}: EMPTY CELL",
+            )
         elif n != PER_DESIGN_CELL:
             v.append(
                 f"cell challenge_type={d_ct} x encounter_phase={d_phase}: "
@@ -261,7 +318,12 @@ def run_audit(records: Sequence[CuratedScenario] | None = None) -> AuditReport:
     )
     for (ep_eq, ep_phase), n in eq_phase.items():
         if n == 0:
-            v.append(f"cell equity_stratum={ep_eq} x encounter_phase={ep_phase}: EMPTY CELL")
+            _flag(
+                report,
+                "equity_stratum x encounter_phase",
+                (ep_eq, ep_phase),
+                f"cell equity_stratum={ep_eq} x encounter_phase={ep_phase}: EMPTY CELL",
+            )
 
     eq_intensity = _cross(
         rows,
@@ -273,9 +335,12 @@ def run_audit(records: Sequence[CuratedScenario] | None = None) -> AuditReport:
     )
     for (ei_eq, ei_level), n in eq_intensity.items():
         if n == 0:
-            v.append(
+            _flag(
+                report,
+                "equity_stratum x emotion_intensity",
+                (ei_eq, ei_level),
                 f"cell equity_stratum={ei_eq} x emotion_intensity={ei_level}: EMPTY CELL "
-                "-- equity would be confounded with intensity"
+                "-- equity would be confounded with intensity",
             )
 
     eq_literacy = _cross(
@@ -288,7 +353,12 @@ def run_audit(records: Sequence[CuratedScenario] | None = None) -> AuditReport:
     )
     for (el_eq, el_sig), n in eq_literacy.items():
         if n == 0:
-            v.append(f"cell equity_stratum={el_eq} x literacy_signal={el_sig}: EMPTY CELL")
+            _flag(
+                report,
+                "equity_stratum x literacy_signal",
+                (el_eq, el_sig),
+                f"cell equity_stratum={el_eq} x literacy_signal={el_sig}: EMPTY CELL",
+            )
 
     eq_challenge = _cross(
         rows,
@@ -348,7 +418,12 @@ def run_audit(records: Sequence[CuratedScenario] | None = None) -> AuditReport:
     )
     for (si_split, si_level), n in split_intensity.items():
         if n == 0:
-            v.append(f"cell split={si_split} x emotion_intensity={si_level}: EMPTY CELL")
+            _flag(
+                report,
+                "split x emotion_intensity",
+                (si_split, si_level),
+                f"cell split={si_split} x emotion_intensity={si_level}: EMPTY CELL",
+            )
 
     split_literacy = _cross(
         rows,
@@ -360,7 +435,12 @@ def run_audit(records: Sequence[CuratedScenario] | None = None) -> AuditReport:
     )
     for (sl_split, sl_sig), n in split_literacy.items():
         if n == 0:
-            v.append(f"cell split={sl_split} x literacy_signal={sl_sig}: EMPTY CELL")
+            _flag(
+                report,
+                "split x literacy_signal",
+                (sl_split, sl_sig),
+                f"cell split={sl_split} x literacy_signal={sl_sig}: EMPTY CELL",
+            )
 
     split_equity = _cross(
         rows,
@@ -393,7 +473,12 @@ def run_audit(records: Sequence[CuratedScenario] | None = None) -> AuditReport:
     )
     for (sk_split, sk_kind), n in split_kind.items():
         if n == 0:
-            v.append(f"cell split={sk_split} x equity_kind={sk_kind}: EMPTY CELL")
+            _flag(
+                report,
+                "split x equity_kind",
+                (sk_split, sk_kind),
+                f"cell split={sk_split} x equity_kind={sk_kind}: EMPTY CELL",
+            )
 
     return report
 
@@ -425,7 +510,18 @@ def _format(report: AuditReport) -> str:
         status = "OK" if not empty else f"{len(empty)} EMPTY"
         out.append(f"  {view:<38} {len(table):>3} cells  {status}")
     out.append("")
-    if report.ok:
+    if report.exemptions:
+        out.append(
+            f"  {len(report.exemptions)} accepted gap(s) -- empty by decision, not by oversight:"
+        )
+        out.extend(f"    - {line}" for line in report.exemptions)
+        out.append("")
+    if report.ok and report.exemptions:
+        out.append(
+            f"  PASS -- every gated stratum cell is populated except "
+            f"{len(report.exemptions)} accepted above."
+        )
+    elif report.ok:
         out.append("  PASS -- every gated stratum cell is populated.")
     else:
         out.append(f"  FAIL -- {len(report.violations)} violations:")

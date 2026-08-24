@@ -90,6 +90,34 @@ def test_equity_boolean_and_equity_kind_agree() -> None:
         assert record.equity_stratum == (record.equity_kind is not None)
 
 
+def test_the_d2_reclassification_holds() -> None:
+    # DECISIONS.md D2 (2026-08-24) moved SC-077 and SC-010 out of the equity
+    # stratum and changed nothing else about them. Both directions matter and
+    # both are asserted here: the stratum flags are gone, and the utterances are
+    # byte-identical to the text D2 quotes. A later edit that quietly restored
+    # either scenario to the stratum -- or that "tidied" the text of a held-out
+    # scenario while it happened to be open -- would be caught here as well as by
+    # the holdout digest.
+    for sid in ("SC-010", "SC-077"):
+        record = by_id(sid)
+        assert record.equity_stratum is False, f"{sid} is back in the equity stratum"
+        assert record.equity_kind is None, f"{sid} still carries an equity_kind"
+        assert record.split is Split.HOLDOUT
+
+    assert by_id("SC-010").text == (
+        "Yes, thank you doctor. Everything is good. Maybe my son can call you with "
+        "the questions. I don't want to take more of your time."
+    )
+    assert by_id("SC-077").text == (
+        "I'll be honest with you, I never filled it. I read what it does to your "
+        "kidneys, and a man at my church said the same thing happened to his brother. "
+        "I know that's not — I know."
+    )
+    # They stay in the bank as non-equity scenarios; they were not deleted.
+    assert by_id("SC-010").challenge_type == "emotional_cue"
+    assert by_id("SC-077").challenge_type == "adherence_barrier"
+
+
 def test_every_scenario_carries_curation_metadata() -> None:
     for record in load_bank():
         assert record.hard_case, f"{record.scenario_id} has no hard_case tags"

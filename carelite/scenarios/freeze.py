@@ -70,10 +70,24 @@ UNFREEZE_TOKEN: Final = "i-understand-this-invalidates-the-holdout"
 #: sha256 over the newline-joined per-record digests of the 60 held-out
 #: scenarios, ordered by scenario_id. Frozen 2026-08-22, before any generation
 #: existed. Do not update this to make a test pass.
+#:
+#: **Amended once, on 2026-08-24.** `DECISIONS.md` D2 cleared `equity_stratum` and
+#: `equity_kind` on SC-010 and SC-077, both held out. Their text and every other
+#: frozen field are unchanged, the held-out id set is unchanged at 60, and exactly
+#: two per-record digests moved. The amendment was made at the only moment it is
+#: free: no evaluation data exists and OSF pre-registration has not happened, so the
+#: amended bank is what gets registered rather than something that has to be declared
+#: after the fact. The superseded digest is kept below so the amendment stays legible
+#: and any artefact carrying the old value can still be identified as pre-amendment.
+#:
+#:     pre-amendment: adfedb33cbbb2ec627bff50ae25a572594f0d4e36b5b34fb2804b3408c3600c4
+#:
+#: A second amendment is not free. After pre-registration this constant changing at
+#: all is a protocol deviation that has to be declared.
 # The pragma below is on the value line because detect-secrets matches per line. This is a
 # content checksum over public synthetic text, not a credential.
 HOLDOUT_DIGEST: Final = (
-    "adfedb33cbbb2ec627bff50ae25a572594f0d4e36b5b34fb2804b3408c3600c4"  # pragma: allowlist secret
+    "5a3cb128effc78f6ec41a5a8c616e2fe0fe4105abe42cc593d5dff01cd653395"  # pragma: allowlist secret
 )
 
 #: The fields that constitute the evaluation item, in a fixed order.

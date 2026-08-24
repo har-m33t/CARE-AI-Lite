@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from carelite.scenarios.audit import (
+    ACCEPTED_EMPTY_CELLS,
     EQUITY_MIN_PER_CHALLENGE,
     INTENSITIES,
     PHASES,
@@ -46,10 +47,35 @@ def test_every_factor_level_is_populated() -> None:
     assert set(report.marginals["equity_stratum"]) == {True, False}
 
 
-def test_no_gated_view_has_an_empty_cell() -> None:
+def test_no_gated_view_has_an_empty_cell_except_the_one_that_was_decided() -> None:
     report = run_audit()
-    empties = {view: report.empty_cells(view) for view in report.cells}
-    assert all(not cells for cells in empties.values()), empties
+    empties = {
+        (view, key)
+        for view in report.cells
+        for key in report.empty_cells(view)
+        if (view, key) not in ACCEPTED_EMPTY_CELLS
+    }
+    assert not empties, empties
+
+
+def test_the_accepted_gap_allowlist_holds_exactly_one_entry() -> None:
+    # This is the guard on the exemption mechanism itself. `ACCEPTED_EMPTY_CELLS`
+    # is meant to record the one hole DECISIONS.md D2 knowingly left, not to become
+    # a place where inconvenient coverage failures go to be silenced. Adding a
+    # second entry has to break this test and be argued for in the diff.
+    assert ACCEPTED_EMPTY_CELLS.keys() == {("equity_stratum x emotion_intensity", (True, 1))}
+    reason = next(iter(ACCEPTED_EMPTY_CELLS.values()))
+    assert "DECISIONS.md D2" in reason
+
+
+def test_the_accepted_gap_is_still_reported_rather_than_hidden() -> None:
+    # An exemption that stopped being printed would be indistinguishable from a
+    # coverage claim the bank cannot make.
+    report = run_audit()
+    assert report.ok
+    assert len(report.exemptions) == 1
+    assert "emotion_intensity=1" in report.exemptions[0]
+    assert "ACCEPTED:" in report.exemptions[0]
 
 
 def test_equity_is_not_confounded_with_challenge_type() -> None:
@@ -61,11 +87,22 @@ def test_equity_is_not_confounded_with_challenge_type() -> None:
 
 
 def test_equity_is_not_confounded_with_emotion_intensity() -> None:
+    # The original claim was that the equity stratum spans all five intensity
+    # levels. DECISIONS.md D2 ended that: SC-010 was the only equity scenario at
+    # intensity 1, and it left the stratum because its LEP signal was carried by
+    # register rather than by a situation. The stratum now spans 2-5. That is a
+    # documented gap, not a silent one -- see ACCEPTED_EMPTY_CELLS -- and the
+    # remaining levels still have to be populated, which is what stops the
+    # stratum drifting into the top of the range.
     report = run_audit()
     table = report.cells["equity_stratum x emotion_intensity"]
+    assert table[(True, 1)] == 0
     for level in INTENSITIES:
-        assert table[(True, level)] >= 1, f"no equity scenario at emotion_intensity {level}"
+        if level != 1:
+            assert table[(True, level)] >= 1, f"no equity scenario at emotion_intensity {level}"
         assert table[(False, level)] >= 1
+    # The confound the check exists for: equity must not concentrate at high intensity.
+    assert table[(True, 2)] + table[(True, 3)] >= table[(True, 4)] + table[(True, 5)]
 
 
 def test_split_is_stratified_not_arbitrary() -> None:
