@@ -17,6 +17,7 @@ from typing import Any
 import pytest
 
 from carelite.kb.extract import (
+    FOCUS_VOCABULARY,
     PROMPT_VERSION,
     CandidateEntry,
     WindowResult,
@@ -110,6 +111,68 @@ class TestWindows:
 
     def test_a_document_with_no_theme_content_yields_no_windows(self) -> None:
         assert select_windows("lorem ipsum dolor sit amet " * 500) == []
+
+
+class TestFocusedWindowSelection:
+    """The targeted second pass re-ranks pages; it must not re-word the prompt.
+
+    The first extraction pass ranked every paper's windows by general
+    communication vocabulary, and the result under-sampled two themes badly:
+    the equity anchor (a meta-analysis of socioeconomic and racial differences
+    in clinician empathy) yielded one entry, because its three densest windows
+    by general vocabulary were its search strategy and methods rather than its
+    findings. Re-ranking which pages get read corrects the sampling. Naming the
+    theme in the prompt would instead bias what comes back, so `SYSTEM_TEMPLATE`
+    is deliberately identical between the two passes and a test holds it there.
+    """
+
+    EQUITY_DOC = (
+        "Background. "
+        + ("communication skills training improved scores. " * 220)
+        + "Findings. "
+        + (
+            "Interpreter use and limited English proficiency drove disparities "
+            "by race and ethnicity among socioeconomic minority patients. " * 60
+        )
+    )
+
+    def test_focus_vocabulary_moves_selection_onto_the_theme_dense_pages(self) -> None:
+        general = select_windows(self.EQUITY_DOC, limit=2)
+        focused = select_windows(self.EQUITY_DOC, limit=2, vocabulary=FOCUS_VOCABULARY["equity"])
+        assert focused
+        assert {w.index for w in focused} != {w.index for w in general}
+        assert all("disparities" in w.text for w in focused)
+
+    def test_focused_windows_keep_their_document_indices(self) -> None:
+        """Cache keys are window indices, so a focused run must reuse, not redo.
+
+        If focusing renumbered windows, every focused call would miss the cache
+        and re-run inference over pages the general pass had already read.
+        """
+        focused = select_windows(self.EQUITY_DOC, limit=3, vocabulary=FOCUS_VOCABULARY["equity"])
+        all_windows = {w.index: w for w in iter_windows(self.EQUITY_DOC)}
+        for w in focused:
+            assert w.start == all_windows[w.index].start
+            assert w.text == all_windows[w.index].text
+
+    def test_an_unknown_focus_is_rejected(self) -> None:
+        with pytest.raises(ValueError, match="unknown focus"):
+            extract_corpus_entries(focus="not_a_theme", paper_ids=[])
+
+    def test_the_prompt_builder_takes_no_focus_at_all(self) -> None:
+        """The strongest form this assertion can take: focus cannot reach the prompt.
+
+        A focused pass changes which windows are spent inference on and nothing
+        else. If `build_prompt` ever grows a way to steer the model toward a
+        theme, this test should fail and the change should be argued for on its
+        own merits rather than arriving as a side effect of sampling.
+        """
+        import inspect
+
+        assert "focus" not in inspect.signature(build_prompt).parameters
+        a = build_prompt("a passage about interpreters", paper_id="p1")
+        b = build_prompt("a passage about interpreters", paper_id="p1")
+        assert a.as_messages() == b.as_messages()
 
 
 class TestPromptFencing:
