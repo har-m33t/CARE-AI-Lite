@@ -7,6 +7,7 @@ from typing import Any
 import pytest
 
 from carelite.generate.model import (
+    ALLOW_TEST_INFERENCE_ENV,
     DIGEST_UNAVAILABLE,
     MIN_CONTEXT,
     GenerationClient,
@@ -168,3 +169,40 @@ def test_an_older_client_without_think_still_works() -> None:
         _prompt(), model_tag="gemma4:12b", seed=1, temperature=0.7
     )
     assert out.text == "hello"
+
+
+# ---------------------------------------------------------------------------
+# The test-process guardrail
+# ---------------------------------------------------------------------------
+
+
+def test_a_test_process_cannot_open_a_live_model_connection() -> None:
+    """`make check` excludes the `inference` marker; this makes that a property
+    of the client rather than a convention a test can forget."""
+    with pytest.raises(GenerationError, match="refusing to open a live model"):
+        GenerationClient().generate(_prompt(), model_tag="gemma4:12b", seed=1, temperature=0.7)
+
+
+def test_the_guardrail_never_touches_an_injected_client() -> None:
+    out = GenerationClient(client=_FakeOllama()).generate(
+        _prompt(), model_tag="gemma4:12b", seed=1, temperature=0.7
+    )
+    assert out.text == "hello"
+
+
+def test_a_test_that_means_to_reach_a_model_can_say_so(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The opt-out has to exist, or an `inference`-marked test could not run."""
+    monkeypatch.setenv(ALLOW_TEST_INFERENCE_ENV, "1")
+    with pytest.raises(GenerationError) as exc:
+        GenerationClient(host="http://127.0.0.1:9").generate(
+            _prompt(), model_tag="gemma4:12b", seed=1, temperature=0.7
+        )
+    assert "refusing to open a live model" not in str(exc.value)
+
+
+def test_digest_resolution_degrades_rather_than_raising_under_the_guardrail() -> None:
+    """`resolve_digest` runs before the plan is built. It must report the loss,
+    not take the run down."""
+    assert GenerationClient().resolve_digest("gemma4:12b") == DIGEST_UNAVAILABLE

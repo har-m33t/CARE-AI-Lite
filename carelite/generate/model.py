@@ -32,6 +32,8 @@ offers, and the digest is what lets a later reader tell those apart.
 
 from __future__ import annotations
 
+import os
+import sys
 import time
 from dataclasses import dataclass, field
 from typing import Any
@@ -40,6 +42,7 @@ from carelite.config import get_settings
 from carelite.safety.fencing import FencedPrompt
 
 __all__ = [
+    "ALLOW_TEST_INFERENCE_ENV",
     "DIGEST_UNAVAILABLE",
     "GenerationClient",
     "GenerationError",
@@ -47,6 +50,9 @@ __all__ = [
     "context_size",
     "estimate_tokens",
 ]
+
+#: Set to `1` to let a test process open a model connection. See `_refuse_in_tests`.
+ALLOW_TEST_INFERENCE_ENV = "CARELITE_ALLOW_TEST_INFERENCE"
 
 #: Recorded in place of a digest when the daemon cannot be asked for one. The
 #: `generation.model_digest` column is NOT NULL, and writing a plausible-looking
@@ -61,6 +67,36 @@ MIN_CONTEXT = 8192
 
 class GenerationError(RuntimeError):
     """The model did not produce a response. Never swallowed; see the docstring."""
+
+
+def _refuse_in_tests() -> None:
+    """Stop a unit-test process from opening a connection to a live model.
+
+    A unit test that reaches a model is slow, non-deterministic, and dependent
+    on a daemon that may not be running — which is why `pyproject.toml` has an
+    `inference` marker and `make check` excludes it. This makes that a property
+    of the client rather than a convention: a test that would have called a
+    model gets a `GenerationError` in milliseconds instead of blocking for
+    minutes behind whatever else is queued on the daemon.
+
+    It only fires when no client was injected. Every test in
+    `tests/unit/generate/` passes a fake and is unaffected, and nothing here
+    runs outside pytest, so production behaviour is untouched.
+
+    A test that genuinely means to hit a model marks itself `inference` and sets
+    `CARELITE_ALLOW_TEST_INFERENCE=1`.
+    """
+    if "pytest" not in sys.modules:
+        return
+    if os.environ.get(ALLOW_TEST_INFERENCE_ENV, "").strip().lower() in {"1", "true", "yes"}:
+        return
+    raise GenerationError(
+        "refusing to open a live model connection from a test process. A unit test "
+        "must not depend on a running Ollama daemon: inject a fake client into "
+        "GraphDeps, or patch carelite.cli.engine.resolve_engine to return a stub. "
+        f"A test that really means to reach a model marks itself `inference` and sets "
+        f"{ALLOW_TEST_INFERENCE_ENV}=1."
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -136,6 +172,7 @@ class GenerationClient:
         """
         if self.client is not None:
             return self.client
+        _refuse_in_tests()
         timeout = timeout_s if timeout_s is not None else self.timeout_s
         handle = self._pool.get(timeout)
         if handle is None:
