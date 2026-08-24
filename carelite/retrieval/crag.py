@@ -230,14 +230,21 @@ class LLMGrader:
 # The score grader (offline fallback)
 # ---------------------------------------------------------------------------
 
-#: Linear calibration anchors for raw `bge-m3` cosine, from the measurement in
-#: the module docstring: 0.44 is the mean top-1 cosine of 15 off-domain probe
-#: queries and 0.66 the mean top-1 of 12 on-domain ones. Their midpoint, 0.55,
-#: falls in the centre of the empirically observed gap [0.513, 0.587], so the
-#: default threshold of 0.5 lands on a measured boundary rather than a chosen
-#: one. Anchors, not a fit: no per-query tuning happens anywhere.
-DENSE_NULL_ANCHOR = 0.44
-DENSE_SIGNAL_ANCHOR = 0.66
+#: Linear calibration anchors for raw `bge-m3` cosine. Both are *measured
+#: means*, carried at the precision they were measured to rather than rounded
+#: to something tidier: 0.440 is the mean top-1 cosine of 15 off-domain probe
+#: queries against the live corpus and 0.647 the mean top-1 of 12 on-domain
+#: ones. Their midpoint, 0.544, falls inside the empirically observed gap
+#: between the two populations — off-domain topped out at 0.513, on-domain
+#: bottomed out at 0.587, with no overlap across the 27 probes — so the
+#: default `crag_relevance_threshold` of 0.5 lands on a measured boundary
+#: rather than a chosen one.
+#:
+#: Anchors, not a fit. Neither number was adjusted to make any particular
+#: query pass or fail; they are the two distribution means, and the decision
+#: boundary is wherever their midpoint happens to fall.
+DENSE_NULL_ANCHOR = 0.440
+DENSE_SIGNAL_ANCHOR = 0.647
 
 
 def calibrate_cosine(cosine: float) -> float:
