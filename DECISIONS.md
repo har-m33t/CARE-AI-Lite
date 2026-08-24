@@ -333,3 +333,72 @@ scenario axis narrowed under D5, are now two independent measurements of the sam
 underlying gap: this corpus documents disparities far better than it documents what to
 do about them. That belongs in `docs/limitations.md` as a finding about the evidence
 base, stated once and plainly, not as an apology distributed across three sections.
+
+---
+
+## D7 — The long-context baseline cannot be the whole corpus, and will not claim to be
+
+**Decision: LC becomes a fixed, query-independent round-robin sample across all 33
+papers at a pinned seed, reported as `LC-sample`. The pre-registration must state
+that this is "no *query-dependent* retrieval" rather than "no retrieval", because
+that is a different claim from the one build plan v3 §3 makes.**
+
+The `carelite-retrieval` lane measured what v3 assumed: 471 chunks is roughly
+**326,526 tokens against a 128,000-token window — 255% utilisation.** Reserving
+16K for the system prompt, the patient turn, and the response, about **161 chunks
+(34%) fit.** The long-context condition as specified is not implementable, and no
+amount of care in the analysis recovers that.
+
+**Round-robin across papers rather than random sampling.** Round-robin guarantees
+every one of the 33 papers is represented and is trivially deterministic; random
+selection can drop whole papers by chance, which would make LC's content an
+accident of the seed and its comparison to C partly a comparison of which papers
+happened to survive.
+
+**The part that must not be quietly absorbed.** Any selection rule is a form of
+retrieval. LC was supposed to be the baseline that asks whether curated retrieval
+beats stuffing everything in; it can now only ask whether *query-dependent*
+selection beats a *fixed* context. That remains a real and interesting question —
+arguably closer to what a practitioner would actually build — but it is not the
+question v3 posed, and a reader must not be able to mistake one for the other. The
+row is named `LC-sample` for that reason, and the pre-registration carries the
+distinction rather than a footnote in the results.
+
+This is settled now because the pre-registration has not been submitted. After
+registration it would be a protocol amendment; today it is free, and it is exactly
+the class of thing §10 exists to force into the open beforehand.
+
+## The ablation gate was mis-specified, and the fix is recorded here because it changes a reported number
+
+The first completed R0–R9 run reported context precision of 0.167–0.250 against a
+`> 0.7` gate, with every non-CRAG row marked FAIL and the two CRAG rows marked PASS
+at 1.000.
+
+Both halves were artefacts. Half the turns are `OFF_DOMAIN_TURNS` — deliberately
+unanswerable — and the relevance judge correctly rules that no passage from this
+corpus helps them, so each contributes a structural zero. **No non-CRAG row could
+exceed roughly 0.5, against a gate of 0.7: the table was testing something no
+configuration could pass.** And the two PASSes scored 1.000 on `n_scored = 1`,
+which reads as CRAG improving precision when what it had done was reject five of
+six turns.
+
+Fixed: precision is computed on-domain only and that is what the gate tests;
+rejection is reported as two separate columns, `off-dom rej` (high means CRAG is
+working) and `on-dom fb` (what it costs); and no verdict prints below
+`MIN_SCORED_FOR_GATE = 5`, so a sample of one can never read PASS again. On-domain
+precision on the same run is **0.334–0.380** — still short of 0.7, still worth
+understanding, and a materially different claim from "0.167 FAIL".
+
+**The 83% fallback was investigated with evidence rather than settled by judgement.**
+The stale-anchor hypothesis — that the CRAG cosine thresholds were calibrated before
+the corpus was re-extracted and 129 chunks re-embedded — does not hold, for two
+independent reasons: the anchors have exactly one call site, reached only when the
+LLM grader is unavailable, and that run shows every turn graded by the LLM; and they
+were re-measured after the re-extraction anyway, moving by less than 0.003 with
+separation intact. The lane made this verifiable rather than arguable by recording
+the deciding grader per turn in the table. What remains is **corpus skew**, which is
+consistent with everything else known about this evidence base: 18 of 33 papers are
+communication-skills *training* studies, teach-back rests on one paper, equity on
+three entries. Those on-domain rejections are the gate reporting a real property of
+the corpus, and they belong in `docs/limitations.md` rather than in a retuned
+threshold.
