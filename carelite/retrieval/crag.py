@@ -63,6 +63,43 @@ by the full prompt hash, so a re-run of a scored cell replays the identical
 grade rather than re-asking. Grading costs one short call per turn against a
 generation step that costs far more.
 
+--------------------------------------------------------------------------
+Which grader decides, and why the anchors are not the explanation
+--------------------------------------------------------------------------
+
+A run measured an 83% CRAG fallback rate: five of six turns rejected. Three
+were the off-domain turns and rejecting them is the gate working. The other
+two were on-domain scenario-bank turns, which raises a fair question — is the
+corpus genuinely unable to serve them, or were the cosine anchors below
+calibrated on a distribution that has since changed? The corpus *was*
+re-extracted and re-embedded after those anchors were set.
+
+Two facts answer it, and neither is a judgement call:
+
+1. **The anchors were not in the decision path.** `DENSE_NULL_ANCHOR` and
+   `DENSE_SIGNAL_ANCHOR` are consumed at exactly one place in this package —
+   `ScoreGrader.grade`, via `calibrate_cosine`. `grade_context` runs
+   `LLMGrader` first and reaches `ScoreGrader` only when the judge model is
+   unreachable or answers unparseably. So on any turn graded by the LLM
+   evaluator, no cosine threshold was consulted at all and the rejection is a
+   semantic judgment about whether the retrieved passages help. This is now
+   *verifiable per run* rather than inferred from the code:
+   `AblationRow.graders` records the deciding grader for every turn and the
+   ablation table prints it, so a row that rejected on the `score` path is
+   visible rather than silent.
+
+2. **They were re-measured after the change anyway.** The same 27 probes over
+   the rebuilt index moved both anchors by less than 0.003 and the on/off
+   separation held with zero overlap (table below). A calibration that
+   survived its corpus being repaired underneath it is not stale.
+
+That leaves corpus skew as the explanation for the on-domain rejections, which
+is consistent with what the corpus is: 18 of 33 papers are communication-skills
+*training* studies rather than bedside-behaviour studies, teach-back is backed
+by a single paper, and equity by three KB entries. A gate that rejects on those
+turns is reporting a real property of the evidence base. That is a finding for
+`docs/limitations.md`, not a threshold to tune until the rate looks better.
+
 **`ScoreGrader` remains as the offline fallback** for when no model is
 reachable. It is honestly labelled: it can tell a *retrieval failure* (the
 legs returned nothing, or everything scored near the floor) from a success,

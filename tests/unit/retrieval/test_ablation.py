@@ -9,6 +9,7 @@ import pytest
 from carelite.retrieval.ablation import (
     ABLATION_ORDER,
     CONTEXT_PRECISION_GATE,
+    MIN_SCORED_FOR_GATE,
     AblationRow,
     context_precision,
     format_markdown,
@@ -74,15 +75,150 @@ def test_ablation_order_covers_the_ladder_and_the_lc_baseline() -> None:
 
 def test_gate_threshold_matches_the_brief() -> None:
     assert CONTEXT_PRECISION_GATE == 0.7
-    assert AblationRow("R9", "", "", context_precision=0.71).gate_passed is True
-    assert AblationRow("R9", "", "", context_precision=0.70).gate_passed is False
-    assert AblationRow("R9", "", "", context_precision=None).gate_passed is None
+    big = MIN_SCORED_FOR_GATE
+    assert AblationRow("R9", "", "", context_precision=0.71, n_scored=big).gate_passed is True
+    assert AblationRow("R9", "", "", context_precision=0.70, n_scored=big).gate_passed is False
+    assert AblationRow("R9", "", "", context_precision=None, n_scored=big).gate_passed is None
+
+
+def test_a_sample_of_one_never_prints_pass() -> None:
+    """The failure this guard exists for: a run reported "1.000 PASS" for R7
+    and R9 on n_scored=1, because CRAG had rejected five of six turns and the
+    single survivor happened to score perfectly. That reads as CRAG improving
+    precision when what it did was reject almost everything."""
+    row = AblationRow("R9", "", "", context_precision=1.0, n_scored=1)
+    assert row.gate_passed is None
+    assert "no verdict" in row.gate_label
+    assert "PASS" not in row.gate_label
+    assert "PASS" not in format_markdown([row])
+
+
+def test_gate_needs_the_minimum_sample() -> None:
+    assert (
+        AblationRow(
+            "R9", "", "", context_precision=0.9, n_scored=MIN_SCORED_FOR_GATE - 1
+        ).gate_passed
+        is None
+    )
+    assert (
+        AblationRow("R9", "", "", context_precision=0.9, n_scored=MIN_SCORED_FOR_GATE).gate_passed
+        is True
+    )
+
+
+def test_off_domain_turns_are_excluded_from_precision(monkeypatch, fake_llm) -> None:
+    """The mis-specification this fixes.
+
+    `RELEVANCE_SYSTEM` correctly judges that no passage helps an off-domain
+    turn, so each contributes a structural zero. Blending them in caps a
+    non-CRAG row at roughly (on-domain share) — with three of six turns
+    off-domain that is ~0.5, against a gate of 0.7, so no configuration
+    without CRAG could pass however good retrieval was. The gate must be
+    applied to something a configuration can actually achieve.
+    """
+    import carelite.retrieval.ablation as ablation
+    from carelite.types import CRAGGrade, RetrievalTrace, Route
+
+    from .conftest import make_item
+
+    scored: list[str] = []
+
+    def fake_retrieve(turn, **kwargs):
+        from carelite.retrieval.pipeline import RetrievalResult
+
+        trace = RetrievalTrace(
+            route=Route.INFORMATIONAL,
+            retrieved=[make_item("a")],
+            crag_grade=CRAGGrade.RELEVANT,
+            fell_back_to_b=False,
+            latency_ms=1,
+        )
+        return RetrievalResult(trace=trace, flags=preset("R8"))
+
+    monkeypatch.setattr(ablation, "retrieve_detailed", fake_retrieve)
+    monkeypatch.setattr(
+        ablation,
+        "context_precision",
+        lambda turn, passages, client: scored.append(turn) or 1.0,
+    )
+
+    row = run_row(
+        preset("R8"),
+        ["on-1", "on-2", "off-1", "off-2"],
+        off_domain=["off-1", "off-2"],
+        precision_client=fake_llm,
+    )
+
+    assert scored == ["on-1", "on-2"]
+    assert row.n_on_domain == 2 and row.n_off_domain == 2
+    assert row.n_scored == 2
+    assert row.context_precision == pytest.approx(1.0)
+
+
+def test_rejection_is_reported_split_by_whether_it_was_correct(monkeypatch, fake_llm) -> None:
+    """A high `off_domain_rejection_rate` is CRAG succeeding; a high
+    `on_domain_fallback_rate` is what that costs. One blended number hides
+    both."""
+    import carelite.retrieval.ablation as ablation
+    from carelite.types import CRAGGrade, RetrievalTrace, Route
+
+    from .conftest import make_item
+
+    def fake_retrieve(turn, **kwargs):
+        from carelite.retrieval.pipeline import RetrievalResult
+
+        rejected = turn.startswith("off")
+        trace = RetrievalTrace(
+            route=Route.INFORMATIONAL,
+            retrieved=[] if rejected else [make_item("a")],
+            crag_grade=CRAGGrade.NONE if rejected else CRAGGrade.RELEVANT,
+            fell_back_to_b=rejected,
+            latency_ms=1,
+        )
+        return RetrievalResult(trace=trace, flags=preset("R9"))
+
+    monkeypatch.setattr(ablation, "retrieve_detailed", fake_retrieve)
+    row = run_row(
+        preset("R9"),
+        ["on-1", "on-2", "off-1", "off-2"],
+        off_domain=["off-1", "off-2"],
+        score_precision=False,
+    )
+    assert row.off_domain_rejection_rate == pytest.approx(1.0)
+    assert row.on_domain_fallback_rate == pytest.approx(0.0)
+
+
+def test_grader_attribution_is_recorded(monkeypatch) -> None:
+    """So "was this the LLM evaluator or the cosine fallback?" is answerable
+    from the run artifact instead of by reasoning about the code. The cosine
+    anchors are only ever consulted by ScoreGrader, so a row showing `llm`
+    proves they were not in the decision path."""
+    import carelite.retrieval.ablation as ablation
+    from carelite.retrieval.crag import GradeReport
+    from carelite.types import CRAGGrade, RetrievalTrace, Route
+
+    def fake_retrieve(turn, **kwargs):
+        from carelite.retrieval.pipeline import RetrievalResult
+
+        trace = RetrievalTrace(
+            route=Route.INFORMATIONAL, retrieved=[], crag_grade=CRAGGrade.NONE, fell_back_to_b=True
+        )
+        return RetrievalResult(
+            trace=trace,
+            flags=preset("R9"),
+            grade_report=GradeReport(grade=CRAGGrade.NONE, grader="llm"),
+        )
+
+    monkeypatch.setattr(ablation, "retrieve_detailed", fake_retrieve)
+    row = run_row(preset("R9"), ["a", "b"], score_precision=False)
+    assert row.graders == {"llm": 2}
+    assert "llm:2" in format_markdown([row])
 
 
 def test_markdown_table_renders_every_row() -> None:
     rows = [
-        AblationRow("R0", "baseline", "dense", n_turns=3, context_precision=0.4),
-        AblationRow("R9", "full", "everything", n_turns=3, context_precision=0.9),
+        AblationRow("R0", "baseline", "dense", n_turns=8, n_scored=8, context_precision=0.4),
+        AblationRow("R9", "full", "everything", n_turns=8, n_scored=8, context_precision=0.9),
     ]
     table = format_markdown(rows)
     assert "R0" in table and "R9" in table

@@ -109,32 +109,88 @@ ABLATION_ORDER: tuple[str, ...] = (
     "LC",
 )
 
-#: The gate from the lane brief.
+#: The gate from the lane brief. Applied to on-domain context precision only.
 CONTEXT_PRECISION_GATE = 0.7
+
+#: Below this many scored turns a row gets no gate verdict at all.
+#: Exists because a run once printed "1.000 PASS" on a single surviving turn
+#: after CRAG rejected the other five. A gate is a claim about retrieval
+#: quality across turns; one turn cannot support it in either direction.
+MIN_SCORED_FOR_GATE = 5
 
 
 @dataclass
 class AblationRow:
-    """One row of the emitted table."""
+    """One row of the emitted table.
+
+    **Precision and rejection are separate columns, and that is the whole
+    point of this shape.** An earlier version blended them into a single
+    context-precision figure computed over every turn, off-domain turns
+    included. Because `RELEVANCE_SYSTEM` correctly tells the judge that *no*
+    passage helps an off-domain turn, each such turn contributes a structural
+    zero. With three off-domain turns in a six-turn run, no configuration
+    without CRAG could exceed ~0.5 against a gate of 0.7 — the gate was
+    testing a property of the turn mix rather than of the retriever, and every
+    non-CRAG row was guaranteed to fail however good retrieval was.
+
+    The same blend inverted CRAG's meaning. R7 and R9 scored 1.000 and were
+    marked PASS on `n_scored = 1`: the gate had rejected five of six turns, so
+    one turn survived and happened to score perfectly. A reader skimming that
+    table would conclude CRAG *improves* precision, when what it did was reject
+    almost everything. Rejecting is CRAG's job, but it must read as a
+    behaviour, not as a shrinking denominator that flatters the row.
+
+    So: `context_precision` is computed over **on-domain turns only** and is
+    what the gate is applied to; `off_domain_rejection_rate` is CRAG's
+    correctness on turns that ought to be rejected; `on_domain_fallback_rate`
+    is what it costs on turns that ought not to be. `gate_passed` refuses a
+    verdict below `min_scored`, so a sample of one can never print PASS again.
+    """
 
     label: str
     note: str
     config: str
     n_turns: int = 0
+    n_on_domain: int = 0
+    n_off_domain: int = 0
     n_scored: int = 0
     mean_retrieved: float = 0.0
     mean_latency_ms: float = 0.0
     fallback_rate: float = 0.0
+    on_domain_fallback_rate: float = 0.0
+    off_domain_rejection_rate: float | None = None
     skipped_rate: float = 0.0
     context_precision: float | None = None
+    min_scored: int = 0
     routes: dict[str, int] = field(default_factory=dict)
+    graders: dict[str, int] = field(default_factory=dict)
     notes: list[str] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        if not self.min_scored:
+            self.min_scored = MIN_SCORED_FOR_GATE
 
     @property
     def gate_passed(self) -> bool | None:
-        if self.context_precision is None:
+        """`None` means "no verdict", not "failed".
+
+        Returned when precision was not computed at all, and — deliberately —
+        when it rests on fewer than `min_scored` turns. The gate is a claim
+        about retrieval quality; it cannot be made from a sample of one.
+        """
+        if self.context_precision is None or self.n_scored < self.min_scored:
             return None
         return self.context_precision > CONTEXT_PRECISION_GATE
+
+    @property
+    def gate_label(self) -> str:
+        if self.context_precision is None:
+            return "n/a"
+        cell = f"{self.context_precision:.3f}"
+        verdict = self.gate_passed
+        if verdict is None:
+            return f"{cell} (n={self.n_scored}<{self.min_scored}, no verdict)"
+        return f"{cell} {'PASS' if verdict else 'FAIL'}"
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -142,16 +198,26 @@ class AblationRow:
             "note": self.note,
             "config": self.config,
             "n_turns": self.n_turns,
+            "n_on_domain": self.n_on_domain,
+            "n_off_domain": self.n_off_domain,
             "n_scored": self.n_scored,
             "mean_retrieved": round(self.mean_retrieved, 2),
             "mean_latency_ms": round(self.mean_latency_ms, 1),
             "fallback_rate": round(self.fallback_rate, 3),
+            "on_domain_fallback_rate": round(self.on_domain_fallback_rate, 3),
+            "off_domain_rejection_rate": (
+                None
+                if self.off_domain_rejection_rate is None
+                else round(self.off_domain_rejection_rate, 3)
+            ),
             "skipped_rate": round(self.skipped_rate, 3),
-            "context_precision": (
+            "context_precision_on_domain": (
                 None if self.context_precision is None else round(self.context_precision, 3)
             ),
+            "n_scored_min_for_gate": self.min_scored,
             "gate_passed": self.gate_passed,
             "routes": self.routes,
+            "graders": self.graders,
             "notes": self.notes,
         }
 
@@ -319,6 +385,7 @@ def run_row(
     flags: RetrievalFlags,
     turns: Sequence[str],
     *,
+    off_domain: Sequence[str] = (),
     embedder: Any = None,
     generator: Any = None,
     grader_client: Any = None,
@@ -326,8 +393,14 @@ def run_row(
     precision_client: Any = None,
     score_precision: bool = True,
 ) -> AblationRow:
-    """Run one ablation configuration over every turn."""
+    """Run one ablation configuration over every turn.
+
+    `off_domain` names the subset of `turns` the corpus provably cannot serve.
+    Those turns are scored for *rejection*, never for precision — see
+    `AblationRow`.
+    """
     row = AblationRow(label=flags.label or "?", note=flags.note, config=flags.summary())
+    off = set(off_domain)
 
     if flags.long_context:
         stats = long_context_stats()
@@ -357,24 +430,47 @@ def run_row(
         latencies.append((time.monotonic() - started) * 1000)
         results.append(result)
 
+    paired = list(zip(turns, results, strict=True))
+    on_pairs = [(t, r) for t, r in paired if t not in off]
+    off_pairs = [(t, r) for t, r in paired if t in off]
+
     row.n_turns = len(results)
+    row.n_on_domain = len(on_pairs)
+    row.n_off_domain = len(off_pairs)
     row.mean_retrieved = _mean([len(r.trace.retrieved) for r in results])
     row.mean_latency_ms = _mean(latencies)
     row.fallback_rate = _mean([1.0 if r.trace.fell_back_to_b else 0.0 for r in results])
+    row.on_domain_fallback_rate = _mean(
+        [1.0 if r.trace.fell_back_to_b else 0.0 for _, r in on_pairs]
+    )
+    row.off_domain_rejection_rate = (
+        _mean([1.0 if r.trace.fell_back_to_b else 0.0 for _, r in off_pairs]) if off_pairs else None
+    )
     row.skipped_rate = _mean(
         [1.0 if r.trace.route is Route.EMOTIONAL_ONLY else 0.0 for r in results]
     )
+
     counts: dict[str, int] = {}
     for r in results:
         counts[r.trace.route.value] = counts.get(r.trace.route.value, 0) + 1
     row.routes = counts
+
+    # Which grader actually decided. Recorded so "was this the LLM evaluator or
+    # the cosine-threshold fallback?" is answerable from the run artifact
+    # rather than by reading the code and reasoning about it.
+    graders: dict[str, int] = {}
+    for r in results:
+        if r.grade_report is not None:
+            name = r.grade_report.grader or "?"
+            graders[name] = graders.get(name, 0) + 1
+    row.graders = graders
 
     unavailable = {n for r in results for n in r.leg_notes if "unavailable" in n}
     row.notes.extend(sorted(unavailable))
 
     if score_precision and precision_client is not None:
         scores: list[float] = []
-        for turn, result in zip(turns, results, strict=True):
+        for turn, result in on_pairs:
             if not result.trace.retrieved:
                 # Correctly retrieving nothing is not a precision failure.
                 continue
@@ -434,6 +530,7 @@ def run_ablation(
     one judge client across every row, so the model load cost is paid once."""
     if turns is None:
         turns = default_turns(limit=max_turns)
+    off_domain: tuple[str, ...] = OFF_DOMAIN_TURNS if include_off_domain else ()
     if include_off_domain:
         turns = [*turns, *OFF_DOMAIN_TURNS]
 
@@ -464,6 +561,7 @@ def run_ablation(
                 run_row(
                     flags,
                     turns,
+                    off_domain=off_domain,
                     embedder=embedder,
                     generator=generator,
                     grader_client=judge,
@@ -485,34 +583,68 @@ def run_ablation(
 
 
 def format_markdown(rows: Sequence[AblationRow]) -> str:
+    """Emit the table.
+
+    Column choice is load-bearing. Precision is on-domain only, so the gate is
+    applied to something a configuration can actually achieve; rejection is
+    reported separately and split by whether rejecting was the right call.
+    Read `off-dom rej` as CRAG working and `on-dom fb` as what it costs.
+    """
     header = (
-        "| row | config | turns | n_ret | fallback | skipped | "
-        "ctx precision (Ragas-equiv) | n_scored | latency ms |\n"
-        "|---|---|---:|---:|---:|---:|---:|---:|---:|"
+        "| row | config | on-dom | ctx precision, on-domain (Ragas-equiv) | n_scored | "
+        "on-dom fb | off-dom rej | n_ret | latency ms | grader |\n"
+        "|---|---|---:|---|---:|---:|---:|---:|---:|---|"
     )
     lines = [header]
     for r in rows:
-        cp = "n/a" if r.context_precision is None else f"{r.context_precision:.3f}"
-        if r.gate_passed is True:
-            cp += " PASS"
-        elif r.gate_passed is False:
-            cp += " FAIL"
+        off = "n/a" if r.off_domain_rejection_rate is None else f"{r.off_domain_rejection_rate:.0%}"
+        grader = ",".join(f"{k}:{v}" for k, v in sorted(r.graders.items())) if r.graders else "-"
         lines.append(
-            f"| {r.label} | {r.config} | {r.n_turns} | {r.mean_retrieved:.1f} | "
-            f"{r.fallback_rate:.0%} | {r.skipped_rate:.0%} | {cp} | {r.n_scored} | "
-            f"{r.mean_latency_ms:.0f} |"
+            f"| {r.label} | {r.config} | {r.n_on_domain} | {r.gate_label} | {r.n_scored} | "
+            f"{r.on_domain_fallback_rate:.0%} | {off} | {r.mean_retrieved:.1f} | "
+            f"{r.mean_latency_ms:.0f} | {grader} |"
         )
     lines.append("")
-    lines.append(f"Gate: context precision > {CONTEXT_PRECISION_GATE}")
+    lines.append(
+        f"Gate: on-domain context precision > {CONTEXT_PRECISION_GATE}, "
+        f"and only where at least {MIN_SCORED_FOR_GATE} turns were scored."
+    )
+    lines.append("")
+    lines.append(
+        "**Precision is on-domain only, and that is deliberate.** The run "
+        "includes off-domain turns on purpose — without them the table cannot "
+        "show what CRAG does — but `RELEVANCE_SYSTEM` correctly judges that no "
+        "passage in this corpus helps an off-domain turn, so each one "
+        "contributes a structural zero. Blending them into one precision figure "
+        "caps every non-CRAG row below the gate by construction and measures "
+        "the turn mix rather than the retriever. Rejection of those turns is "
+        "reported in `off-dom rej`, where a HIGH number is CRAG succeeding."
+    )
+    lines.append("")
+    lines.append(
+        "**A row with `no verdict` is not a failure.** It means precision rests "
+        "on fewer than "
+        f"{MIN_SCORED_FOR_GATE} turns, usually because CRAG rejected most of "
+        "them, and a gate cannot be claimed either way from that sample. Raise "
+        "`--max-turns` for a gate-quality run."
+    )
     lines.append("")
     lines.append(
         "**Latency is not a component cost in a mixed run.** Rows share one Ollama "
         "daemon, so a row's timing depends on which model happened to be resident "
         "when it ran and on what earlier rows left in the prompt cache. Observed "
-        "directly: R7 and R9 have identical CRAG configuration and measured 32,490ms "
-        "and 5,174ms in the same run, a 6x gap that is entirely residency and caching. "
-        "Read this column for order-of-magnitude only; time a single configuration on "
-        "its own before quoting a per-component figure."
+        "directly: R7 and R9 have identical CRAG configuration and measured 46,169ms "
+        "and 4,141ms in the same run, an 11x gap that is entirely residency and "
+        "caching. Read this column for order-of-magnitude only; time a single "
+        "configuration on its own before quoting a per-component figure."
+    )
+    lines.append("")
+    lines.append(
+        "**`grader` attributes each CRAG decision.** `llm` is the prompted "
+        "retrieval evaluator; `score` is the cosine-threshold fallback, which "
+        "cannot detect an off-domain turn (see crag.py). A row showing `score` "
+        "means the judge model was unreachable and that row's rejections should "
+        "not be trusted."
     )
     for r in rows:
         for note in r.notes:
