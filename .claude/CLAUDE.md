@@ -4,7 +4,15 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this repository is
 
-CARELite AI is a research/prototyping project from the DBMI Summer Internship at the University of Arizona College of Medicine – Phoenix (June 8 – August 15, 2026). It is **primarily a documentation and knowledge-engineering repo, not an application**. The deliverables are a structured knowledge base, a behavior list, a prompt architecture, and an evaluation framework — all grounded in a corpus of ~50 peer-reviewed papers on clinician–patient communication.
+CARELite AI is a research/prototyping project from the DBMI Summer Internship at the University of Arizona College of Medicine – Phoenix (June 8 – August 15, 2026). It began as a documentation and knowledge-engineering repo and is now **both that and a working
+application**: a terminal bedside assistant plus the evaluation study that measures it. The
+deliverables are a structured knowledge base, a behavior list, a prompt architecture, and an
+evaluation framework, grounded in a corpus of peer-reviewed papers on clinician–patient
+communication.
+
+**The corpus is 33 papers, not the ~50 this file used to claim.** The DOI manifest resolves to 43
+unique papers; 10 are paywalled and 5 have no recoverable DOI. Coverage is skewed and the loss is
+not random — see `docs/limitations.md` §1 before citing a corpus-wide claim.
 
 The project has since been built out. There is a `carelite/` package (thirteen subpackages), a
 `pyproject.toml`, a `Makefile`, and a pytest suite in the four figures. Verify with `make check`.
