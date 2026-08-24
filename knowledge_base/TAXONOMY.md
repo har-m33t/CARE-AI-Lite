@@ -145,6 +145,47 @@ If the corpus falls short of 45 defensible entries, this lane will report the sh
 per-theme breakdown rather than pad it. An unsupported entry propagates into retrieval, into
 generation, and into the results.
 
+### Outcome: 127 entries, and why `equity` is still three
+
+The corpus supports **127 validated entries** — well past the 45 floor — but they are not evenly
+distributed, and one gap is structural rather than a sampling accident.
+
+A first extraction pass ranked each paper's windows by general communication vocabulary, which
+under-read the two thinnest themes: the equity anchor (Roberts et al. 2021, a meta-analysis of
+socioeconomic and racial differences in clinician empathy) yielded one entry because its three
+densest windows by that vocabulary were its search strategy and methods. A targeted second pass
+re-ranked window selection by theme-specific vocabulary over the trust and equity papers, leaving
+`SYSTEM_TEMPLATE` untouched — a prompt told to find equity findings will find them whether or not
+the passage contains any. That correction worked for trust: `trust_continuity` went from 6 entries
+across 5 papers to 13 across 6.
+
+**It did not work for equity, and the reason is worth stating rather than fixing away.** The pass
+read the right pages; the model proposed 12 equity-themed candidates across the whole corpus; 3
+survived. Of the 9 rejected, 3 quoted a sentence that was not there and **6 were rejected as an
+attitude rather than an action** — and all six are the same sentence shape:
+
+> Clinicians should be mindful of potential empathy gaps when treating patients from lower
+> socioeconomic backgrounds.
+
+That is what happens when a faithful extractor meets this literature. The equity evidence base
+*describes a disparity* — low-SES patients receive less empathy, minority patients' emotional cues
+are blocked more often, LEP conversations are shorter and less checked — and the takeaway a model
+naturally writes from a descriptive finding is an awareness statement. The actionability gate
+rejects those correctly: CARELite recognises a kind of moment and supports a response, and "be
+mindful of the empathy gap" is not a move the system can detect, generate, or reframe. The one
+Roberts entry that did survive is the actionable form of the same finding — *check your assumptions
+about this patient's adherence and pain needs* — which is a move.
+
+So `equity` at 3 entries is an honest floor, not a measurement error, and it should be reported as a
+limitation. The fix is a prompt change, not a threshold change: instruct the model that when a
+passage reports a disparity, the takeaway must name the compensating move rather than the awareness.
+That bumps `PROMPT_VERSION`, invalidates all 141 cached windows, and costs a full re-extraction, so
+it is recommended here rather than done unilaterally.
+
+`equity` also under-counts its own reach: 10 of the 127 entries are flagged `equity_relevant` while
+sitting under another theme, which is the design working as intended — an interpreter finding is a
+`plain_language` entry that is also an equity one.
+
 ## Also blocked on this sign-off: paper evidence tiers
 
 `carelite.corpus.fetch.manifest_papers()` deliberately stamps every paper `emerging` with a
@@ -166,27 +207,38 @@ original claim beside the corrected one, so nothing is quietly laundered.
 
 ## Extraction reliability: what the provenance check actually caught
 
-The validator's first run rejected 26 of 130 candidates for an unlocatable `verbatim_span`. Auditing
-all 26 against the source text showed they were three different failures wearing one label, and
-reporting them as a single "fabrication rate" would have been wrong in both directions:
+Across 180 candidates from 141 windows over 33 papers, 19 carried a `verbatim_span` the validator
+could not locate. Auditing every one of them against the source text showed they were four different
+failures wearing one label, and reporting them as a single "fabrication rate" would have been wrong
+in both directions.
 
-- **12 were a defect in the validator, not the model.** The PDF text extractor splits words across
+- **8 (4.4% of candidates) are genuine misquotation.** Substituted content words (`negative` →
+  `even`, `languages` → `tensions`, `clinical decisions` → `plans`), dropped content words
+  (`empathic`, `when`), a statistic with `, respectively` appended that the sentence does not
+  contain, and two cases of non-adjacent sentences welded together with invented connective text.
+  These are the number that belongs in the write-up as the model's fabrication rate.
+- **10 (5.6%) misquote a real sentence by characters that really are in the extracted text.** Mostly
+  inlined superscript citation markers — the extractor renders `silence.18,20,23,36,53` where the
+  page shows a full stop and five small numerals — and punctuation altered inside a statistics
+  string (`B = 0.374, β` for `B = 0.374; β`), usually because the model had welded the next result
+  onto the one it was quoting. These stay rejected. Folding digits and punctuation would recover
+  them and would also let the validator confuse two different readings of a result, which is where
+  a provenance check stops being one.
+- **1 is a defect in the corpus extractor, not this lane.** In `10-1371-journal-pone-0247259` the
+  PDF's running footer is extracted into the middle of a sentence: *"lower ratings of clinician
+  empathy (mean `plos one empathy disparities plos one | https://doi.org/... 5 / 16` care difference
+  = -0.87 ...)"*. The model quoted the sentence as a reader sees it. No needle-side normalisation
+  can reach this, because the injected text is on the haystack side. **Escalated to the corpus
+  lane** — it degrades chunking and retrieval too, not only span validation.
+- **12 more were the validator's own fault and are now fixed.** The extractor splits words across
   column breaks (`show ing`, `collabora tive`, `sta tistically`) and joins them across line breaks
-  (`healthrelated`, `decisionmaking`, `inthe`). The model quoted the word as the printed page shows
-  it. `spans.py` now folds that, and the stored span is still the paper's own text, artefact and all.
-- **6 were the model altering characters that really are in the document** — dropping an inlined
-  superscript reference marker (1), or changing punctuation inside a statistics string (5), usually
-  because it had welded the next result onto the one it was quoting. These remain rejected. Folding
-  digits and punctuation would recover them and would also let the validator confuse `B = 0.374, β`
-  with `B = 0.374; β`, which is where a provenance check stops being one.
-- **8 were genuine misquotation**: substituted content words (`negative` → `even`, `languages` →
-  `tensions`, `clinical decisions` → `plans`), dropped content words (`empathic`, `when`), and two
-  cases of non-adjacent sentences welded together with invented connective text.
+  (`healthrelated`, `decisionmaking`, `inthe`); the model quoted the word as the printed page shows
+  it. `spans.py` now folds that in a second pass, guarded to start on a word boundary, and the
+  stored span is still recovered from the original text — artefact and all, which the review digest
+  flags so a human sees exactly how much cleanup was applied.
 
-So the honest figure for the write-up is **8 of 130 candidates (6.2%) genuinely fabricated a
-quotation**, with a further 6 (4.6%) misquoting a real sentence closely enough that the difference is
-arguably immaterial but not close enough to be waved through. The headline "20% fabrication rate"
-from the first run was over half normalisation defect.
+The headline figure from the first run — 26 of 130 candidates, read as a 20% fabrication rate — was
+therefore less than a third fabrication. The honest number is **8 in 180, 4.4%**.
 
 A second defect surfaced in the same audit. The actionability filter's verb whitelist was written as
 lemmas followed by `\w*`, so `use`, `provide`, `explore`, `acknowledge` and `validate` matched
