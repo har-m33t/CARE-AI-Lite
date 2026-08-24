@@ -244,15 +244,34 @@ sitting.**
 make eval-smoke    # 5 scenarios x all 6 conditions, end to end — minutes, not hours
 ```
 
-Confirms the generation → retrieval → safety-gate → judge pipeline actually runs before you commit
-to the full holdout run. If this doesn't complete cleanly, the full run won't either, and it's
-vastly cheaper to find that out now. **As of this writing, `carelite.eval.smoke` — the module this
-target invokes — does not exist yet**, so `make eval-smoke` will fail with `No module named
-carelite.eval.smoke` until that lands; `--limit 5` on the generation runner below is the nearest
-working substitute in the meantime.
+`carelite/eval/smoke.py` (landed in commit `b9eacd3`) drives the real runner, the real graph, the
+real prompts, and the real safety gate over 5 scenarios × 6 conditions, then audits the rows it got
+back rather than just checking that something came back. **It defaults to the train split**, writes
+to a JSONL journal under `runs/smoke/`, and truncates that journal on every invocation — never the
+`generation` table — because the generation cache would otherwise turn a second run into a no-op
+that reports success while testing nothing.
+
+**Named hard failures (non-zero exit):** a condition producing no rows; an empty response; a row
+carrying `DIGEST_UNAVAILABLE` as its model digest; a `prompt_id` that disagrees with what its
+`ConditionSpec` actually specifies; any pipeline node degrading instead of raising; **condition C
+retrieving nothing on every scenario**; retrieval leaking into a condition that is supposed to have
+none; an empty long-context pack; a self-check that ran when configured off, or the reverse; and two
+conditions emitting byte-identical text on every shared scenario. **Warnings that do not fail the
+run:** an uncommitted prompt, an input the safety screen escalated, a truncated long-context pack,
+partial (rather than total) retrieval failure on condition C.
+
+It also prints the router's route-per-scenario, with a marker beside every `emotional_only` route,
+and fails hard if *every* scenario routes that way — an `emotional_only` route retrieves nothing, so
+a run in that state finishes with the right row count and no errors while condition C has silently
+collapsed into condition B, and the route printout is the only place that shows.
+
+**As of this writing, `make eval-smoke` has never been run against a live model.** It is verified
+against fakes and `--dry-run` only — inference was deliberately held off while the retrieval lane's
+R0–R9 ablation held the Ollama daemon. Treat it as implemented and not yet exercised, not as an
+executed step, until that changes.
 
 ```sh
-uv run python -m carelite.generate.runner --limit 5    # dry run: add --dry-run to only plan and count
+uv run python -m carelite.generate.runner --limit 5 --dry-run   # plan and count only, no model calls
 ```
 
 ### Full evaluation run
@@ -286,9 +305,10 @@ Once registered:
 uv run python -m carelite.generate.runner --store postgres --register-prompts
 ```
 
-`carelite.generate.runner` generates the held-out set specifically (its own description: "Generate
-the held-out evaluation set") — there is no `--split` flag because there is nothing else for it to
-generate. It is safe to interrupt and rerun: every cell is keyed by
+`carelite.generate.runner` defaults to `--split holdout`; `--split train` generates the 40 training
+scenarios instead (what the judge-validation study is scored against). The split written on each
+row is taken from the scenario record itself, not from the flag, so a row cannot end up mislabelled
+by a careless invocation. It is safe to interrupt and rerun: every cell is keyed by
 `(scenario_id, condition, prompt_version, model_digest, seed, sample_idx)` and already-generated
 cells are skipped, so an interrupted run resumes rather than restarts (build plan v3 §16). Use
 `--dry-run` first to see the planned cell count without generating anything, and
@@ -352,7 +372,7 @@ uv run python -m carelite.corpus.fetch --email you@example.com
 # ... index build (see §6) ...
 make eval-smoke
 # --- OSF pre-registration happens here, before the next line ---
-uv run python -m carelite.generate.run --split holdout
+uv run python -m carelite.generate.runner             # --split defaults to holdout
 uv run python -m carelite.eval.judge.runner --split holdout
 make reproduce
 ```
