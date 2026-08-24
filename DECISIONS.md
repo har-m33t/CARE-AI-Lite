@@ -175,3 +175,77 @@ knowledge base quality inherits that limitation.
 action and an irreversible public act. It must happen before inference lane III
 generates any evaluation data — the argument that an against-you naturalness
 result is credible rests entirely on the analysis having been fixed in advance.
+
+---
+
+## D5 — The `racial_ethnic` axis is narrower than its name, and will be described as what it is
+
+**Decision: keep D2's reclassification. Do not write replacement scenarios into
+the holdout. Describe the axis accurately in the analysis plan and the OSF
+pre-registration, and pre-specify both coverage gaps as known limitations of the
+equity subgroup analysis.**
+
+Acting on D2 cost the equity stratum two things that D2 did not anticipate, both
+surfaced by the `carelite-scenarios` lane's own audit rather than by the gate that
+was supposed to catch them.
+
+**The mechanism confound.** Eight of the nine remaining `racial_ethnic` scenarios
+turn on one mechanism: the patient has already been disbelieved, or expects to be,
+and manages the clinician accordingly. SC-077 was the only one whose difficulty
+originated outside the clinic. So a system that scores well across this axis may be
+scoring on *handles a guarded patient* rather than on the disparity the axis claims
+to measure — and the coverage audit cannot see this, because it measures challenge
+type, phase, intensity and literacy, none of which separate a guarded patient from
+an unguarded one.
+
+**The reason not to fix it by restoring SC-077, or by amending its text.** The
+obvious repair is to strip the church reference and keep the scenario in the
+stratum — the review packet offered that as the alternative to reclassifying. It
+does not work. The external-origin mechanism *is* the community-source detail; take
+it out and what remains is a patient pre-emptively dismissing himself, which is the
+same guarded-patient mechanism as the other eight. The mechanism cannot be
+preserved without preserving the coding problem that D2 removed.
+
+**And the mechanism is not anchored in this corpus anyway.** The `racial_ethnic`
+axis draws on documented emotional blocking of minority patients (Park et al. 2020)
+and the SES and race empathy gap (Roberts et al. 2021). Nothing in the 33 papers
+documents community-sourced health information as a disparity mechanism. Writing a
+replacement holdout scenario for it would be inventing coverage the literature does
+not support, which is the failure mode this project rejected when it declined to
+invent three themes to reach ten.
+
+**So the axis is named wrong, not populated wrong.** What these nine scenarios
+actually measure is the clinician's response to *anticipated dismissal and patient
+credibility-management*. That is a real, documented, and important thing, and it is
+narrower than "race-based disparity in communication". The analysis will say so.
+`equity_kind` keeps its current values for continuity with the frozen split; the
+description changes, in the analysis plan, the pre-registration, and the results
+write-up.
+
+**Two gaps pre-specified as limitations rather than repaired:**
+
+- The equity stratum no longer contains an `emotion_intensity = 1` scenario, so it
+  cannot say whether the disparity behaves differently on an emotionally flat turn
+  — which is the turn where a system that over-reads emotion does its worst work.
+  Flat turns are still tested outside the equity subgroup.
+- `racial_ethnic` contains no `adherence_barrier`, `decision_conflict`, or
+  `false_comprehension` scenario, and every scenario presents an already-guarded
+  patient.
+
+Both must be declared in the pre-registration **before** any evaluation data
+exists. A limitation named in advance is a limitation; the same sentence written
+after seeing the results is an excuse.
+
+**On the audit allowlist.** The lane's `ACCEPTED_EMPTY_CELLS` in
+`carelite/scenarios/audit.py` is accepted. An empty cell that exists *by decision*
+should be loud and attributed rather than either silently tolerated or left failing
+a check that three concurrent lanes depend on. It holds exactly one entry, names
+D2, prints on every run, and is pinned by a test so a second hole cannot be added
+quietly — which is the right shape for this. A cell not on the list still fails.
+
+**On the second-person review.** It remains outstanding and unticked, and
+`EQUITY_REVIEW.md` records plainly that the orchestrating session's review is not
+an independent second-person one. Per D4's principle, an unticked box that is
+honest is worth more than a ticked one that is not. The lane is right that before
+pre-registration is the last point at which a finding from such a review would be
+free to act on.
