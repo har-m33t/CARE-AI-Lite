@@ -459,3 +459,75 @@ whether this corpus can teach it. The dimensions stay; the constraint is declare
 `plain_language`, `teach_back` and `trust_continuity`. Reporting only the theme
 count understates what the base holds; reporting only the flag would overstate how
 much of it is *about* a disparity. Both numbers, or neither.
+
+---
+
+## D9 — Six analysis specifications the pre-registration left open
+
+`carelite-stats` implemented `docs/preregistration.md` and found six places where the
+document does not determine the analysis. Each is settled here and must be written
+into the document **before** it is registered; an analysis choice that is only in the
+code is not pre-specified.
+
+**1. The equity subgroup is n = 20, not 35. Factual correction.** §8.4's parenthetical
+says 35 equity scenarios, but §6 restricts confirmatory analyses to the holdout and 15
+of the 35 are in the train split. The holdout stratum is 20 — `ses` 10, `lep` 4,
+`racial_ethnic` 6. §8.4's own restricting clause already produces this behaviour, so
+the parenthetical is simply wrong rather than the design being changed. **At n = 20
+the subgroup resolves only dz ≈ 0.68 — large effects only — and `racial_ethnic` at
+n = 6 supports nothing.** Both numbers print with the result. This is the third
+independent measurement of the same underlying problem, alongside D3's equity-at-3 and
+D5's single-mechanism narrowing: the equity analysis in this study is descriptive, and
+the document should say so in those words rather than implying a powered test.
+
+**2. The Holm family is the eight registered comparisons, not fifty-five.** §8.1 admits
+two readings: the eight comparisons §4 actually lists, each on the measure §4 names, or
+the full 5 conditions × 11 dimensions grid. **Eight.** §4 lists eight comparisons with
+their own measures and does not list A vs C, or `de` for A vs B; folding in 47
+unregistered tests would multiply the correction on the registered eight roughly
+sevenfold, which penalises the pre-specified analysis for exploratory breadth. The
+55-cell grid is built as `dimension_expansion()`, corrected within its own family and
+stamped **EXPLORATORY**. Both remain reported — the point is which one carries
+confirmatory weight.
+
+**3. Every test is two-sided.** §8.1 does not say, and the lane's reasoning decides it:
+a one-sided test would have **no power against the naturalness result the document
+exists to protect.** §4.4 registers A > B on `naturalness` — an against-the-system
+prediction — and the whole §10 argument is that this study can report a finding that
+does not flatter it. A one-sided test aimed at the registered direction would make the
+opposite outcome unobservable. Two-sided throughout; the registered direction is
+recorded and compared against the observed one, so "significant against the registered
+direction" stays detectable and reportable.
+
+**4. "Poor self-consistency" in §8.5(c) is `pct_range_ge_2 > 0.25`.** A number has to be
+in the document or the sensitivity analysis is not pre-specified. A generation is
+excluded when more than a quarter of its judge samples span two or more rubric points —
+that is disagreement about *which anchor applies*, not rounding between adjacent ones.
+Until this lands in the document the result correctly carries
+`threshold_prespecified = False` with its reason printed.
+
+**5. All three point estimators are reported, always.** §8.2 names none. Rank-biserial
+is the estimator belonging to the Wilcoxon test, Cohen's dz is the scale the power
+analysis is expressed in, and Hodges–Lehmann is the location shift. Reporting all three
+for every comparison, unconditionally, removes the opportunity to choose one after
+seeing which is largest.
+
+**6. A composite is confirmatory only if every constituent dimension is.** §9 can demote
+individual dimensions to exploratory, and the document does not say what that makes a
+composite built from them. Weakest-link. A composite NURSE score whose `explore`
+dimension failed the judge-agreement threshold is not a confirmatory result with one
+soft edge; it is a number whose provenance is mixed, and the honest label is the weaker
+one.
+
+**Note how 6 interacts with D8.** D8 records that `respect` and `support` have zero
+knowledge base grounding. That is a statement about the *evidence base*, not about judge
+agreement, and it does not itself demote anything under §9 — the judge can score a
+dimension reliably whether or not the corpus can teach it. The two constraints are
+independent and both belong in the document, because together they say something
+precise about the primary composite: two of its five dimensions cannot be helped by
+retrieval, and any of the five may additionally be demoted on agreement grounds.
+
+**Also confirmed and worth recording**, because it is the kind of thing that silently
+doubles a sample: `carelite/eval/judge/store.py` writes both per-sample judge rows and a
+`-median` aggregate row, so a naive `rater_type = 'llm_judge'` select double-counts every
+generation invisibly. The stats lane's queries partition the two and a test asserts it.
