@@ -461,7 +461,7 @@ def render_digest(
         "",
         "## What the pipeline decided, and why you are being told",
         "",
-        f"**Evidence tier is derived from the study design, not from the model, on all "
+        "**Evidence tier is derived from the study design, not from the model, on all",
         f"{total} entries; {corrected} differ from what the model claimed.** The extraction",
         "model judges a tier from the passage in front of it, and it misses in both",
         "directions — calling a survey `strong` because the result sounded confident, or a",
@@ -550,8 +550,9 @@ def render_digest(
         out += [
             "## Entries that restate each other",
             "",
-            f"{clustered} entr(ies) fall into {len(clusters)} cluster(s) where one paper is",
-            "making one point through several quoted sentences. Every entry in them is valid",
+            f"{clustered} entr(ies) fall into {len(clusters)} cluster(s) where one paper "
+            "is making one",
+            "point through several quoted sentences. Every entry in them is valid",
             "— real span, real source — but they are not independent evidence, and counting",
             "them as separate support overstates the knowledge base. Clustering is done within",
             "a single (theme, paper) group, because two entries from one paper about one theme",

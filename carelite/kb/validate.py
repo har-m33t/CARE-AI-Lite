@@ -197,6 +197,51 @@ _ATTITUDE_NOT_ACTION = re.compile(
     re.IGNORECASE,
 )
 
+#: The second shape, and the one the D3 equity re-extraction produced. An
+#: instruction can name an **outcome to bring about** rather than an act to
+#: perform, and that reads far more like advice than "be mindful" does:
+#: *"proactively work to bridge the empathy gap"*, *"identify and address
+#: barriers to ensure equitable empathy"*, *"provide consistent empathetic
+#: communication to all patients regardless of background"*. Every one of those
+#: clears the verb whitelist — `address`, `provide`, `identify` are all real
+#: verbs — while telling a clinician nothing they could do in the next sentence
+#: of a conversation, and no observer could say whether it happened.
+#:
+#: This is worth naming precisely because of where it came from. D3 revised the
+#: extraction prompt to ask, where a passage reports a disparity, for the
+#: **compensating move** rather than the awareness, and warned that a model told
+#: to find compensating moves will find them whether or not the passage supports
+#: one. What the revised prompt actually produced was the same awareness
+#: statement with an active verb bolted on the front. The rule is not
+#: equity-specific and is not applied to equity alone: an aspiration is
+#: unactionable wherever it appears. Measured against the 115 loaded entries at
+#: the time it was added, it matched exactly one — itself an equity aspiration
+#: that had survived the original gate.
+#:
+#: **Deliberately not extended further, and the reason is the limit of this
+#: whole check.** The re-run also produced *"engage in more consistent and
+#: attentive communication to ensure these patients feel heard and valued"*,
+#: which is the same aspiration and is not matched here. The obvious extension —
+#: rejecting `ensure <someone> feels <something>` — was tested against the
+#: loaded base and matched three entries that are perfectly good: *"Ask for
+#: permission before moving to difficult topics **to ensure the patient feels in
+#: control**"* leads with a real move and appends a purpose clause. The
+#: difference between an aspiration and a move with a purpose clause is which
+#: one is the main verb, and no pattern this module can hold separates them
+#: reliably. Three real entries to catch one aspiration is the trade this lane
+#: exists to refuse, so the extension was not made. What follows is that the
+#: actionability gate cannot be the whole of D3's guard: the rest is the
+#: individual reading of every equity entry that D3 requires.
+_ASPIRATION_NOT_ACTION = re.compile(
+    r"\b("
+    r"works? towards?|work to|seek to|endeavou?r|commit to|"
+    r"ensure (equitable|equal|consistent|fair|that all)|"
+    r"to all patients|"
+    r"regardless of (their )?(background|race|ethnicit|socioeconomic|status|SES)"
+    r")\b",
+    re.IGNORECASE,
+)
+
 #: At least one of these has to appear, so the takeaway names a communicative
 #: move rather than an attitude. This is a coarse filter and is meant to be:
 #: it rejects "be more empathetic" while accepting anything that says what to
@@ -258,6 +303,12 @@ def takeaway_is_actionable(takeaway: str) -> tuple[bool, str | None]:
             False,
             "takeaway asks the clinician to hold an attitude or bear something in mind, "
             "not to make a move a listener could observe",
+        )
+    if _ASPIRATION_NOT_ACTION.search(text):
+        return (
+            False,
+            "takeaway names an outcome to bring about rather than an act to perform; "
+            "no observer could say whether the clinician did it",
         )
     if not _ACTION_VERBS.search(text):
         return False, "takeaway names no communicative action a clinician can take"
@@ -403,6 +454,7 @@ _REASON_BUCKETS: tuple[tuple[str, str], ...] = (
     ("comparative or causal result", "finding not reported by its span"),
     ("mangled glyph", "direction read out of an extraction artefact"),
     ("takeaway asks the clinician to hold an attitude", "takeaway is an attitude, not an action"),
+    ("outcome to bring about", "takeaway is an aspiration, not an action"),
     ("takeaway", "takeaway not actionable"),
     ("example behaviour is a script", "example behaviour is a script"),
     ("no source paper", "no usable source paper"),
@@ -421,6 +473,31 @@ def _reason_bucket(reason: str) -> str:
 # ---------------------------------------------------------------------------
 # Validation
 # ---------------------------------------------------------------------------
+
+
+def candidates_from_cache(
+    cache_path: str | None = None, *, prompt_versions: Sequence[str] | None = None
+) -> list[CandidateEntry]:
+    """Read cached candidates, optionally restricted to particular prompt versions.
+
+    The filter exists so an **experimental prompt variant cannot silently join
+    the knowledge base**. The cache is append-only and the validator reads all
+    of it, so the moment a variant's first window lands, its candidates are in
+    the next load — before anyone has looked at whether the variant works. That
+    is the wrong default for a change whose whole risk is that it produces
+    plausible-looking entries: `DECISIONS.md` D3 approved the equity variant
+    *with a guard*, and a variant's output should reach the base when the guard
+    has been applied, not when the inference finishes.
+    """
+    from carelite.kb.extract import CACHE_PATH, read_cache
+
+    wanted = set(prompt_versions) if prompt_versions else None
+    return [
+        c
+        for r in read_cache(cache_path or CACHE_PATH)
+        for c in r.candidates
+        if wanted is None or r.prompt_version in wanted
+    ]
 
 
 def entry_id_for(theme: Theme, paper_id: str, span: str) -> str:
@@ -666,13 +743,19 @@ def format_report(report: ValidationReport) -> str:
 def main(argv: Sequence[str] | None = None) -> int:
     import argparse
 
-    from carelite.kb.extract import CACHE_PATH, read_cache
+    from carelite.kb.extract import CACHE_PATH
 
     ap = argparse.ArgumentParser(description="Validate cached KB candidates.")
     ap.add_argument("--cache", default=str(CACHE_PATH))
+    ap.add_argument(
+        "--prompt-version",
+        action="append",
+        dest="prompt_versions",
+        help="only validate candidates extracted with this prompt version; repeatable",
+    )
     args = ap.parse_args(list(argv) if argv is not None else None)
 
-    candidates = [c for r in read_cache(args.cache) for c in r.candidates]
+    candidates = candidates_from_cache(args.cache, prompt_versions=args.prompt_versions)
     report = validate_candidates(candidates)
     print(format_report(report))
     return 0
@@ -684,6 +767,7 @@ __all__ = [
     "RejectedCandidate",
     "ValidatedEntry",
     "ValidationReport",
+    "candidates_from_cache",
     "entry_id_for",
     "format_report",
     "takeaway_is_actionable",

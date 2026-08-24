@@ -231,8 +231,8 @@ def orphaned_entries() -> list[str]:
 def main(argv: Sequence[str] | None = None) -> int:
     import argparse
 
-    from carelite.kb.extract import CACHE_PATH, read_cache
-    from carelite.kb.validate import format_report, validate_candidates
+    from carelite.kb.extract import CACHE_PATH
+    from carelite.kb.validate import candidates_from_cache, format_report, validate_candidates
 
     ap = argparse.ArgumentParser(description="Validate cached candidates and load survivors.")
     ap.add_argument("--cache", default=str(CACHE_PATH))
@@ -247,9 +247,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         action="store_true",
         help="also write design, evidence tier, citation and year onto the `paper` rows",
     )
+    ap.add_argument(
+        "--prompt-version",
+        action="append",
+        dest="prompt_versions",
+        help="only load candidates extracted with this prompt version; repeatable. "
+        "An experimental variant should reach the knowledge base when its guard has "
+        "been applied, not when its inference finishes.",
+    )
     args = ap.parse_args(list(argv) if argv is not None else None)
 
-    candidates = [c for r in read_cache(args.cache) for c in r.candidates]
+    candidates = candidates_from_cache(args.cache, prompt_versions=args.prompt_versions)
     report = validate_candidates(candidates)
     print(format_report(report))
 

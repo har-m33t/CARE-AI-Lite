@@ -472,3 +472,114 @@ class TestRejectionReporting:
         ]
         report = validate_candidates(candidates, papers=papers)
         assert sum(report.reason_counts().values()) == len(report.rejected)
+
+
+class TestAspirationIsNotAction:
+    """The shape the D3 equity re-extraction produced, and why it is rejected.
+
+    `DECISIONS.md` D3 revised the extraction prompt so that where a passage
+    reports a disparity, the takeaway must name the compensating *move* rather
+    than the awareness — and warned that a model told to find compensating moves
+    will find them whether or not the passage supports one. What the revised
+    prompt actually produced was the original awareness statement with an active
+    verb bolted on: "be mindful of the empathy gap" became "proactively work to
+    bridge the empathy gap".
+
+    That clears the verb whitelist, because `work`, `address` and `provide` are
+    real verbs, and it clears the attitude filter, because it is not asking
+    anyone to bear something in mind. It is still not a move: it names an
+    outcome to bring about, and no observer could say whether a clinician did
+    it in a given conversation.
+    """
+
+    @pytest.mark.parametrize(
+        "takeaway",
+        [
+            "Clinicians should proactively work to bridge the empathy gap for patients from "
+            "lower socioeconomic backgrounds.",
+            "Clinicians should proactively identify and address potential barriers to care "
+            "for patients from lower socioeconomic backgrounds to ensure equitable empathy.",
+            "Clinicians should actively work to provide consistent, high-quality empathetic "
+            "communication to all patients regardless of their background.",
+        ],
+    )
+    def test_an_outcome_to_bring_about_is_not_actionable(self, takeaway: str) -> None:
+        ok, why = takeaway_is_actionable(takeaway)
+        assert ok is False
+        assert why is not None
+        assert "outcome to bring about" in why
+
+    @pytest.mark.parametrize(
+        "takeaway",
+        [
+            # The equity entry the review named as the model of a real
+            # compensating move. It must survive: the point of the rule is to
+            # separate this from the aspiration, not to empty the theme.
+            "Clinicians should actively check their internal biases regarding a patient's "
+            "ability to follow medical advice or their specific pain management needs.",
+            "Ask the patient to explain the plan back in their own words, and re-explain "
+            "differently when the answer is incomplete.",
+            "Ask what actually gets in the way of taking the medication before assuming "
+            "the patient has chosen not to.",
+        ],
+    )
+    def test_a_named_move_still_passes(self, takeaway: str) -> None:
+        ok, why = takeaway_is_actionable(takeaway)
+        assert ok is True, why
+
+    def test_the_rule_is_not_equity_specific(self, papers: dict[str, PaperText]) -> None:
+        """An aspiration is unactionable wherever it appears, not only under `equity`."""
+        candidate = _candidate(
+            theme="teach_back",
+            practical_takeaway=(
+                "Clinicians should work towards a consistently high standard of "
+                "comprehension checking in every consultation."
+            ),
+        )
+        result = validate_candidate(candidate, papers=papers)
+        assert isinstance(result, RejectedCandidate)
+        assert any("outcome to bring about" in r for r in result.reasons)
+
+
+class TestPromptVersionFilter:
+    """An experimental prompt variant must not join the base by finishing.
+
+    The extraction cache is append-only and the validator reads all of it, so
+    the moment a new variant's first window lands its candidates are in the next
+    load — before anyone has looked at whether the variant works. `DECISIONS.md`
+    D3 approved the equity variant *with a guard*, and a variant's output should
+    reach the knowledge base when the guard has been applied, not when the
+    inference finishes.
+    """
+
+    def _cache(self, tmp_path: object) -> str:
+        from pathlib import Path
+
+        from carelite.kb.extract import WindowResult, append_cache
+
+        path = Path(str(tmp_path)) / "extraction.jsonl"
+        for version in ("kb-extract-v1", "kb-extract-equity-v1"):
+            append_cache(
+                WindowResult(
+                    paper_id="review-paper",
+                    window_index=0,
+                    paper_sha256="x",
+                    prompt_version=version,
+                    model="test",
+                    candidates=[_candidate(finding=f"finding from {version}")],
+                ),
+                path,
+            )
+        return str(path)
+
+    def test_no_filter_reads_every_variant(self, tmp_path: object) -> None:
+        from carelite.kb.validate import candidates_from_cache
+
+        assert len(candidates_from_cache(self._cache(tmp_path))) == 2
+
+    def test_a_filter_excludes_the_experimental_variant(self, tmp_path: object) -> None:
+        from carelite.kb.validate import candidates_from_cache
+
+        kept = candidates_from_cache(self._cache(tmp_path), prompt_versions=["kb-extract-v1"])
+        assert len(kept) == 1
+        assert "kb-extract-v1" in kept[0].finding

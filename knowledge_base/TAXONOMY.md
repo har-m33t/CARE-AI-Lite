@@ -1,10 +1,15 @@
-# Theme Taxonomy — Proposal for Sign-Off
+# Theme Taxonomy
 
-**Status:** proposed, awaiting sign-off. Nothing downstream should be treated as final until
-this is signed off.
+**Status: signed off.** `DECISIONS.md` D1 accepts this proposal in full, including the
+recommendation not to add serious-illness conversation as an eighth theme. The seven themes
+encoded in `carelite.types.Theme` are canonical; the "10 themes" figure in build plan v3 is
+retired. `types.py` is unchanged by the decision, which is the point — it confirms a frozen
+contract rather than amending one.
 **Author:** `carelite-kb` lane.
-**Decision requested:** adopt **seven themes**, unchanged from `README.md` and from the frozen
-`carelite.types.Theme`. Do not expand to ten.
+
+The sections below are kept as the argument that produced the decision. Where later work
+changed a number they cite, the section says so rather than being quietly rewritten — the
+counts moved because the validator got stricter, and that is itself part of the record.
 
 ---
 
@@ -186,24 +191,44 @@ it is recommended here rather than done unilaterally.
 sitting under another theme, which is the design working as intended — an interpreter finding is a
 `plain_language` entry that is also an equity one.
 
-## Also blocked on this sign-off: paper evidence tiers
+## Paper evidence tiers — settled, and now in the database
 
 `carelite.corpus.fetch.manifest_papers()` deliberately stamps every paper `emerging` with a
 placeholder citation, documenting that a real tier is "a KB/human review call, not something the
-fetch pipeline should assert". It is correct to have deferred it. This lane will make that call in
+fetch pipeline should assert". It was correct to defer it. This lane makes that call in
 `carelite/kb/papers.py`, mapping study design to tier: systematic review / meta-analysis / RCT →
 `strong`; controlled or longitudinal observational → `moderate`; protocol, survey, qualitative,
 single-arm or pre-post → `emerging`. Study protocols with no results yet cap at `emerging`
-regardless of the design they propose. `validate.py` then checks each entry's claimed tier against
-its source paper's design, so an entry cannot claim `strong` off a protocol.
+regardless of the design they propose.
 
-That check **corrects the tier rather than discarding the entry**, and the distinction turned out to
-matter: 37 of the 95 entries that survive validation had an overclaimed tier, almost all of them
-`moderate` asserted off a cross-sectional survey. Rejecting them would have thrown away 37 grounded
-findings — correct span, correct theme, actionable takeaway — to punish a single field whose right
-value is already recorded in `papers.py`. A fabricated quote has no right answer to substitute; an
-overclaimed tier does. Both values survive on the entry, and the review digest prints the model's
-original claim beside the corrected one, so nothing is quietly laundered.
+**Two corrections have been made to how this reaches an entry, and both came out of the content
+review.**
+
+The first is that the tier is now **derived from the design, not capped at it**. The original check
+lowered an overclaim and left an underclaim alone, which is half a check — wherever the model
+happened to call a randomised trial `emerging`, `emerging` survived. Four papers ended up carrying
+entries at more than one tier and Talevski 2020 carried entries at all three across its fourteen.
+`README.md` defines evidence strength as a property of the source, so that was incoherent: two
+entries citing one paper cannot honestly carry different strengths. The derivation now runs in both
+directions. Correcting rather than discarding is still right for the reason it always was — a
+fabricated quote has no right answer to substitute, an ill-judged tier does — and both values
+survive on the entry, with the digest printing the model's claim beside the stored one.
+
+The second is that `papers.py` now **writes** `design`, `evidence_tier`, `apa_citation` and `year`
+onto the `paper` rows. Deferring that write left the design known in Python and unknown in
+Postgres: all 33 rows sat at `design IS NULL`, the fetch placeholder tier, and "[citation pending]",
+so every consumer that reads the table rather than importing the module — the graph lane, the stats
+lane, the CLI's evidence panel — saw placeholders while the review digest printed the real design.
+Citations are derived from Crossref and frozen into `PAPER_META`, so a cold rebuild needs no
+network; `python -m carelite.kb.papers --refresh-citations` re-derives them.
+
+**One principled exception to "one paper, one tier".** A span that *relays another study* — a
+systematic review reporting somebody else's trial, an introduction citing prior work — carries
+evidence that belongs to a paper outside this corpus, and the citing paper's design cannot vouch
+for it. Those entries are detected by `carelite/kb/scope.py`, labelled `second-hand` in the digest,
+and capped at `moderate` when a synthesis is doing the relaying and `emerging` otherwise. Talevski
+now reads as 8 entries at `strong` from its own synthesis and 5 at `moderate` relayed from included
+studies, which is a distinction a reader can check rather than a spread nobody could explain.
 
 ## Extraction reliability: what the provenance check actually caught
 
@@ -211,6 +236,11 @@ Across 180 candidates from 141 windows over 33 papers, 19 carried a `verbatim_sp
 could not locate. Auditing every one of them against the source text showed they were four different
 failures wearing one label, and reporting them as a single "fabrication rate" would have been wrong
 in both directions.
+
+*(The count is 18 after the `carelite-corpus` lane repaired the running-footer injection described
+in the third bullet below. That paper's sentence is now extractable as a reader sees it, and the
+entry quoting it validates. Nothing else in this audit moved: the 8 genuine misquotations are
+unchanged, and 4.4% remains the honest fabrication rate over 180 candidates.)*
 
 - **8 (4.4% of candidates) are genuine misquotation.** Substituted content words (`negative` →
   `even`, `languages` → `tensions`, `clinical decisions` → `plans`), dropped content words
