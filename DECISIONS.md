@@ -249,3 +249,41 @@ an independent second-person one. Per D4's principle, an unticked box that is
 honest is worth more than a ticked one that is not. The lane is right that before
 pre-registration is the last point at which a finding from such a review would be
 free to act on.
+
+---
+
+## D6 — `README.md` belongs to `carelite-repro`
+
+**Decision: extend the `carelite-repro` lane's owned paths to include `README.md`.
+No other lane may write it.**
+
+The `carelite-repro` lane found a real hole in the fleet specification and stopped
+rather than working around it, which is the behaviour the ownership contract is
+supposed to produce. `README.md` appears in no lane's **Owns** list. It was authored
+by `carelite-foundation` at wave 0, but foundation's ownership covers the frozen
+contracts and the toolchain, not the project's front page. So the one file most
+likely to drift out of date had nobody responsible for it.
+
+`carelite-repro` is the right owner. It already owns `docs/`, `REPRODUCE.md`, the
+reporting checklists, and the limitations record — it is the lane whose whole job is
+keeping the written record true to what the code actually does. The README's Status
+table and Project Structure section are exactly that job, and splitting them from the
+rest of the documentation would reproduce this gap in a smaller form.
+
+**What needs correcting, and why it matters more than housekeeping.** `.claude/CLAUDE.md`
+still tells every agent that the README documents an *intended* layout, that
+`literature/`, `framework/`, `knowledge_base/`, `behaviors/` and `docs/` do not exist,
+and that the only executable file is `data/fetch_corpus.py`. That was true when it was
+written and is now badly wrong: there are thirteen packages under `carelite/`, a test
+suite in the four figures, a populated Postgres database, and most of those directories
+exist. An agent reading that guidance today is being actively misled about the state of
+the repository — which is a correctness problem for the fleet, not a presentation
+problem for a reader.
+
+The README must also stop describing the knowledge base in terms D4 retired. Anything
+implying the entries are human-verified or clinician-reviewed is now false, and the
+front page is the most likely place for that claim to survive after being corrected
+everywhere else.
+
+`.claude/CLAUDE.md` itself stays with the orchestrating session, since it is fleet
+instruction rather than project documentation, and is corrected in the same pass.
