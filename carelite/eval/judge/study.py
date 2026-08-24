@@ -856,13 +856,15 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - CLI wr
         return 1 if report.failed else 0
 
     generations, scenario_texts, responses = load_generations(journal)
+    # Balance first, then cap. Capping the journal order would take whole
+    # scenarios off the front and undo exactly what `balanced_order` is for.
+    generations = balanced_order(generations)
     if args.limit:
         generations = generations[: args.limit]
 
     if args.stage in {"judge", "reversed"}:
         order = OptionOrder.ASCENDING if args.stage == "judge" else OptionOrder.DESCENDING
-        ordered = balanced_order(generations)
-        items = ordered if order is OptionOrder.ASCENDING else ordered[: args.n_reversed]
+        items = generations if order is OptionOrder.ASCENDING else generations[: args.n_reversed]
         run = judge_subset(
             items,
             scenario_texts,
@@ -900,7 +902,7 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - CLI wr
         return 0
 
     descending = replay_from_cache(
-        balanced_order(generations)[: args.n_reversed],
+        generations[: args.n_reversed],
         scenario_texts,
         order=OptionOrder.DESCENDING,
         cache_path=out / "validation-descending.jsonl",
