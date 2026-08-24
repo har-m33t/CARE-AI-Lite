@@ -86,8 +86,10 @@ from carelite.eval.judge.validation import (
 from carelite.types import RUBRIC_DIMENSIONS, Condition, Generation, Scenario, Split
 
 __all__ = [
+    "EXCLUDED_CONDITIONS",
     "N_REVERSED",
     "N_SUBSET_SCENARIOS",
+    "SUBSET_CONDITIONS",
     "SubsetCell",
     "balanced_order",
     "judge_subset",
@@ -99,6 +101,32 @@ __all__ = [
 
 #: One per challenge type. Crossed with six conditions, this is the ~60 of §13.
 N_SUBSET_SCENARIOS = 10
+
+#: Conditions excluded from the validation subset, with the reason, because a
+#: silently narrowed sample is the kind of thing a reader cannot reconstruct.
+#:
+#: `LC` stuffs the whole corpus into the prompt: a measured ~119,500-token
+#: prefill at ~95 tok/s on this hardware, so **21 minutes per generation** and
+#: 3.5 hours for the ten cells this subset would have contained — half the
+#: study's entire compute budget for one sixth of its sample. The subset still
+#: spans bare (`A`), bare in a second model family (`A2`), framework (`B`),
+#: framework plus retrieval (`C`) and the degraded negative control (`D`), which
+#: is the range that matters here: this study measures the *judge*, and what it
+#: needs from the conditions is responses of varied quality and register for the
+#: judge to discriminate. `LC` is the same generator as `B`/`C` with a longer
+#: context, so it is the condition that adds least of that per hour spent.
+#:
+#: This is a decision about the validation subset only. It says nothing about
+#: whether `LC` belongs in the main experiment — but the same measurement
+#: implies ~63 hours for `LC` alone in the 60-scenario, 3-sample holdout run,
+#: which is the orchestrator lane's problem to know about rather than mine to
+#: solve.
+EXCLUDED_CONDITIONS: tuple[Condition, ...] = (Condition.LC,)
+
+#: The conditions the validation subset is generated and judged over.
+SUBSET_CONDITIONS: tuple[Condition, ...] = tuple(
+    c for c in Condition if c not in EXCLUDED_CONDITIONS
+)
 
 #: Generations re-judged with the anchor order reversed. Fewer than the full
 #: subset because the arm costs a second five-sample pass over every cell it
@@ -185,7 +213,7 @@ def select_subset(
 
     _require_train(chosen)
 
-    wanted = list(conditions) if conditions is not None else list(Condition)
+    wanted = list(conditions) if conditions is not None else list(SUBSET_CONDITIONS)
     cells = [
         SubsetCell(
             scenario_id=s.scenario_id,
@@ -227,7 +255,7 @@ def generate_subset(
         return run(
             store=store,
             scenarios=list(scenarios),
-            conditions=list(conditions) if conditions is not None else None,
+            conditions=list(conditions) if conditions is not None else list(SUBSET_CONDITIONS),
             samples=1,
             on_cell=lambda cell, i, n: print(
                 f"[{i}/{n}] {cell.scenario.scenario_id} {cell.spec.condition.value}", flush=True
@@ -784,6 +812,11 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - CLI wr
     )
     parser.add_argument("--scenarios", type=int, default=N_SUBSET_SCENARIOS)
     parser.add_argument("--n-reversed", type=int, default=N_REVERSED)
+    parser.add_argument(
+        "--conditions",
+        default=None,
+        help="comma-separated override of SUBSET_CONDITIONS, e.g. A,B,C",
+    )
     parser.add_argument("--journal", type=Path, default=None)
     parser.add_argument("--limit", type=int, default=None, help="cap generations judged")
     args = parser.parse_args(argv)
@@ -792,7 +825,12 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - CLI wr
     out.mkdir(parents=True, exist_ok=True)
     journal = args.journal or (get_settings().runs_dir / "generate" / "validation-subset.jsonl")
 
-    scenarios, cells = select_subset(args.scenarios)
+    wanted = (
+        [Condition[name.strip().upper()] for name in args.conditions.split(",") if name.strip()]
+        if args.conditions
+        else None
+    )
+    scenarios, cells = select_subset(args.scenarios, conditions=wanted)
 
     if args.stage == "subset":
         print(
@@ -810,7 +848,7 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - CLI wr
         return 0
 
     if args.stage == "generate":
-        report = generate_subset(scenarios, journal=journal)
+        report = generate_subset(scenarios, journal=journal, conditions=wanted)
         print(report.summary())
         print(f"  {report.route_summary()}")
         for err in report.errors[:20]:
