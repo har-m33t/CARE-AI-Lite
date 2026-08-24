@@ -58,14 +58,13 @@ the largest single constraint on how many entries the corpus can support per the
 
 **The knowledge base is LLM-extracted from primary sources with no human verification, not
 hand-curated as build plan v3 assumed.** `DECISIONS.md` D4 records the decision to drop the planned
-human sign-off gate rather than claim it falsely: `human_verified` is `FALSE` on all 114 loaded
-entries (as of this writing, final for now per `DECISIONS.md` D3's outcome below —
-`knowledge_base/review/kb_review_digest.md` carries the live count if it moves again), and that is
-the honest record, not a pending checkbox. Any result that depends on knowledge-base quality
-inherits this limitation.
+human sign-off gate rather than claim it falsely: `human_verified` is `FALSE` on all 116 loaded
+entries (as of this writing — `knowledge_base/review/kb_review_digest.md` carries the live count
+if it moves again), and that is the honest record, not a pending checkbox. Any result that
+depends on knowledge-base quality inherits this limitation.
 
-Theme distribution: activation_sdm 40, plain_language 20, teach_back 15, empathy 14,
-trust_continuity 13, emotion_response 9, equity 3.
+Theme distribution: activation_sdm 40, plain_language 21, teach_back 15, trust_continuity 14,
+empathy 14, emotion_response 9, equity 3.
 
 What the pipeline in `carelite/kb/validate.py` and `carelite/kb/spans.py` *can* substantiate, precisely:
 
@@ -93,8 +92,8 @@ What the pipeline in `carelite/kb/validate.py` and `carelite/kb/spans.py` *can* 
   were first measured: candidates are now also rejected for citing a subject `knowledge_base/TAXONOMY.md`
   places out of scope, and for a finding the quoted span does not actually report. **An overclaimed
   evidence tier is corrected rather than rejected, and is now derived from the source paper's study
-  design outright rather than merely capped at it**: 58 of the 114 entries carry a tier that differs
-  from what the extraction model originally claimed — 52 lowered, and **6 raised**, the six being
+  design outright rather than merely capped at it**: 60 of the 116 entries carry a tier that differs
+  from what the extraction model originally claimed — 54 lowered, and **6 raised**, the six being
   ones a ceiling-only check could never have caught (`carelite/kb/papers.py` maps design to tier;
   `validate.py` enforces it). This is a stronger rule than the project's first version, which only
   lowered an overclaim and left an underclaim alone — under that version, two entries citing the
@@ -110,7 +109,7 @@ What the pipeline in `carelite/kb/validate.py` and `carelite/kb/spans.py` *can* 
 - **No human read any entry for whether the finding follows from the span.** That is the
   specific judgment an automated check cannot make and it is not claimed here. The review
   machinery in `carelite/kb/review.py` exists and is exercised (`knowledge_base/review/kb_review_digest.md`
-  is generated from the live database), but it is an available tool, not a completed gate: 0 of 114
+  is generated from the live database), but it is an available tool, not a completed gate: 0 of 116
   entries are signed off as of this writing.
 - **Paper metadata is now complete: zero placeholder citations, zero papers missing a study
   design.** `carelite/kb/papers.py` writes `design`, `evidence_tier`, `apa_citation`, and `year`
@@ -120,18 +119,47 @@ What the pipeline in `carelite/kb/validate.py` and `carelite/kb/spans.py` *can* 
   rather than its Crossref-derived citation in an older document or note may now resolve to a
   different-looking but more accurate reference.
 
+**Roughly a third of the knowledge base restates itself, and this constrains how every entry
+count in this document — and in any results table — may be read.** The redundancy check
+(`carelite/kb/review.py`) clusters entries within one `(theme, paper)` group that quote the same
+underlying point in different words. Its first calibration was itself an instance of the defect it
+exists to catch: at a pairwise-similarity threshold of 0.58 it reported 17 of 114 entries clustered
+and said nothing about the pair *"Brief the interpreter on the goals and specific content of the
+conversation before the patient enters the room"* and *"provide the interpreter with advanced
+preparation and specific context before the encounter"* — one instruction stated twice, scoring
+0.478, called independent. Recalibrated to 0.47 and checked by reading the groups that appear as
+the threshold drops (not by the number alone): **the digest now reports 40 of 116 entries falling
+into 12 clusters**, and the `teach_back` cluster alone grows from 6 entries to 10, which matches
+what reading them shows — nearly every Talevski teach-back entry says some version of "use
+teach-back to confirm the patient understood their discharge instructions." Every clustered entry
+is individually evidenced — real span, real source — the defect is only in counting them as
+separate support. **The calibration is deliberately set toward over-grouping**, because nothing in
+this check rejects an entry: a cluster a reader disagrees with costs a moment to unmerge, while a
+restatement the check misses enters the write-up as convergent evidence. A regression test
+(`tests/unit/kb/test_review.py::TestClusterThresholdCalibration`) pins the 0.47 threshold against
+the interpreter-briefing pair specifically, so a future tightening has to be argued for rather than
+drifted into. **The consequence for this document and for any results write-up: entry counts must
+never be presented as independent evidence, and a retrieval hit on several entries from one theme
+is frequently one finding retrieved several times, not several findings.**
+
 **The equity knowledge base holds 3 entries, and — this is a finding, not a gap awaiting a
 fix — `DECISIONS.md` D3's outcome establishes that this is a property of the corpus, not of the
 extraction.** D3 approved re-extracting equity entries with a prompt asking for the *compensating
 move* a disparity finding implies, rather than the awareness statement a faithful extraction of a
-disparity naturally produces. It ran, and it produced **zero net new entries**: six candidates came
-back from the two anchor papers, four were aspiration statements ("proactively work to bridge the
-empathy gap") the actionability guard correctly rejected, one duplicated an existing span exactly,
-and one was a genuine compensating move that restated advice already in the base. The variant run
-was never loaded — it was quarantined behind `--prompt-version` so an experiment reaches the
-knowledge base only once its guard has been applied, never merely because inference finished.
-Without that guard, the four aspiration statements would have loaded and equity would read 7,
-looking like progress while being a regression.
+disparity naturally produces. Read individually against its guard, the variant run's candidates
+broke down as: four aspiration statements ("proactively work to bridge the empathy gap") the
+actionability guard correctly rejected, one exact duplicate of an existing span, and two genuine,
+well-grounded entries — but in `plain_language` and `trust_continuity`, not `equity`. Both were
+loaded (`kb-plain_language-2f0e0bced0`, `kb-trust_continuity-3ad5b8efed` — the latter is the
+near-duplicate flagged by the redundancy check above), on the reasoning that discarding a
+well-grounded entry because the prompt that surfaced it was aimed at something else would not be
+principled. **`equity` itself did not move: it is still 3, and the total entry count rising from
+114 to 116 must not be read as the equity problem having improved** — the variant's stated
+purpose, raising equity coverage, still failed, for the structural reason below. The load was
+quarantined behind `--prompt-version` throughout, so it reached the knowledge base only once its
+guard had been applied, never merely because inference finished; without that guard the four
+aspiration statements would also have loaded, and `equity` would have read 7 — looking like
+progress while being a regression.
 
 **Which paper failed is the whole result.** Holdsworth *describes interactions*, so a compensating
 move was there to quote, and the model quoted one. Roberts is a meta-analysis: it quantifies a gap
@@ -145,9 +173,12 @@ clinician communication considerably better than it documents what to do about t
 subgroup result this project reports should be read with that ceiling in mind, not just the small
 sample size.
 
-Concentration is worse than the theme totals suggest for teach-back too: 12 of its 15 entries come
-from the single Talevski (2020) systematic review — **effectively single-source** — so what reads
-as convergent evidence within the theme is largely one source cited many times.
+Concentration is worse than the theme totals suggest for teach-back too, and the redundancy finding
+above sharpens it rather than merely restating it: 12 of its 15 entries come from the single
+Talevski (2020) systematic review — **effectively single-source** — and 10 of the theme's 15
+entries now sit in one redundancy cluster. Those are the same fact seen from two directions: what
+reads as convergent evidence within `teach_back` is largely one source cited many times, in
+overlapping words.
 
 ---
 

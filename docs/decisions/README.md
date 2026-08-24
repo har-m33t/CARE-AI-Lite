@@ -44,11 +44,15 @@ once, in passing, with no supporting list anywhere in the repository, is the sam
 number asserted rather than counted. The project owner's later ruling on the adjacent 15-vs-45
 question (see the user's memory record, "CARELite KB counts are floors") settles the same way —
 both figures describe different things (an early sample vs. the full base) and the actual count is
-whatever the corpus and the provenance gate produce. As of this writing that is 114 loaded entries
-across 33 papers, final for now — `DECISIONS.md` D3's outcome (2026-08-24) settled the one figure
-still expected to move, establishing that the equity theme's count of 3 is a property of the
-corpus rather than an unfinished extraction; `knowledge_base/review/kb_review_digest.md` still
-carries the live count if that changes. See `docs/limitations.md` §1–2 for the coverage this leaves
+whatever the corpus and the provenance gate produce — and it has kept moving even after being
+reported here as settled twice, so treat any total in this document as a snapshot rather than a
+target and re-query `knowledge_base/review/kb_review_digest.md` before citing one. As of this
+writing that is 116 loaded entries across 33 papers. `DECISIONS.md` D3's outcome (2026-08-24)
+settled the one figure this project can say is not still moving for extraction reasons: the equity
+theme's count of 3 is established as a property of the corpus rather than an unfinished extraction,
+even though the overall total moved twice more afterward for unrelated reasons (a later variant
+window's incidental non-equity yield, then a redundancy-check recalibration — see
+`docs/limitations.md` §2 for both). See `docs/limitations.md` §1–2 for the coverage this leaves
 skewed, and `DECISIONS.md` D3–D4 for the two decisions this made necessary downstream (equity
 re-extraction and its negative result, dropping the human-verification claim).
 

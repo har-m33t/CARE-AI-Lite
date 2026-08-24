@@ -67,13 +67,13 @@ Every finding from the literature is stored as a structured entry containing sev
 | Evidence Strength | Strong, Moderate, or Emerging |
 | AI Action Type | Detection, Generation, or Reframing |
 
-The knowledge base currently holds 114 entries spanning all seven themes (activation_sdm 40, plain_language 20, teach_back 15, empathy 14, trust_continuity 13, emotion_response 9, equity 3), loaded into PostgreSQL from the retrieved paper corpus. Entries are produced by **LLM-assisted extraction with automated verbatim-span provenance validation, not human curation or clinician review**: every entry's quoted span is mechanically confirmed to appear in the extracted text of the paper it cites before the entry is accepted, and an entry whose span cannot be located is rejected as a fabrication rather than repaired. That check is real and enforced in code (`carelite/kb/validate.py`), and it is also specific about what it does not claim — no person has reviewed whether a given finding follows from its quoted span, `human_verified` is `false` on every loaded entry, and any result built on the knowledge base inherits that limitation. The equity count of 3 is not a gap awaiting more extraction — `docs/limitations.md` §2 records why a targeted re-extraction attempt returned nothing, which is itself a finding about this corpus. `docs/limitations.md` also records the measured fabrication rate and the full provenance accounting; `docs/decisions/README.md` records why the knowledge base is derived this way rather than hand-authored to a planning-time count.
+The knowledge base currently holds 116 entries spanning all seven themes (activation_sdm 40, plain_language 21, teach_back 15, trust_continuity 14, empathy 14, emotion_response 9, equity 3), loaded into PostgreSQL from the retrieved paper corpus. Entries are produced by **LLM-assisted extraction with automated verbatim-span provenance validation, not human curation or clinician review**: every entry's quoted span is mechanically confirmed to appear in the extracted text of the paper it cites before the entry is accepted, and an entry whose span cannot be located is rejected as a fabrication rather than repaired. That check is real and enforced in code (`carelite/kb/validate.py`), and it is also specific about what it does not claim — no person has reviewed whether a given finding follows from its quoted span, `human_verified` is `false` on every loaded entry, and any result built on the knowledge base inherits that limitation. **116 is not 116 independent findings**: roughly a third of the entries restate one another in different words, so an entry count must never stand in for convergent evidence — `docs/limitations.md` §2 has the redundancy-cluster accounting. The equity count of 3 is not a gap awaiting more extraction either — the same section records why a targeted re-extraction attempt returned nothing (two of the entries above), which is itself a finding about this corpus, not a pipeline shortfall. `docs/decisions/README.md` records why the knowledge base is derived this way rather than hand-authored to a planning-time count.
 
 ---
 
 ## Actionable Behavior System
 
-Every knowledge-base entry is tagged with one of three functional categories — `AI Action Type` in the table above — rather than being organized into a separate, curated master list of behaviors as originally planned. As of this writing that tagging spans the 114 loaded entries: 72 generation, 25 reframing, 17 detection. A refined, prioritized, non-overlapping behavior list distilled from these tags remains a planned deliverable — see "Expected Outcomes" below — not a finished artifact.
+Every knowledge-base entry is tagged with one of three functional categories — `AI Action Type` in the table above — rather than being organized into a separate, curated master list of behaviors as originally planned. As of this writing that tagging spans the 116 loaded entries: 73 generation, 26 reframing, 17 detection. A refined, prioritized, non-overlapping behavior list distilled from these tags remains a planned deliverable — see "Expected Outcomes" below — not a finished artifact.
 
 **Detection behaviors** — the system monitors the conversation and flags something the clinician might miss. Examples include detecting emotional blocking patterns, flagging jargon, and identifying conversations that end without a teach-back check.
 
@@ -148,7 +148,7 @@ carelite-ai/
 │
 ├── knowledge_base/
 │   ├── TAXONOMY.md               # Seven-theme taxonomy proposal (accepted, DECISIONS.md D1)
-│   ├── review/                    # Generated human-review digest (0/114 signed off as of writing)
+│   ├── review/                    # Generated human-review digest (0/116 signed off as of writing)
 │   └── cache/                     # Extraction cache (gitignored)
 │
 ├── scenarios/
@@ -187,7 +187,7 @@ behind each of these and `docs/limitations.md` for what each one does not yet cl
 | Component | Status |
 |---|---|
 | Corpus retrieval | Built — 33 of 43 manifest DOIs resolved; the rest are documented as genuinely unavailable, not silently dropped |
-| Knowledge base extraction and provenance validation | Built — 114 entries, final for now (`DECISIONS.md` D3's outcome), verbatim-span-validated; **not human-reviewed** (`human_verified = false` on all of them) |
+| Knowledge base extraction and provenance validation | Built — 116 entries (`DECISIONS.md` D3's outcome; ~1/3 restate one another, see `docs/limitations.md` §2), verbatim-span-validated; **not human-reviewed** (`human_verified = false` on all of them) |
 | Equity knowledge-base re-extraction (`DECISIONS.md` D3) | Not started — approved and sequenced, has not run |
 | Scenario bank and frozen holdout split | Complete — 100 scenarios (40 train / 60 holdout), checksummed and write-once |
 | Dense + lexical index | Built and verified — 471/471 chunks embedded, 10/10 retrieval probes passing |
