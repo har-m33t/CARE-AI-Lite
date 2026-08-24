@@ -531,3 +531,47 @@ retrieval, and any of the five may additionally be demoted on agreement grounds.
 doubles a sample: `carelite/eval/judge/store.py` writes both per-sample judge rows and a
 `-median` aggregate row, so a naive `rater_type = 'llm_judge'` select double-counts every
 generation invisibly. The stats lane's queries partition the two and a test asserts it.
+
+---
+
+## D10 — Scope: local proof of concept. Pre-registration dropped, results are descriptive
+
+**Decision (2026-08-24, project owner): this is a personal proof of concept that needs
+to work locally. It is not being published, submitted, or handed to anyone else. OSF
+pre-registration is dropped and the holdout gate is removed.**
+
+The pre-registration existed to serve one argument, from build plan v3 §10: that a
+naturalness result going *against* the system reads as a finding rather than an
+excuse, because the prediction was fixed in public beforehand. That argument only
+buys anything if there is an audience. There is not, so the gate was costing a hard
+block on the remaining work in exchange for credibility nobody will be asked to
+extend.
+
+**What this changes, stated plainly so no later reader has to infer it:**
+
+- Every result this project produces is **descriptive**. The eight comparisons, the
+  equity subgroup, the naturalness prediction — none may be described as
+  confirmatory, pre-specified, or hypothesis-testing, in the README, in
+  `docs/limitations.md`, or in any write-up. They are observations from a single
+  local run.
+- `docs/preregistration.md` is **kept**, not deleted. It remains an accurate,
+  timestamped-in-git record of the analysis plan as it stood before any holdout data
+  existed, and the analysis still follows it. That is worth something as evidence of
+  intent even without a registry — it just cannot be *claimed* as pre-registration.
+  Its status header must say so.
+- The statistical machinery is unchanged. Holm correction, two-sided tests, bootstrap
+  CIs before p-values, the weakest-link composite rule, judge-agreement demotion — all
+  of it still runs, because it is how you avoid fooling yourself, which matters
+  whether or not anyone else is watching.
+- D1–D9 all stand. Nothing about the corpus, the knowledge base, the equity findings,
+  or the instrument defects becomes less true because the audience changed.
+
+**The `--preregistration-is-submitted` flag must not be used to get past the gate.**
+Its name is an assertion, and asserting something false to unblock a run is exactly
+the habit this project has spent two days building guards against. The gate is
+changed to reflect the actual decision rather than defeated by a flag that lies about
+it.
+
+The one thing genuinely lost: if this project is ever written up for real, the
+naturalness result cannot be reclaimed as pre-specified. Registering later, after the
+data exists, would be worse than not registering at all.
