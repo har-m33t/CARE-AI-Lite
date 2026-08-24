@@ -326,29 +326,81 @@ def replay_from_cache(
     *,
     order: OptionOrder,
     cache_path: Path,
+    min_samples: int = 1,
 ) -> list[JudgeResult]:
     """Re-derive results from cached raw output, calling no model.
 
-    Any generation not fully cached is skipped rather than judged: this is the
-    analysis path, and a `--stage report` that quietly starts an eight-hour
-    inference run is the wrong kind of surprise. Grounding, medians and every
-    §13 statistic are pure functions of the bytes already on disk.
+    Grounding, medians and every §13 statistic are pure functions of bytes
+    already on disk, so the whole study re-analyses in milliseconds after a
+    change to the grounding rule. Nothing here may reach a model: a
+    `--stage report` that quietly starts a six-hour inference run is the wrong
+    kind of surprise, and `_NoCallClient` turns a cache miss into a skip rather
+    than a call.
+
+    **Samples are collected individually, not all-or-nothing.** A six-hour run
+    gets interrupted, and it stops in the middle of a generation as often as
+    between two. Rebuilding only the generations whose five samples are all
+    present would throw away the work done on the generation in flight and —
+    worse — bias what survives: the generations that happen to be complete are
+    not a random subset when the run stopped partway through a sweep. A
+    generation with three cached samples is reported from three, and
+    `DimensionResult.variance` already refuses to compute a self-consistency
+    number from fewer than two.
+
+    Args:
+        min_samples: Generations with fewer cached samples than this are
+            dropped. One is right for grounding and agreement, which are
+            per-sample; the self-consistency table needs two and enforces that
+            itself.
     """
+    from carelite.eval.judge.judge import _aggregate
+
     results: list[JudgeResult] = []
+    client = _NoCallClient(get_settings().models.judge.tag)
+
     with JudgeCache(cache_path) as cache:
         judge = LLMJudge.for_validation(
-            _NoCallClient(get_settings().models.judge.tag),
-            cache=cache,
-            order=order,
-            rater_id=f"judge-{order.value}",
+            client, cache=cache, order=order, rater_id=f"judge-{order.value}"
         )
         for generation in generations:
-            try:
-                results.append(
-                    judge.score(generation, scenario_texts.get(generation.scenario_id, ""))
-                )
-            except _WouldCallModel:
+            samples = []
+            for index in range(judge.n_samples):
+                try:
+                    samples.append(
+                        judge.judge_sample(
+                            generation_id=generation.generation_id,
+                            scenario_text=scenario_texts.get(generation.scenario_id, ""),
+                            response_text=generation.response,
+                            sample_idx=index,
+                        )
+                    )
+                except _WouldCallModel:
+                    continue
+            if len(samples) < min_samples:
                 continue
+
+            flags: list[str] = []
+            for sample in samples:
+                for flag in sample.safety_flags:
+                    if flag not in flags:
+                        flags.append(flag)
+
+            results.append(
+                JudgeResult(
+                    generation_id=generation.generation_id,
+                    judge_model=client.model,
+                    judge_digest=client.digest,
+                    prompt_version=judge.prompt_version,
+                    rubric_version=judge.rubric_version,
+                    temperature=judge.temperature,
+                    n_samples_requested=judge.n_samples,
+                    order=order,
+                    dimensions={key: _aggregate(key, samples) for key in RUBRIC_DIMENSIONS},
+                    samples=tuple(samples),
+                    safety_flags=tuple(flags),
+                    rater_id=judge.rater_id,
+                )
+            )
     return results
 
 

@@ -392,3 +392,100 @@ def test_intra_rater_reliability_is_reported_for_the_single_rater_fallback() -> 
     result = dry_run(_rateables(30))
     assert set(result.intra_rater) == set(RUBRIC_DIMENSIONS)
     assert result.intra_rater["name"]["n_units"] > 0
+
+
+def test_replay_reports_a_generation_from_however_many_samples_are_cached(
+    tmp_path: Path,
+) -> None:
+    """A six-hour run stops in the middle of a generation as often as between
+    two. Rebuilding only the generations whose five samples are all present
+    throws away the work in flight, and biases what survives: when a run stops
+    partway through a sweep, the complete generations are not a random subset.
+    """
+    from carelite.eval.judge.cache import CachedSample, JudgeCache
+    from carelite.eval.judge.judge import LLMJudge
+    from carelite.eval.judge.prompt import OptionOrder
+    from carelite.types import Generation
+
+    response = "I can hear how frightening that wait is. The biopsy is what answers it."
+    generation = Generation(
+        generation_id="gen-partial",
+        scenario_id="SC-002",
+        condition=Condition.C,
+        prompt_id="cond.c.v1",
+        model="gemma4:12b",
+        model_digest="sha256:x",
+        seed=1,
+        temperature=0.7,
+        sample_idx=0,
+        response=response,
+    )
+
+    raw = json.dumps(
+        {
+            "scores": {
+                key: {
+                    "score": 4,
+                    "span": "I can hear how frightening that wait is.",
+                    "rationale": "names the emotion",
+                }
+                for key in RUBRIC_DIMENSIONS
+            },
+            "safety_flags": [],
+        }
+    )
+
+    cache_path = tmp_path / "partial.jsonl"
+    # Seed only three of the five samples, as an interrupted run would leave it.
+    with JudgeCache(cache_path) as cache:
+        judge = LLMJudge.for_validation(
+            _NoCall(), cache=None, order=OptionOrder.ASCENDING, rater_id="x"
+        )
+        for idx in range(3):
+            cache.put(
+                CachedSample(
+                    key=judge._key("gen-partial", idx),
+                    generation_id="gen-partial",
+                    model=judge.client.model,
+                    digest=judge.client.digest,
+                    prompt_version=judge.prompt_version,
+                    rubric_version=judge.rubric_version,
+                    temperature=judge.temperature,
+                    sample_idx=idx,
+                    order=str(OptionOrder.ASCENDING),
+                    seed=idx,
+                    raw_output=raw,
+                )
+            )
+
+    results = replay_from_cache(
+        [generation],
+        {"SC-002": "turn"},
+        order=OptionOrder.ASCENDING,
+        cache_path=cache_path,
+    )
+    assert len(results) == 1
+    assert len(results[0].samples) == 3
+    assert results[0].dimensions["name"].score == 4
+    # Three samples is enough for a variance; one would not be.
+    assert results[0].dimensions["name"].variance == 0.0
+
+
+class _NoCall:
+    """Matches `_NoCallClient`'s identity so cache keys line up in the test."""
+
+    @property
+    def model(self) -> str:
+        from carelite.config import get_settings
+
+        return get_settings().models.judge.tag
+
+    @property
+    def digest(self) -> str:
+        from carelite.config import get_settings
+
+        settings = get_settings()
+        return settings.models.judge.digest or settings.models.judge.tag
+
+    def chat(self, messages, *, temperature, seed=None):  # type: ignore[no-untyped-def]
+        raise AssertionError("must not be called")
