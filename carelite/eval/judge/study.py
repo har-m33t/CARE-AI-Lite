@@ -642,6 +642,36 @@ def _fmt(value: float | None) -> str:
     return "  n/a" if value is None else f"{value:.3f}"
 
 
+def _provenance() -> dict[str, Any]:
+    """What was actually run, read from the daemon rather than from config.
+
+    `settings.models.judge.digest` is unset until `make pin-models`, and
+    `OllamaChatClient.digest` then falls back to the tag — which is the right
+    fallback for a cache key but is not a provenance record. The digest the
+    daemon reports is the real identity of the weights that produced these
+    numbers, so it is recorded here even though nothing else consumes it.
+    """
+    settings = get_settings()
+    out: dict[str, Any] = {
+        "judge_tag": settings.models.judge.tag,
+        "generator_tag": settings.models.generator.tag,
+        "judge_digest_config": settings.models.judge.digest,
+        "judge_digest_daemon": None,
+        "cross_family": True,
+        "judge_temperature": settings.experiment.judge_temperature_validation,
+        "judge_samples": settings.experiment.judge_samples_validation,
+    }
+    try:
+        import ollama
+
+        for model in ollama.Client(host=settings.ollama_host).list().get("models", []):
+            if str(model.get("model", "")).startswith(settings.models.judge.tag.split(":")[0]):
+                out["judge_digest_daemon"] = model.get("digest")
+    except Exception:  # provenance is best-effort; a dead daemon must not fail a replay
+        pass
+    return out
+
+
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
@@ -749,12 +779,41 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - CLI wr
         span_verdicts=read_span_verdicts(out / "span_review.json"),
         generator_model=get_settings().models.generator.tag,
     )
+
+    # The validity half of §13 has no comparator yet, and that is the verdict —
+    # not a gap to be filled in with the synthetic panel sitting one function
+    # away. `human_consensus=None` above is what puts every dimension in
+    # `exploratory`; the arms below are kept in a separate key, with a separate
+    # name, so nothing downstream can read them as the study's agreement result.
+    arms = agreement_against_synthetic(ascending, responses) if ascending else {}
+
+    payload = report_to_json(
+        report,
+        extra={
+            "verdict": {
+                "human_ratings_exist": False,
+                "agreement_computable": False,
+                "reason": (
+                    "Human rating is sprint 10. With no human consensus there is no "
+                    "comparator, so every dimension is exploratory for want of one — "
+                    "which is a statement about the study's stage, not about the judge. "
+                    "Nothing here may be reported as a judge-validity finding."
+                ),
+                "all_dimensions_exploratory": len(report.exploratory_dimensions) == 11,
+            },
+            "instrument_check_not_a_result": arms,
+            "provenance": _provenance(),
+            "subset": [asdict(c) for c in cells],
+        },
+    )
+
     text = report.render()
+    if arms:
+        text = f"{text}\n\n{render_agreement(arms)}"
     print(text)
     (out / "validation_report.txt").write_text(text, encoding="utf-8")
-    (out / "validation_report.json").write_text(
-        json.dumps(report_to_json(report), indent=2), encoding="utf-8"
-    )
+    (out / "validation_report.json").write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    print(f"\nwrote {out / 'validation_report.json'}")
     return 0
 
 
