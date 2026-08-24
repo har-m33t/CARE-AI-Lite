@@ -203,10 +203,13 @@ individually rather than sampled. `EQUITY_PROMPT` in `carelite/kb/extract.py` ca
 on its own cache version rather than a global `PROMPT_VERSION` bump — a global bump re-runs all 33
 papers to change how one theme is extracted, and the cache key already separates the two.
 
-It was run against the two papers that carry substantive equity content: **Roberts et al. 2021**
-(equity vocabulary 184, the meta-analysis of SES and racial differences in clinician empathy) and
-**Holdsworth et al. 2025** (90, serious illness communication with LEP patients). Six candidates,
-each read against its span:
+It was run to completion against the two papers that carry substantive equity content:
+**Roberts et al. 2021** (equity vocabulary 184, the meta-analysis of SES and racial differences in
+clinician empathy) and **Holdsworth et al. 2025** (90, serious illness communication with LEP
+patients) — three windows each, no extraction errors. **Twelve candidates**, each read against its
+span: 5 proposed as `equity`, 5 as `plain_language`, 2 as `trust_continuity`.
+
+Of the five the model itself labelled `equity`:
 
 - **Four were aspirations** — the original awareness statement with an active verb bolted on the
   front. *"Be mindful of the empathy gap"* became *"proactively work to bridge the empathy gap"*,
@@ -214,23 +217,26 @@ each read against its span:
   high-quality empathetic communication to all patients regardless of background"*, and *"engage in
   more consistent and attentive communication so these patients feel heard"*. None is a move; all
   four cleared the verb whitelist, because `address`, `provide` and `engage` are real verbs.
-  `_ASPIRATION_NOT_ACTION` in `validate.py` now rejects them.
+  `_ASPIRATION_NOT_ACTION` in `validate.py` now rejects them. All four came from Roberts.
 - **One duplicated an existing entry's span exactly** and was dropped as a duplicate. Its takeaway
   was better than the loaded one's — *"explicitly ask the interpreter to verify the patient's
   understanding"* against *"proactively use interpreters ... and capture cultural nuances"* — but
   the deterministic `entry_id` is a hash of paper and span, so the two collide and the earlier one
   wins. That is a real, if minor, ordering defect worth recording: a better rendering of the same
   evidence cannot currently displace a worse one.
-- **One was a genuine compensating move**, and it is a `trust_continuity` entry rather than an
-  equity one: *"provide the interpreter with advanced preparation and specific context before the
-  encounter"*, off a span that says being an effective voice for the clinician "required advanced
-  preparation of the interpreter". The knowledge base already holds *"Brief the interpreter on the
-  goals and specific content of the conversation before the patient enters the room"* from the same
-  paper, so it adds no independent evidence.
 
-**Net new equity entries: zero.** The variant's output was therefore not loaded — `load.py
---prompt-version` exists so that an experimental variant reaches the knowledge base when its guard
-has been applied rather than when its inference finishes.
+**Net new equity entries: zero**, which is the result that matters, because raising equity coverage
+was the whole purpose of the change.
+
+The seven non-equity candidates were kept or dropped on the same reading. Five were duplicates or
+near-duplicates of entries the general pass had already found from the same paper — the variant,
+run over the same windows, converges on the same advice — and **two were new and well-grounded**:
+`kb-plain_language-2f0e0bced0` (the phrase *"critical abilities"* was recorded as causing confusion
+when interpreted, so: identify and replace phrases that do not translate) and
+`kb-trust_continuity-3ad5b8efed` (prepare the interpreter before the encounter). Both are loaded.
+Discarding a well-supported entry because the prompt that found it was aimed at something else
+would not be principled; the second is a restatement of an entry already held and the digest's
+cluster section now says so.
 
 The structural reason is visible in which paper failed. Holdsworth is a qualitative and
 mixed-methods study of LEP encounters, so its text *describes interactions* and a compensating move
@@ -241,10 +247,13 @@ the model supplies one. That is exactly the risk D3 named, and it is why the gua
 The honest conclusion is that **`equity` at 3 entries is a property of this corpus, not of the
 prompt.** Closing the gap needs equity papers that report an intervention, and the fetch already
 records that the health-literacy and emotional-blocking literature is concentrated in the paywalled
-and DOI-less rows of `data/pdfs/_manual_needed.csv`. The re-run is resumable — the six thinner
-papers in the sweep (equity vocabulary 27 down to 12) had not completed when this was written, and
-`python -m carelite.kb.extract --prompt equity --focus equity` picks up from the cache — but nothing
-in those densities suggests they hold what Roberts does not.
+and DOI-less rows of `data/pdfs/_manual_needed.csv`.
+
+The sweep also queued six thinner papers (equity vocabulary 27 down to 12) behind the two anchors.
+Those did not run: the process was stopped one window into the third paper, after both anchors had
+completed. Nothing in those densities suggests they hold what Roberts does not — Roberts scores 184
+and the next of them 27 — but that is an inference, not a result, and the run is resumable from the
+cache with `python -m carelite.kb.extract --prompt equity --focus equity`.
 
 `equity` also under-counts its own reach: 8 of the 114 entries are flagged `equity_relevant` while
 sitting under another theme, which is the design working as intended — an interpreter finding is a
