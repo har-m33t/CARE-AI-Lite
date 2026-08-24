@@ -23,7 +23,7 @@ from typing import Any
 import pytest
 
 from carelite.eval import smoke as smoke_mod
-from carelite.eval.smoke import SmokeResult, smoke
+from carelite.eval.smoke import HoldoutGateError, SmokeResult, smoke
 from carelite.generate.conditions import SPEC
 from carelite.generate.graph import GraphDeps, InputPolicy, build_graph
 from carelite.generate.longcontext import CorpusPack
@@ -303,9 +303,33 @@ def test_the_render_names_every_condition_and_its_prompt(tmp_path: Path) -> None
         assert spec.prompt_id in rendered
 
 
-def test_holdout_is_reachable_but_is_not_the_default(tmp_path: Path) -> None:
-    """The flag exists so the target can be pointed at the holdout deliberately
-    after registration; nothing about the default may make that accidental."""
-    result = _smoke(tmp_path, split=Split.HOLDOUT, n_scenarios=2)
-    assert result.report.split_counts == {"holdout": 2 * len(SPEC)}
+def test_the_default_split_is_train(tmp_path: Path) -> None:
     assert smoke.__kwdefaults__["split"] is Split.TRAIN
+    assert smoke.__kwdefaults__["preregistration_is_submitted"] is False
+
+
+def test_a_holdout_smoke_run_refuses(tmp_path: Path) -> None:
+    """A smoke test is run casually, repeatedly, and often late. That makes it
+    the last place worth letting five held-out cells through: the rows are just
+    as irreversible as the other 1,080."""
+    journal = tmp_path / "smoke.jsonl"
+    with pytest.raises(HoldoutGateError, match=r"DECISIONS\.md"):
+        _smoke(tmp_path, split=Split.HOLDOUT, n_scenarios=2)
+    assert not journal.exists(), "the refusal must land before the journal is truncated"
+
+
+def test_a_holdout_smoke_dry_run_is_allowed(tmp_path: Path) -> None:
+    result = _smoke(tmp_path, split=Split.HOLDOUT, n_scenarios=2, dry_run=True)
+    assert result.report.planned == 2 * len(SPEC)
+
+
+def test_the_override_lets_a_registered_study_smoke_the_holdout(tmp_path: Path) -> None:
+    result = _smoke(tmp_path, split=Split.HOLDOUT, n_scenarios=2, preregistration_is_submitted=True)
+    assert result.report.split_counts == {"holdout": 2 * len(SPEC)}
+    assert all(r.extra["split"] == "holdout" for r in result.records)
+
+
+def test_the_smoke_cli_refuses_with_the_same_exit_code_as_the_runner(tmp_path: Path) -> None:
+    argv = ["--split", "holdout", "--journal", str(tmp_path / "s.jsonl")]
+    assert smoke_mod.main(argv) == 2
+    assert smoke_mod.main([*argv, "--dry-run"]) == 0

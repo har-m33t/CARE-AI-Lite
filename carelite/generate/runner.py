@@ -52,12 +52,36 @@ is where it goes; the point is that a table holding both can be read back
 without a join to the bank, because the pre-registration turns on exactly that
 distinction.
 
-**Do not start a holdout run before the OSF pre-registration is submitted.**
-That is a project gate recorded in `DECISIONS.md`, not something this module
-enforces — `--split holdout` stays the default because every existing invocation
-means it. `main()` prints the split it is about to generate, and warns on
-holdout, so the gate is visible at the top of the log rather than discovered
-afterwards.
+**A holdout run refuses to start until the OSF pre-registration is submitted.**
+
+This is the one place where changing existing behaviour is the right trade,
+because generating held-out data is a one-way door. The moment those rows
+exist, `docs/preregistration.md` can never be registered *as* a
+pre-registration, and build plan v3 §10's entire argument for why an
+against-you naturalness result is credible collapses with it. Nothing recovers
+that — not deleting the rows, not starting over.
+
+A warning is the wrong instrument for an irreversible act, because its failure
+mode is someone scrolling past it at 2am. So `--split holdout` plans, counts and
+dry-runs freely, and refuses to generate without
+`--preregistration-is-submitted`. That flag is deliberately long, unabbreviated
+and phrased as a claim the caller is making about the world rather than a knob
+they are turning; it is not something typed by muscle memory. After
+registration it costs one flag on one command, forever.
+
+The gate applies to the production path — a run that resolved its scenarios
+from a split. A caller passing an explicit `scenarios` list has already named
+what it wants one scenario at a time, and every test and harness in the tree
+does exactly that.
+
+**A run also refuses to start on an unresolved model digest.** `resolve_digest`
+returns `DIGEST_UNAVAILABLE` rather than raising, which is right for provenance
+and wrong as a thing to discover 1,080 generations later: those rows key on a
+non-identity and can never be attributed to a model afterwards. Since
+`model.py` gave metadata calls their own 30-second ceiling, an unavailable
+digest is a live outcome on a daemon shared with other lanes rather than a
+theoretical one, so it is checked before the first cell instead of after the
+last.
 
 **Digests are resolved before the plan is built,** because `model_digest` is
 part of the key. If the daemon is restarted mid-run with re-pulled weights, the
@@ -102,7 +126,81 @@ from carelite.generate.model import DIGEST_UNAVAILABLE, GenerationClient
 from carelite.generate.store import CacheKey, GenerationRecord, GenerationStore, JsonlStore
 from carelite.types import Condition, GuidanceRequest, Scenario, Split
 
-__all__ = ["Cell", "RunReport", "build_plan", "main", "run", "scenarios_for_split"]
+__all__ = [
+    "HOLDOUT_OVERRIDE_FLAG",
+    "Cell",
+    "HoldoutGateError",
+    "RunReport",
+    "assert_digests_resolved",
+    "assert_holdout_registered",
+    "build_plan",
+    "main",
+    "run",
+    "scenarios_for_split",
+]
+
+
+#: The override for the held-out gate. Long, unabbreviated, and phrased as an
+#: assertion about the world rather than a setting, because the act it unlocks
+#: cannot be undone.
+HOLDOUT_OVERRIDE_FLAG = "--preregistration-is-submitted"
+
+
+class HoldoutGateError(RuntimeError):
+    """A holdout generation was requested before the pre-registration exists."""
+
+
+def assert_holdout_registered(
+    split: Split | str,
+    *,
+    preregistration_is_submitted: bool,
+    dry_run: bool = False,
+) -> None:
+    """Refuse to generate held-out data before the pre-registration is submitted.
+
+    Planning, counting and `--dry-run` are always allowed: they touch nothing,
+    write nothing, and answering "how big is this run" is not the act being
+    gated. Only producing the rows is.
+
+    Raises:
+        HoldoutGateError: on a real holdout run with no override.
+    """
+    if Split(split) is not Split.HOLDOUT or dry_run or preregistration_is_submitted:
+        return
+    raise HoldoutGateError(
+        "refusing to generate held-out data.\n\n"
+        "DECISIONS.md gates the held-out split on the OSF pre-registration being "
+        "submitted, and this is a one-way door: the moment these rows exist, "
+        "docs/preregistration.md can never be registered as a pre-registration, and "
+        "the credibility argument for the naturalness result goes with it. Deleting "
+        "the rows afterwards does not undo it.\n\n"
+        "Nothing was generated and nothing was written.\n\n"
+        "  --dry-run                        plan and count; always allowed\n"
+        "  --split train                    the 40 training scenarios; always allowed\n"
+        f"  {HOLDOUT_OVERRIDE_FLAG}   assert the registration exists, and proceed"
+    )
+
+
+def assert_digests_resolved(digests: dict[Condition, str]) -> None:
+    """Refuse to key a run on a digest the daemon would not name.
+
+    Tags are mutable, so the digest is the row's only real claim about which
+    weights produced it. `DIGEST_UNAVAILABLE` is an honest record of not
+    knowing and a useless one to find after an eight-hour run: every affected
+    cell has to be regenerated, because its key was never the key it should
+    have been. There is deliberately no override — if the daemon will not name
+    the model it is serving, that is the thing to fix.
+    """
+    missing = sorted(c.value for c, digest in digests.items() if digest in ("", DIGEST_UNAVAILABLE))
+    if not missing:
+        return
+    raise RuntimeError(
+        f"the daemon did not report a digest for these conditions' models: {missing}. "
+        "Every row generated now would key on a non-identity and could never be "
+        "attributed to a model afterwards. Check that the daemon is up and that "
+        "`ollama list` names each configured tag, then rerun; `make pin-models` "
+        "records what it currently serves."
+    )
 
 
 def scenarios_for_split(split: Split | str) -> list[Scenario]:
@@ -273,6 +371,7 @@ def run(
     limit: int | None = None,
     dry_run: bool = False,
     require_committed: bool = False,
+    preregistration_is_submitted: bool = False,
     on_cell: Callable[[Cell, int, int], None] | None = None,
 ) -> RunReport:
     """Generate every planned cell that is not already stored.
@@ -296,6 +395,14 @@ def run(
             a blob in the git object database. Use it for the real run: a
             result produced by a prompt that exists only in a working tree is
             not reproducible.
+        preregistration_is_submitted: the caller's assertion that the OSF
+            pre-registration exists. Required to generate the held-out split;
+            see `assert_holdout_registered`.
+
+    Raises:
+        HoldoutGateError: a real holdout run with no override.
+        RuntimeError: an uncommitted prompt under `require_committed`, or a
+            model digest the daemon would not name.
     """
     settings = get_settings()
     started = time.monotonic()
@@ -307,7 +414,16 @@ def run(
             "read off its scenarios, so a `split` argument here could only contradict it."
         )
     if scenarios is None:
-        scenarios = scenarios_for_split(Split.HOLDOUT if split is None else split)
+        # The production path: the split was asked for by name, so this is the
+        # invocation the gate exists for. An explicit `scenarios` list is a
+        # caller naming what it wants one record at a time, and is left alone.
+        chosen_split = Split.HOLDOUT if split is None else Split(split)
+        assert_holdout_registered(
+            chosen_split,
+            preregistration_is_submitted=preregistration_is_submitted,
+            dry_run=dry_run,
+        )
+        scenarios = scenarios_for_split(chosen_split)
     if conditions is None:
         conditions = list(SPEC)
     if samples is None:
@@ -330,6 +446,8 @@ def run(
     if digests is None:
         client = deps.client if isinstance(deps.client, GenerationClient) else GenerationClient()
         digests = {c: client.resolve_digest(spec_for(c).model_tag) for c in conditions}
+        if not dry_run:
+            assert_digests_resolved(digests)
 
     plan = build_plan(scenarios, conditions, samples=samples, digests=digests)
     report.planned = len(plan)
@@ -420,7 +538,8 @@ def _parse_conditions(raw: str | None) -> list[Condition] | None:
     return [Condition[name.strip().upper()] for name in raw.split(",") if name.strip()]
 
 
-def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - CLI wrapper
+def _build_parser() -> argparse.ArgumentParser:
+    """The CLI surface, separated so a test can inspect it without running a run."""
     parser = argparse.ArgumentParser(
         prog="carelite.generate.runner",
         description=(
@@ -429,6 +548,10 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - CLI wr
             "training scenarios instead, which is what the judge-validation "
             "study is scored against."
         ),
+        # argparse abbreviates long options by default, which would make
+        # `--prereg` unlock the held-out split. An override that can be
+        # shortened is not the override this gate was asked for.
+        allow_abbrev=False,
     )
     parser.add_argument(
         "--split",
@@ -443,11 +566,36 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - CLI wr
     parser.add_argument("--limit", type=int, default=None, help="stop after N new cells")
     parser.add_argument("--dry-run", action="store_true", help="plan and count, generate nothing")
     parser.add_argument("--require-committed", action="store_true")
+    parser.add_argument(
+        HOLDOUT_OVERRIDE_FLAG,
+        action="store_true",
+        help=(
+            "assert that the OSF pre-registration has been submitted. Required to "
+            "generate the held-out split; see DECISIONS.md."
+        ),
+    )
     parser.add_argument("--register-prompts", action="store_true", help="upsert prompt_version")
+    return parser
+
+
+def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - CLI wrapper
+    parser = _build_parser()
     args = parser.parse_args(argv)
 
     settings = get_settings()
     split = Split(args.split)
+
+    # Checked before the store is even opened, so a refusal leaves no journal,
+    # no connection and no sidecar behind.
+    try:
+        assert_holdout_registered(
+            split,
+            preregistration_is_submitted=args.preregistration_is_submitted,
+            dry_run=args.dry_run,
+        )
+    except HoldoutGateError as exc:
+        print(f"carelite.generate.runner: {exc}", file=sys.stderr)
+        return 2
 
     # The two splits get different default filenames. Correctness does not need
     # it — the cache key already keeps them apart — but a 1,080-row holdout
@@ -468,13 +616,6 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - CLI wr
             print(f"prompt_version rows inserted: {inserted}")
 
     print(f"split={split.value}", flush=True)
-    if split is Split.HOLDOUT and not args.dry_run:
-        print(
-            "  NOTE: this is the held-out split. DECISIONS.md gates it on the OSF "
-            "pre-registration being submitted; this runner does not enforce that.",
-            file=sys.stderr,
-            flush=True,
-        )
 
     def progress(cell: Cell, index: int, total: int) -> None:
         print(
@@ -492,8 +633,12 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - CLI wr
             limit=args.limit,
             dry_run=args.dry_run,
             require_committed=args.require_committed,
+            preregistration_is_submitted=args.preregistration_is_submitted,
             on_cell=progress,
         )
+    except HoldoutGateError as exc:  # belt and braces: `run` gates too
+        print(f"carelite.generate.runner: {exc}", file=sys.stderr)
+        return 2
     finally:
         store.close()
 

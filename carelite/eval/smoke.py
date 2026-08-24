@@ -11,11 +11,15 @@ check. It drives `carelite.generate.runner.run` — the real runner, the real
 graph, the real prompts, the real safety gate — and then audits the rows it got
 back against what each condition is supposed to have done.
 
-**It defaults to the train split.** Every response it generates is real
-generated data; producing it on held-out scenarios would spend part of the
-holdout before the OSF pre-registration is submitted, which `DECISIONS.md`
-gates. Five held-out cells is a small leak and a leak nonetheless, and a smoke
-test is the last place worth taking that risk.
+**It defaults to the train split, and refuses the held-out one.** Every
+response it generates is real generated data, and producing it on held-out
+scenarios would spend part of the holdout before the OSF pre-registration is
+submitted, which `DECISIONS.md` gates. Five held-out cells is a small leak and
+a leak nonetheless, and a smoke test — a thing run casually, repeatedly, often
+late — is the last place worth taking that risk. `--split holdout` therefore
+carries the same refusal and the same `--preregistration-is-submitted` override
+as the runner, from the same implementation, so the two cannot drift apart.
+`--dry-run` needs neither.
 
 **It never writes to `generation`.** The store is a JSONL journal under
 `runs/smoke/`, truncated at the start of every invocation. That is what makes it
@@ -63,7 +67,14 @@ from carelite.generate import prompts
 from carelite.generate.conditions import SPEC, spec_for
 from carelite.generate.graph import GraphDeps, InputPolicy
 from carelite.generate.model import DIGEST_UNAVAILABLE
-from carelite.generate.runner import RunReport, run, scenarios_for_split
+from carelite.generate.runner import (
+    HOLDOUT_OVERRIDE_FLAG,
+    HoldoutGateError,
+    RunReport,
+    assert_holdout_registered,
+    run,
+    scenarios_for_split,
+)
 from carelite.generate.store import GenerationRecord, JsonlStore
 from carelite.types import Condition, Scenario, Split
 
@@ -346,6 +357,7 @@ def smoke(
     graph: Any | None = None,
     digests: dict[Condition, str] | None = None,
     dry_run: bool = False,
+    preregistration_is_submitted: bool = False,
     on_cell: Any | None = None,
 ) -> SmokeResult:
     """Generate a handful of cells through the real pipeline and audit them.
@@ -358,8 +370,20 @@ def smoke(
         samples: 1 by default. The smoke test is a wiring check, not a variance
             estimate, and three samples would triple its cost for nothing.
         journal: where the generations go. Truncated first. Never `generation`.
+        preregistration_is_submitted: the caller's assertion that the OSF
+            pre-registration exists. Required for `split=Split.HOLDOUT`.
+
+    Raises:
+        HoldoutGateError: a real holdout smoke run with no override.
     """
     settings = get_settings()
+    # Before anything is loaded, truncated or opened. `smoke` hands `run` an
+    # explicit scenario list, which the runner's own gate deliberately leaves
+    # alone, so the check has to happen here — through the runner's function,
+    # not a copy of its reasoning.
+    assert_holdout_registered(
+        split, preregistration_is_submitted=preregistration_is_submitted, dry_run=dry_run
+    )
     chosen = list(scenarios_for_split(split))[:n_scenarios]
     if not chosen:
         raise RuntimeError(f"no scenarios in split {split!r}")
@@ -470,6 +494,7 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - CLI wr
             "5 scenarios x all six conditions, end to end, on the train split. "
             "Run it before committing to the 1,080-cell holdout run."
         ),
+        allow_abbrev=False,  # see carelite.generate.runner.main
     )
     parser.add_argument(
         "--split",
@@ -481,18 +506,18 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - CLI wr
     parser.add_argument("--samples", type=int, default=1)
     parser.add_argument("--journal", type=Path, default=None)
     parser.add_argument("--dry-run", action="store_true", help="plan only, touch no model")
+    parser.add_argument(
+        HOLDOUT_OVERRIDE_FLAG,
+        action="store_true",
+        help=(
+            "assert that the OSF pre-registration has been submitted. Required to "
+            "smoke-test against the held-out split; see DECISIONS.md."
+        ),
+    )
     parser.add_argument("--with-judge", action="store_true", help="also run the LLM judge")
     args = parser.parse_args(argv)
 
     split = Split(args.split)
-    if split is Split.HOLDOUT:
-        print(
-            "WARNING: --split holdout generates held-out responses. DECISIONS.md gates "
-            "held-out generation on the OSF pre-registration being submitted.",
-            file=sys.stderr,
-            flush=True,
-        )
-
     total = args.scenarios * len(SPEC) * args.samples
 
     def progress(cell: Any, index: int, _total: int) -> None:
@@ -508,8 +533,12 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - CLI wr
             samples=args.samples,
             journal=args.journal,
             dry_run=args.dry_run,
+            preregistration_is_submitted=args.preregistration_is_submitted,
             on_cell=None if args.dry_run else progress,
         )
+    except HoldoutGateError as exc:
+        print(f"carelite.eval.smoke: {exc}", file=sys.stderr)
+        return 2
     except Exception as exc:
         # A break upstream of the first generation — no index, no model, no bank
         # — is exactly what this target exists to catch, so it is reported as a
