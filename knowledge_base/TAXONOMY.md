@@ -155,3 +155,42 @@ fetch pipeline should assert". It is correct to have deferred it. This lane will
 single-arm or pre-post → `emerging`. Study protocols with no results yet cap at `emerging`
 regardless of the design they propose. `validate.py` then checks each entry's claimed tier against
 its source paper's design, so an entry cannot claim `strong` off a protocol.
+
+That check **corrects the tier rather than discarding the entry**, and the distinction turned out to
+matter: 37 of the 95 entries that survive validation had an overclaimed tier, almost all of them
+`moderate` asserted off a cross-sectional survey. Rejecting them would have thrown away 37 grounded
+findings — correct span, correct theme, actionable takeaway — to punish a single field whose right
+value is already recorded in `papers.py`. A fabricated quote has no right answer to substitute; an
+overclaimed tier does. Both values survive on the entry, and the review digest prints the model's
+original claim beside the corrected one, so nothing is quietly laundered.
+
+## Extraction reliability: what the provenance check actually caught
+
+The validator's first run rejected 26 of 130 candidates for an unlocatable `verbatim_span`. Auditing
+all 26 against the source text showed they were three different failures wearing one label, and
+reporting them as a single "fabrication rate" would have been wrong in both directions:
+
+- **12 were a defect in the validator, not the model.** The PDF text extractor splits words across
+  column breaks (`show ing`, `collabora tive`, `sta tistically`) and joins them across line breaks
+  (`healthrelated`, `decisionmaking`, `inthe`). The model quoted the word as the printed page shows
+  it. `spans.py` now folds that, and the stored span is still the paper's own text, artefact and all.
+- **6 were the model altering characters that really are in the document** — dropping an inlined
+  superscript reference marker (1), or changing punctuation inside a statistics string (5), usually
+  because it had welded the next result onto the one it was quoting. These remain rejected. Folding
+  digits and punctuation would recover them and would also let the validator confuse `B = 0.374, β`
+  with `B = 0.374; β`, which is where a provenance check stops being one.
+- **8 were genuine misquotation**: substituted content words (`negative` → `even`, `languages` →
+  `tensions`, `clinical decisions` → `plans`), dropped content words (`empathic`, `when`), and two
+  cases of non-adjacent sentences welded together with invented connective text.
+
+So the honest figure for the write-up is **8 of 130 candidates (6.2%) genuinely fabricated a
+quotation**, with a further 6 (4.6%) misquoting a real sentence closely enough that the difference is
+arguably immaterial but not close enough to be waved through. The headline "20% fabrication rate"
+from the first run was over half normalisation defect.
+
+A second defect surfaced in the same audit. The actionability filter's verb whitelist was written as
+lemmas followed by `\w*`, so `use`, `provide`, `explore`, `acknowledge` and `validate` matched
+"used" and "provides" but never "using", "providing", "exploring" — the final `e` is dropped before
+`-ing`, which is exactly how an imperative takeaway is usually phrased. That silently rejected a
+large share of perfectly actionable entries. Fixed, with the attitude rejection ("be mindful of",
+"focus on building") made explicit so widening the whitelist could not let attitudes back in.

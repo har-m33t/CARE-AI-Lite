@@ -14,7 +14,7 @@ import hashlib
 import pytest
 
 from carelite.kb.papers import PaperText
-from carelite.kb.review import ReviewRow, parse_signoff, render_digest
+from carelite.kb.review import EntryAudit, ReviewRow, parse_signoff, render_digest
 
 SPAN = "patients receiving teach-back demonstrated significantly higher recall"
 PAPER_TEXT = (
@@ -46,6 +46,7 @@ def _row(
     theme: str = "teach_back",
     paper_ids: list[str] | None = None,
     verified: bool = False,
+    tier: str = "strong",
 ) -> ReviewRow:
     return ReviewRow(
         entry_id=entry_id,
@@ -53,7 +54,7 @@ def _row(
         finding="Teach-back improved recall across health literacy levels.",
         practical_takeaway="Ask the patient to restate the plan in their own words.",
         example_behavior="Inviting a restatement of the plan before closing.",
-        evidence_tier="strong",
+        evidence_tier=tier,
         action_type="generation",
         verbatim_span=SPAN,
         encounter_phase=["explanation"],
@@ -78,10 +79,33 @@ class TestRenderDigest:
         assert "**Finding.**" in out
         assert "**Takeaway.**" in out
 
-    def test_shows_the_study_design_beside_the_claimed_tier(self) -> None:
+    def test_shows_the_study_design_beside_the_stored_tier(self) -> None:
         out = render_digest([_row()])
         assert "systematic review" in out
-        assert "claimed tier **strong**" in out
+        assert "evidence tier **strong**" in out
+
+    def test_an_uncorrected_entry_shows_no_downgrade_note(self) -> None:
+        audit = {"kb-teach_back-0123456789": EntryAudit("strong", "strong", "exact")}
+        out = render_digest([_row()], audit=audit)
+        assert "corrected down" not in out
+
+    def test_a_corrected_tier_shows_the_models_original_claim(self) -> None:
+        """The reviewer must be able to see the overreach, not just the fix.
+
+        A digest that printed only the corrected tier would be hiding the most
+        interesting thing the pipeline did to the entry, and a reviewer could
+        not tell a well-judged correction from a wrong one.
+        """
+        audit = {"kb-teach_back-0123456789": EntryAudit("strong", "emerging", "exact")}
+        out = render_digest([_row(tier="emerging")], audit=audit)
+        assert "Evidence tier **emerging**" in out
+        assert "corrected down from the model's claim of *strong*" in out
+        assert "Evidence tier corrected on 1 of 1 entries" in out
+
+    def test_a_glued_span_match_is_flagged_for_the_reviewer(self) -> None:
+        audit = {"kb-teach_back-0123456789": EntryAudit("strong", "strong", "glued")}
+        out = render_digest([_row()], audit=audit)
+        assert "layout-glue normalisation" in out
 
     def test_unverified_entries_render_an_empty_checkbox(self) -> None:
         assert "- [ ] `kb-teach_back-0123456789`" in render_digest([_row()])

@@ -54,6 +54,7 @@ def _validated(entry: KBEntry | None = None) -> ValidatedEntry:
         span_end=10 + len(entry.verbatim_span),
         span_was_exact=True,
         paper_sha256=hashlib.sha256(b"x").hexdigest(),
+        claimed_tier=entry.evidence_tier,
     )
 
 
@@ -118,6 +119,62 @@ class TestAgainstPostgres:
                 """,
                 (PAPER_ID, PAPER_ID, "test paper"),
             )
+
+    def test_every_loaded_span_is_a_literal_slice_of_its_source_paper(self) -> None:
+        """The provenance guarantee, asserted against the database itself.
+
+        Everything else in this lane checks candidates on their way *in*. This
+        checks what is actually sitting in `kb_entry` right now, joined to
+        `kb_entry_source` and then to the paper text on disk, using plain
+        substring containment with no normalisation of any kind. That is the
+        claim the write-up makes about the knowledge base, so it is worth
+        testing in the form the claim is made: every stored span is text that
+        appears, character for character, in the paper the entry cites.
+
+        Skips rather than fails on an empty table, so it is a real assertion
+        after a load and not an obstacle before one.
+        """
+        from carelite.db import connect
+        from carelite.kb.papers import load_paper_texts
+
+        with connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT e.entry_id, e.verbatim_span,
+                       array_agg(s.paper_id ORDER BY s.paper_id) AS paper_ids
+                FROM kb_entry e
+                JOIN kb_entry_source s USING (entry_id)
+                GROUP BY e.entry_id
+                """
+            ).fetchall()
+
+        if not rows:
+            pytest.skip("kb_entry is empty; run `python -m carelite.kb.load` first")
+
+        papers = load_paper_texts()
+        unlocatable = [
+            r["entry_id"]
+            for r in rows
+            if not any(
+                r["verbatim_span"] in papers[pid].text for pid in r["paper_ids"] if pid in papers
+            )
+        ]
+        assert not unlocatable, (
+            f"{len(unlocatable)} of {len(rows)} loaded entries carry a span that is not "
+            f"a literal substring of any paper they cite: {unlocatable[:5]}"
+        )
+
+    def test_no_loaded_entry_is_missing_its_source_link(self) -> None:
+        """A `kb_entry` row with no `kb_entry_source` row satisfies the schema
+        perfectly well and is exactly the untraceable entry this lane exists to
+        prevent, so it is checked separately from the span itself."""
+        from carelite.db import connect
+
+        with connect() as conn:
+            n = conn.execute("SELECT count(*) AS n FROM kb_entry").fetchone()
+        if not n or n["n"] == 0:
+            pytest.skip("kb_entry is empty; run `python -m carelite.kb.load` first")
+        assert orphaned_entries() == []
 
     def test_entry_and_source_link_are_both_written(self) -> None:
         from carelite.db import connect

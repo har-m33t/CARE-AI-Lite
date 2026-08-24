@@ -229,7 +229,21 @@ class TestVocabulary:
 
 
 class TestTierAgainstDesign:
-    def test_protocol_cannot_support_a_strong_claim(self, papers: dict[str, PaperText]) -> None:
+    """An overclaimed tier is corrected, not fatal — but the claim is kept.
+
+    This is the one check in the validator that repairs rather than rejects,
+    and the reason is that it is the only one with a derivable right answer:
+    the study design is recorded, so the tier it supports is known. The
+    entry's span, theme, finding and takeaway are untouched by the model's
+    tier error, and discarding four correct fields to punish a fifth would
+    manufacture a knowledge-base shortfall out of a field the pipeline can fix.
+    What must not happen is the correction being silent, so both values
+    survive on the result and the review digest prints them together.
+    """
+
+    def test_a_strong_claim_off_a_protocol_is_downgraded_not_rejected(
+        self, papers: dict[str, PaperText]
+    ) -> None:
         candidate = _candidate(
             source_paper_ids=["protocol-paper"],
             evidence_tier="strong",
@@ -241,8 +255,31 @@ class TestTierAgainstDesign:
         )
         result = validate_candidate(candidate, papers=papers)
 
-        assert isinstance(result, RejectedCandidate)
-        assert any("claims tier 'strong'" in r for r in result.reasons)
+        assert isinstance(result, ValidatedEntry)
+        assert result.entry.evidence_tier is EvidenceTier.EMERGING
+        assert result.claimed_tier is EvidenceTier.STRONG
+        assert result.design_ceiling is EvidenceTier.EMERGING
+        assert result.tier_downgraded is True
+
+    def test_a_tier_within_the_ceiling_is_left_alone(self, papers: dict[str, PaperText]) -> None:
+        result = validate_candidate(_candidate(evidence_tier="moderate"), papers=papers)
+        assert isinstance(result, ValidatedEntry)
+        assert result.tier_downgraded is False
+        assert result.claimed_tier is result.entry.evidence_tier
+
+    def test_the_report_counts_every_downgrade(self, papers: dict[str, PaperText]) -> None:
+        overclaimed = _candidate(
+            source_paper_ids=["protocol-paper"],
+            evidence_tier="strong",
+            theme="activation_sdm",
+            verbatim_span=(
+                "The primary outcome will be medication adherence at twelve months, "
+                "measured by pill count and self-report at each scheduled study visit"
+            ),
+        )
+        report = validate_candidates([overclaimed], papers=papers)
+        assert len(report.downgraded) == 1
+        assert report.downgrade_counts() == {"strong -> emerging": 1}
 
     def test_protocol_supports_an_emerging_claim(self, papers: dict[str, PaperText]) -> None:
         candidate = _candidate(

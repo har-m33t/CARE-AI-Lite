@@ -107,6 +107,124 @@ class TestLocateSpan:
             locate_span("in their own words", self.DOC, normalized_document=norm)
 
 
+class TestLayoutGlueMatching:
+    """The second-pass match, and the near-misses it deliberately does not reach.
+
+    Every case here is drawn from the real corpus. Measuring the 26 spans the
+    validator could not locate showed they were three different things wearing
+    one label, and only one of the three is the validator's fault:
+
+    - 12 were a word the PDF extractor split or joined at a column break. The
+      model quoted the word as the printed page shows it. That is a rendering
+      difference and the glue pass now reaches it.
+    - 6 were the model altering characters that really are in the text — an
+      inline superscript reference marker, or punctuation inside a statistics
+      string. Reaching those would mean folding digits and punctuation, which
+      is where a provenance check turns into similarity scoring.
+    - 8 were genuine misquotation: substituted words, dropped content words,
+      and non-adjacent sentences welded together.
+
+    The tests below hold that line from both sides.
+    """
+
+    # Real extraction artefacts: the page reads one word, the text file does not.
+    SPLIT = (
+        "By investing time and effort in show ing presence and empathy, whether at the beginning"
+    )
+    JOINED = (
+        "patients tend to prefer an active collaborative decisionmaking role and greater levels"
+    )
+    LOST_SPACE = "reflected in the perception of those inthe sdm group that they hada greater role"
+
+    def test_matches_a_word_the_extractor_split_across_a_column_break(self) -> None:
+        match = locate_span(
+            "By investing time and effort in showing presence and empathy, whether at", self.SPLIT
+        )
+        assert match is not None
+        assert match.via == "glued"
+        # What is stored is still the paper's own text, artefact and all.
+        assert "show ing" in match.source_text
+        assert self.SPLIT[match.start : match.end] == match.source_text
+
+    def test_matches_a_hyphen_the_extractor_dropped_at_a_line_break(self) -> None:
+        match = locate_span(
+            "patients tend to prefer an active collaborative decision-making role and greater",
+            self.JOINED,
+        )
+        assert match is not None
+        assert match.via == "glued"
+
+    def test_matches_a_space_the_extractor_dropped(self) -> None:
+        match = locate_span(
+            "reflected in the perception of those in the SDM group that they had a greater role",
+            self.LOST_SPACE,
+        )
+        assert match is not None
+        assert match.via == "glued"
+
+    def test_a_strict_match_never_reports_itself_as_glued(self) -> None:
+        doc = "Teach-back involves asking patients to explain in their own words."
+        match = locate_span("Teach-back involves asking patients to explain", doc)
+        assert match is not None
+        assert match.via == "exact"
+
+    # --- the near-misses the glue pass must NOT reach ----------------------
+
+    def test_does_not_reach_a_dropped_reference_marker(self) -> None:
+        # The source carries an inlined superscript citation; the model dropped it.
+        doc = "We have shown a relationship between trust and patient-centered communication17;"
+        assert (
+            locate_span(
+                "We have shown a relationship between trust and patient-centered communication;",
+                doc,
+            )
+            is None
+        )
+
+    def test_does_not_reach_altered_punctuation_in_a_statistics_string(self) -> None:
+        # 'B = 0.374; β' and 'B = 0.374, β' are different readings of a result.
+        doc = "significant in both groups (B = 0.861, β = 0.720; B = 0.374; β = 0.562; p < .001)."
+        assert (
+            locate_span(
+                "significant in both groups (B = 0.861, β = 0.720; B = 0.374, β = 0.562; p < .001).",
+                doc,
+            )
+            is None
+        )
+
+    def test_does_not_reach_a_substituted_content_word(self) -> None:
+        doc = "clinicians should be mindful of language barriers, prior negative experiences of racism"
+        assert (
+            locate_span(
+                "clinicians should be mindful of language barriers, prior even experiences of racism",
+                doc,
+            )
+            is None
+        )
+
+    def test_does_not_reach_a_dropped_content_word(self) -> None:
+        doc = "Advanced empathic communication skills training did not extensively cover complex cases"
+        assert (
+            locate_span(
+                "Advanced communication skills training did not extensively cover complex cases",
+                doc,
+            )
+            is None
+        )
+
+    def test_glue_does_not_weld_across_intervening_text(self) -> None:
+        # Deleting spaces must not let two separated fragments join up.
+        doc = "the plan was agreed. Several paragraphs later, the patient was satisfied."
+        assert locate_span("the plan was agreed the patient was satisfied here now", doc) is None
+
+    def test_glued_match_must_begin_on_a_word_boundary(self) -> None:
+        # 'therapist' contains 'the rapist' once spaces are deleted; a glued
+        # match starting partway through a word is never returned.
+        doc = "the therapist explained the plan"
+        match = locate_span("he rapist explained", doc)
+        assert match is None
+
+
 class TestSurroundingContext:
     def test_returns_text_either_side_snapped_to_word_boundaries(self) -> None:
         doc = "alpha beta gamma delta epsilon zeta eta theta"

@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import unicodedata
 from dataclasses import dataclass
+from functools import cached_property
 
 #: Glyph folds NFKC does not perform. Quotation marks and dashes are the two
 #: things a PDF extractor and a language model most reliably disagree about,
@@ -67,6 +68,17 @@ _DROPPED = {
     "﻿",  # BOM / zero-width nbsp
 }
 
+#: Deleted in the *glued* form only — the second-pass match described on
+#: `locate_span`. A space and a hyphen are the two characters a PDF text
+#: extractor inserts and deletes on its own initiative, at column and line
+#: boundaries, with no authority from the document: the same paper yields
+#: "show ing", "prefer ences", "collabora tive" and "sta tistically" where the
+#: page reads one word, and "healthrelated", "decisionmaking" and "inthe"
+#: where the page reads two or reads a hyphen. Neither character carries a
+#: claim, and deleting both from *each side of the comparison alike* cannot
+#: make one finding match another.
+_GLUE_TABLE = str.maketrans("", "", " -")
+
 
 def _fold_char(ch: str) -> str:
     """One character -> its normalised form, which may be zero or many characters.
@@ -85,6 +97,21 @@ def _fold_char(ch: str) -> str:
 
 
 @dataclass(frozen=True)
+class GluedText:
+    """A `NormalizedText` with every space and hyphen deleted.
+
+    Three parallel sequences: the glued characters, where each came from in
+    the *original* source, and where each came from in the *normalised* form.
+    The second is what recovers a real span; the third is what lets
+    `locate_span` insist a glued match still begins on a word boundary.
+    """
+
+    text: str
+    source_offsets: tuple[int, ...]
+    norm_offsets: tuple[int, ...]
+
+
+@dataclass(frozen=True)
 class NormalizedText:
     """Normalised text plus a map back to where each character came from.
 
@@ -96,6 +123,29 @@ class NormalizedText:
     text: str
     offsets: tuple[int, ...]
     source: str
+
+    @cached_property
+    def glued(self) -> GluedText:
+        """The space- and hyphen-free form, computed once per document.
+
+        Cached because the validator compares every candidate from a paper
+        against the same paper, and rebuilding a 100 KB glued form per
+        candidate would dominate validation runtime.
+        """
+        buf: list[str] = []
+        source_offsets: list[int] = []
+        norm_offsets: list[int] = []
+        for i, ch in enumerate(self.text):
+            if ch in " -":
+                continue
+            buf.append(ch)
+            source_offsets.append(self.offsets[i])
+            norm_offsets.append(i)
+        return GluedText(
+            text="".join(buf),
+            source_offsets=tuple(source_offsets),
+            norm_offsets=tuple(norm_offsets),
+        )
 
     def source_slice(self, start: int, end: int) -> tuple[int, int]:
         """Normalised `[start, end)` -> original `[a, b)`.
@@ -179,15 +229,23 @@ class SpanMatch:
     """Where a span was found, and what the source actually says there.
 
     `source_text` is the authoritative form: an exact substring of the paper.
-    `exact` records whether the claimed span already matched the source
-    byte-for-byte, or only after normalisation — a distinction the review
-    digest surfaces so a human can see how much cleanup was applied.
+    `via` records how much cleanup the match needed, and travels with the
+    entry all the way to the review digest so a human can see it:
+
+    - ``"exact"``       the claimed span is already a literal substring.
+    - ``"normalized"``  it matched after glyph, whitespace and case folding.
+    - ``"glued"``       it matched only after spaces and hyphens were deleted
+                        from both sides, meaning the extracted text of the
+                        paper carries a word split or joined by the PDF's
+                        column layout. The rarest and loosest of the three,
+                        and the one worth a reviewer's eye.
     """
 
     start: int
     end: int
     source_text: str
     exact: bool
+    via: str = "normalized"
 
     @property
     def length(self) -> int:
@@ -209,6 +267,31 @@ def locate_span(
     Returning `None` rather than raising is deliberate — a missing span is an
     expected outcome of LLM-assisted extraction, not an exceptional one, and
     the validator turns it into a rejection with a reason.
+
+    Matching runs in two passes, and the order matters. The first is the strict
+    normalised comparison. The second deletes every space and hyphen from both
+    sides and tries again, because measurement over this corpus showed that
+    the single largest class of "missing" span was not a fabrication at all: it
+    was a word the PDF extractor had split across a column break ("show ing",
+    "collabora tive", "sta tistically") or joined across a line break
+    ("healthrelated", "decisionmaking", "inthe"), quoted back by the model in
+    the form a human reading the page would see. Twelve of twenty-six
+    unlocatable spans were that, and rejecting them was the validator being
+    wrong, not the extractor being dishonest.
+
+    The second pass is deliberately the *only* extra latitude given. Two other
+    near-miss classes were measured and are still rejected: a model dropping
+    an inline superscript reference marker ("communication17" -> "communication",
+    one span), and a model altering punctuation inside a statistics string
+    ("p < 0.001)," -> "p < 0.001,", five spans) — the latter usually because it
+    had welded the next result onto the end of the one it was quoting. Folding
+    digits or punctuation would recover those, and would also let a validator
+    confuse `B = 0.374, β` with `B = 0.374; β`. That is the point at which
+    provenance becomes similarity scoring, so the line is drawn here.
+
+    A glued match must still begin on a word boundary. Without that guard a
+    needle could match starting mid-word, and while a twelve-word span makes
+    that vanishingly unlikely, the guard is free.
     """
     needle = normalized_text(span)
     if not needle:
@@ -223,16 +306,43 @@ def locate_span(
         )
 
     idx = haystack.text.find(needle)
-    if idx < 0:
+    if idx >= 0:
+        start, end = haystack.source_slice(idx, idx + len(needle))
+        return SpanMatch(
+            start=start,
+            end=end,
+            source_text=document[start:end],
+            exact=span in document,
+            via="exact" if span in document else "normalized",
+        )
+
+    return _locate_glued(needle, document, haystack)
+
+
+def _locate_glued(needle: str, document: str, haystack: NormalizedText) -> SpanMatch | None:
+    """Second-pass match with spaces and hyphens deleted from both sides."""
+    glued = haystack.glued
+    gneedle = needle.translate(_GLUE_TABLE)
+    if not gneedle:
         return None
 
-    start, end = haystack.source_slice(idx, idx + len(needle))
-    return SpanMatch(
-        start=start,
-        end=end,
-        source_text=document[start:end],
-        exact=span in document,
-    )
+    gi = glued.text.find(gneedle)
+    while gi >= 0:
+        # Word-boundary guard: the glued match must start where a normalised
+        # word starts, never partway through one.
+        norm_i = glued.norm_offsets[gi]
+        if norm_i == 0 or haystack.text[norm_i - 1] == " ":
+            start = glued.source_offsets[gi]
+            end = glued.source_offsets[gi + len(gneedle) - 1] + 1
+            return SpanMatch(
+                start=start,
+                end=end,
+                source_text=document[start:end],
+                exact=False,
+                via="glued",
+            )
+        gi = glued.text.find(gneedle, gi + 1)
+    return None
 
 
 def surrounding_context(
@@ -255,6 +365,7 @@ def surrounding_context(
 
 
 __all__ = [
+    "GluedText",
     "NormalizedText",
     "SpanMatch",
     "locate_span",

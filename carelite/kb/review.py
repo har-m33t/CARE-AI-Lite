@@ -30,7 +30,7 @@ from __future__ import annotations
 
 import datetime as dt
 import re
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -58,6 +58,66 @@ ORDER BY e.theme, e.entry_id
 _MARK_VERIFIED_SQL = """
 UPDATE kb_entry SET human_verified = %(verified)s WHERE entry_id = ANY(%(entry_ids)s)
 """
+
+
+@dataclass(frozen=True)
+class EntryAudit:
+    """What the pipeline changed about an entry, for the reviewer to see.
+
+    Two of the validator's behaviours alter or stretch what the model produced,
+    and a review gate that hid them would be a rubber stamp:
+
+    - `claimed_tier` is the evidence tier the extraction model asserted. When
+      it differs from the stored tier, the validator lowered it to what the
+      source study design supports. The reviewer should see the overreach, not
+      just the corrected value.
+    - `span_via` is how much normalisation locating the quote required.
+      ``"glued"`` means it matched only after spaces and hyphens were deleted
+      from both sides — almost always a word the PDF extractor split across a
+      column break, but the loosest match the validator makes and therefore
+      the one most worth a human eye.
+
+    Neither is stored in `kb_entry`; the schema is frozen and this lane does
+    not amend it. Both are re-derived from the extraction cache at digest time,
+    which keeps one source of truth instead of a sidecar file that can drift.
+    """
+
+    claimed_tier: str
+    stored_tier: str
+    span_via: str
+
+    @property
+    def tier_downgraded(self) -> bool:
+        return self.claimed_tier != self.stored_tier
+
+
+def build_audit() -> dict[str, EntryAudit]:
+    """Re-validate the extraction cache to recover what the pipeline corrected.
+
+    Returns an empty map when the cache is unavailable — a machine that has the
+    database but not the extraction cache can still produce a digest, it just
+    cannot show the model's original claim, and `render_digest` says so rather
+    than implying nothing was corrected.
+    """
+    try:
+        from carelite.kb.extract import CACHE_PATH, read_cache
+        from carelite.kb.validate import validate_candidates
+
+        candidates = [c for r in read_cache(CACHE_PATH) for c in r.candidates]
+        if not candidates:
+            return {}
+        report = validate_candidates(candidates)
+    except Exception:  # no cache, no papers on disk, no corpus extraction
+        return {}
+
+    return {
+        e.entry_id: EntryAudit(
+            claimed_tier=e.claimed_tier.value,
+            stored_tier=e.entry.evidence_tier.value,
+            span_via=e.span_match_via,
+        )
+        for e in report.accepted
+    }
 
 
 @dataclass
@@ -134,11 +194,19 @@ def _context_block(row: ReviewRow) -> str:
     return "\n".join(f"> {line}" for line in (body,))
 
 
-def render_digest(rows: Sequence[ReviewRow], *, generated_at: dt.datetime | None = None) -> str:
+def render_digest(
+    rows: Sequence[ReviewRow],
+    *,
+    generated_at: dt.datetime | None = None,
+    audit: Mapping[str, EntryAudit] | None = None,
+) -> str:
     """Render the full review digest as Markdown."""
     stamp = (generated_at or dt.datetime.now(dt.UTC)).strftime("%Y-%m-%d %H:%M UTC")
+    audit = {} if audit is None else audit
     total = len(rows)
     verified = sum(1 for r in rows if r.human_verified)
+    downgraded = sum(1 for r in rows if (a := audit.get(r.entry_id)) and a.tier_downgraded)
+    glued = sum(1 for r in rows if (a := audit.get(r.entry_id)) and a.span_via == "glued")
 
     by_theme: dict[str, list[ReviewRow]] = {}
     for row in rows:
@@ -154,14 +222,38 @@ def render_digest(rows: Sequence[ReviewRow], *, generated_at: dt.datetime | None
         f"Generated {stamp}. {total} entr(ies) loaded, {verified} already signed off.",
         "",
         "Every entry below passed automated provenance validation: its quoted span was",
-        "located, character for character after whitespace and ligature normalisation, in",
-        "the extracted text of the paper it cites. That is already proven and is not what",
-        "you are being asked to check.",
+        "located in the extracted text of the paper it cites, and what is stored is the",
+        "paper's own wording rather than the model's rendering of it — the span you see",
+        "marked in the context block is a literal slice of the source document. Matching",
+        "folds only rendering differences: ligatures, quotation glyphs, dashes, hyphenated",
+        "line breaks, whitespace, case, and (where flagged) the spaces and hyphens a PDF",
+        "extractor invents at a column break. That much is already proven mechanically and",
+        "is not what you are being asked to check.",
         "",
         "**What to check, per entry:** does the *finding* follow from the quoted sentence in",
         "the context shown, or has a true sentence been attached to a claim it does not",
         "support? Is the *takeaway* something a clinician could actually do mid-encounter?",
         "Is the *evidence tier* honest about the study design named beside it?",
+        "",
+        "## What the pipeline changed, and why you are being told",
+        "",
+        f"**Evidence tier corrected on {downgraded} of {total} entries.** The extraction model",
+        "judges a tier from the passage in front of it, which routinely overshoots: it sees a",
+        "confident result and calls it `strong` without knowing the paper is a survey or a",
+        "study protocol. The validator lowers the tier to what the recorded study design",
+        "supports rather than discarding the entry, because the span, theme, finding and",
+        "takeaway are untouched by a tier error and there is a derivable right answer to",
+        "substitute — unlike a fabricated quote, where there is none. Every corrected entry",
+        "below prints the model's original claim next to the stored value, so the overreach",
+        "is visible rather than laundered. **If you think a correction went the wrong way,",
+        "that is a review finding — leave the entry unticked and say so.**",
+        "",
+        f"**{glued} entr(ies) matched only after layout-glue normalisation.** Their quote was",
+        "located only once spaces and hyphens were deleted from both sides, which almost",
+        "always means the PDF text extractor split a word across a column break (`show ing`)",
+        "or joined one across a line break (`healthrelated`). These are marked. The stored",
+        "span is still the paper's own text, artefact and all — but they are the loosest",
+        "matches the validator makes, so they are worth your eye first.",
         "",
         "Tick `- [x]` beside each entry you accept, save this file, then run:",
         "",
@@ -199,12 +291,25 @@ def render_digest(rows: Sequence[ReviewRow], *, generated_at: dt.datetime | None
             design = meta.design if meta else "design not recorded"
             mark = "x" if row.human_verified else " "
             phases = ", ".join(row.encounter_phase) or "-"
+            entry_audit = audit.get(row.entry_id)
+
+            if entry_audit and entry_audit.tier_downgraded:
+                tier_line = (
+                    f"  `{row.primary_paper}` — {design}  \n"
+                    f"  Evidence tier **{row.evidence_tier}** "
+                    f"— corrected down from the model's claim of "
+                    f"*{entry_audit.claimed_tier}*, which this design does not support"
+                )
+            else:
+                tier_line = (
+                    f"  `{row.primary_paper}` — {design} — evidence tier **{row.evidence_tier}**"
+                )
 
             out += [
                 f"- [{mark}] `{row.entry_id}`",
                 "",
                 f"  **Source.** {citation}  ",
-                f"  `{row.primary_paper}` — {design} — claimed tier **{row.evidence_tier}**",
+                tier_line,
                 "",
                 f"  **Finding.** {row.finding}",
                 "",
@@ -220,6 +325,13 @@ def render_digest(rows: Sequence[ReviewRow], *, generated_at: dt.datetime | None
                 _context_block(row),
                 "",
             ]
+            if entry_audit and entry_audit.span_via == "glued":
+                out += [
+                    "  > _Located only after layout-glue normalisation: the extracted text "
+                    "splits or joins a word that the printed page does not. Check the marked "
+                    "quote reads as a sentence._",
+                    "",
+                ]
 
     return "\n".join(out).rstrip() + "\n"
 
@@ -229,7 +341,7 @@ def write_digest(path: Path | str = DIGEST_PATH, rows: Sequence[ReviewRow] | Non
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     rows = list(rows) if rows is not None else fetch_review_rows()
-    path.write_text(render_digest(rows), encoding="utf-8")
+    path.write_text(render_digest(rows, audit=build_audit()), encoding="utf-8")
     return path
 
 
@@ -311,8 +423,10 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 __all__ = [
     "DIGEST_PATH",
+    "EntryAudit",
     "ReviewRow",
     "apply_signoff",
+    "build_audit",
     "fetch_review_rows",
     "parse_signoff",
     "record_signoff",

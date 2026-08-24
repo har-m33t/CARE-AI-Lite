@@ -107,6 +107,80 @@ _THEME_VOCABULARY: tuple[str, ...] = (
     "patient centred",
 )
 
+#: Theme-specific vocabularies for a **targeted second pass**.
+#:
+#: The first pass ranked windows by general communication vocabulary, and the
+#: result was lopsided: `activation_sdm` drew 31 accepted entries while
+#: `equity` drew 3 and `trust_continuity` 6. That is not what the corpus holds
+#: — the equity anchor (Roberts et al. 2021, a meta-analysis of socioeconomic
+#: and racial differences in clinician empathy) contributed one entry, because
+#: the three densest windows by *general* vocabulary were its methods and
+#: search strategy rather than its findings.
+#:
+#: So the fix is applied to **window selection only**. `SYSTEM_TEMPLATE` is not
+#: changed and no theme is named in the prompt, because a prompt told to look
+#: for equity findings will find equity findings whether or not the passage
+#: contains any, and a knowledge base padded that way is worse than a thin one.
+#: Re-ranking which pages get read is a sampling correction; telling the model
+#: what to conclude would be a bias. Only the first is done here.
+FOCUS_VOCABULARY: dict[str, tuple[str, ...]] = {
+    "trust_continuity": (
+        "trust",
+        "trustworth",
+        "mistrust",
+        "distrust",
+        "continuity",
+        "ongoing relationship",
+        "therapeutic alliance",
+        "rapport",
+        "longitudinal",
+        "same physician",
+        "same provider",
+        "usual provider",
+        "over time",
+        "across visits",
+        "follow-up visit",
+        "honest",
+        "transparen",
+        "uncertainty",
+        "disclos",
+        "consisten",
+        "confidence in",
+        "credibilit",
+    ),
+    "equity": (
+        "disparit",
+        "inequit",
+        "equity",
+        "equitab",
+        "socioeconomic",
+        "social class",
+        "deprivation",
+        "income",
+        "insurance status",
+        "race",
+        "racial",
+        "ethnic",
+        "minorit",
+        "black patients",
+        "hispanic",
+        "latino",
+        "limited english",
+        "english proficien",
+        "interpreter",
+        "language barrier",
+        "immigrant",
+        "marginali",
+        "underserved",
+        "vulnerable population",
+        "bias",
+        "discriminat",
+        "cultural",
+        "health literacy",
+    ),
+}
+
+
 SYSTEM_TEMPLATE = """You extract structured knowledge-base entries from peer-reviewed research on clinician-patient communication.
 
 You will be given one passage from one paper. Return entries only for findings the passage actually states. Fewer, well-supported entries are far better than more entries; returning an empty list is a correct and expected answer for a passage that reports methods, funding, statistics, or curriculum logistics rather than a communication finding.
@@ -287,19 +361,39 @@ def iter_windows(
         start = max(end - overlap, start + 1)
 
 
-def _density(text: str) -> int:
+def _density(text: str, vocabulary: Sequence[str] = _THEME_VOCABULARY) -> int:
     low = text.lower()
-    return sum(low.count(term) for term in _THEME_VOCABULARY)
+    return sum(low.count(term) for term in vocabulary)
 
 
-def select_windows(text: str, *, limit: int = MAX_WINDOWS_PER_PAPER) -> list[Window]:
+def select_windows(
+    text: str,
+    *,
+    limit: int = MAX_WINDOWS_PER_PAPER,
+    vocabulary: Sequence[str] = _THEME_VOCABULARY,
+) -> list[Window]:
     """The `limit` most theme-dense windows, returned in document order.
 
     Document order rather than density order so a cached run's window indices
     stay stable and readable; density only decides *which* windows are spent
     inference on.
+
+    `vocabulary` swaps the ranking for a targeted pass (see `FOCUS_VOCABULARY`).
+    The window *indices* come from `iter_windows` and are independent of the
+    ranking, so a focused run reuses any window the general run already did
+    and only spends inference on the ones it did not — the cache key is the
+    window index, not its rank.
     """
-    windows = list(iter_windows(text))
+    windows = [
+        Window(
+            index=w.index,
+            start=w.start,
+            end=w.end,
+            text=w.text,
+            density=_density(w.text, vocabulary),
+        )
+        for w in iter_windows(text)
+    ]
     ranked = sorted(windows, key=lambda w: (-w.density, w.index))[:limit]
     return sorted((w for w in ranked if w.density > 0), key=lambda w: w.index)
 
@@ -504,6 +598,7 @@ def extract_corpus_entries(
     cache_path: Path | str = CACHE_PATH,
     client: Any | None = None,
     model: str | None = None,
+    focus: str | None = None,
     progress: bool = False,
 ) -> ExtractionRun:
     """Extract candidates across the corpus, reusing anything already cached.
@@ -517,6 +612,10 @@ def extract_corpus_entries(
     papers = load_paper_texts()
     selected = list(paper_ids) if paper_ids is not None else sorted(papers)
 
+    if focus is not None and focus not in FOCUS_VOCABULARY:
+        raise ValueError(f"unknown focus {focus!r}; expected one of {sorted(FOCUS_VOCABULARY)}")
+    vocabulary = FOCUS_VOCABULARY[focus] if focus else _THEME_VOCABULARY
+
     cached = {r.cache_key: r for r in read_cache(cache_path)}
     run = ExtractionRun()
 
@@ -526,7 +625,7 @@ def extract_corpus_entries(
             run.errors.append(f"{paper_id}: no extracted text on disk (skipped)")
             continue
 
-        for window in select_windows(paper.text, limit=max_windows):
+        for window in select_windows(paper.text, limit=max_windows, vocabulary=vocabulary):
             key = _cache_key(paper_id, window.index, paper.text_sha256, PROMPT_VERSION, model)
             hit = cached.get(key)
             if hit is not None and hit.error is None:
@@ -553,12 +652,19 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--paper", action="append", dest="papers", help="restrict to this paper_id")
     ap.add_argument("--max-windows", type=int, default=MAX_WINDOWS_PER_PAPER)
     ap.add_argument("--cache", default=str(CACHE_PATH))
+    ap.add_argument(
+        "--focus",
+        choices=sorted(FOCUS_VOCABULARY),
+        help="rank windows by this theme's vocabulary instead of the general one "
+        "(the prompt is unchanged; only which pages get read)",
+    )
     args = ap.parse_args(argv)
 
     run = extract_corpus_entries(
         paper_ids=args.papers,
         max_windows=args.max_windows,
         cache_path=args.cache,
+        focus=args.focus,
         progress=True,
     )
     print(

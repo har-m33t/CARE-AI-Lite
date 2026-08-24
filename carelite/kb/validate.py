@@ -30,6 +30,18 @@ Four further checks, in the order they run:
 3. **Tier against design** — an entry cannot claim `strong` off a study
    protocol. The ceiling is read off the `PaperText` objects being validated
    against, whose `PaperMeta` records the design and derives the tier from it.
+   Unlike every other check here, this one **corrects rather than rejects**,
+   and the reasoning is worth stating because the first version of this module
+   got it wrong. A missing span has no right answer to substitute — the paper
+   either says the thing or it does not. An overclaimed tier does: the study
+   design is recorded, the ceiling it supports is derivable, and the entry's
+   span, theme, finding and takeaway are all untouched by the error. Killing
+   the entry would discard four correct fields to punish a fifth, and would
+   then report a knowledge-base shortfall that the pipeline had manufactured.
+   So the tier is lowered to what the design supports and **both values are
+   kept** — `ValidatedEntry.claimed_tier` holds what the model asserted, the
+   stored entry holds the corrected tier, and the review digest prints them
+   side by side. A reviewer can see the model overreach; nothing is laundered.
 4. **Actionability** — the takeaway has to be something a clinician can do
    during an encounter. This is where the corpus's skew toward
    training-intervention studies gets filtered: "clinicians should receive
@@ -142,21 +154,61 @@ _NON_ACTIONABLE_SUBJECTS = re.compile(
     re.IGNORECASE,
 )
 
+#: Phrasings whose verb is a state of mind rather than a move. These are the
+#: takeaways the filter most needs to catch, because they read like advice and
+#: cannot be acted on: "be mindful of the empathy gap" tells a clinician to
+#: hold an idea, not to do anything, and an entry built on one would reach
+#: generation as an instruction no output could satisfy. Checked before the
+#: verb whitelist, and independently of it, so that widening the whitelist
+#: cannot quietly let an attitude back in.
+_ATTITUDE_NOT_ACTION = re.compile(
+    r"\b("
+    r"be mindful|be aware|be conscious|be cognizant|bear in mind|keep in mind|"
+    r"should consider|consider the|remember that|realis|realiz|"
+    r"focus on (building|developing|maintaining|being|having|understanding|engaging|"
+    r"establishing|creating|improving)|"
+    r"strive to|aim to|try to|make an effort|"
+    r"(understand|recogni[sz]e|appreciate) (the importance|that .{0,40} (is|are) important)"
+    r")\b",
+    re.IGNORECASE,
+)
+
 #: At least one of these has to appear, so the takeaway names a communicative
 #: move rather than an attitude. This is a coarse filter and is meant to be:
 #: it rejects "be more empathetic" while accepting anything that says what to
 #: do, and the survivors still go to a human at the review gate.
+#:
+#: Every alternative here is a **stem**, not a lemma, because the pattern
+#: appends `\w*`. That distinction was a live bug: written as lemmas, `use`,
+#: `provide`, `explore`, `acknowledge` and `validate` matched "used" and
+#: "provides" but never "using", "providing", "exploring", "acknowledging" or
+#: "validating" — the final `e` is dropped before `-ing`, so `\w*` had nothing
+#: to match against. The `-ing` form is exactly how an imperative takeaway is
+#: usually phrased, so the whitelist was rejecting a large share of perfectly
+#: actionable entries for a reason that had nothing to do with them.
 _ACTION_VERBS = re.compile(
     r"\b("
-    r"ask|invite|elicit|explore|check|confirm|verify|asses|assess|"
-    r"name|acknowledge|reflect|validate|normali[sz]e|"
-    r"pause|wait|allow|hold|respond|"
-    r"explain|re-?explain|rephras|restate|summari[sz]e|repeat|"
-    r"avoid|refrain|stop|replace|reduce|limit|simplif|"
-    r"offer|give|provide|share|disclose|signal|state|"
-    r"involve|negotiat|agree|align|tailor|adapt|adjust|match|"
-    r"screen|flag|note|record|revisit|follow up|schedul|"
-    r"use|apply|prompt|encourag|support"
+    # eliciting and checking
+    r"ask|invit|elicit|explor|check|confirm|verif|assess|screen|probe|"
+    # naming and responding to what was said
+    r"nam(e|ing)|acknowledg|reflect|validat|normali[sz]|empathi[sz]|listen|"
+    r"identif|notic|observ|monitor|detect|flag|"
+    # holding the floor
+    r"paus|wait|allow|hold|respond|react|"
+    # making the message land
+    r"explain|re-?explain|rephras|restat|summari[sz]|repeat|clarif|teach|"
+    r"describ|illustrat|demonstrat|translat|frame|fram(e|ing)|present|"
+    # taking things out
+    r"avoid|refrain|stop|replac|reduc|limit|simplif|shorten|"
+    # putting things in
+    r"offer|giv(e|ing)|provid|shar(e|ing)|disclos|signal|state|brief|introduc|greet|"
+    # deciding together
+    r"involv|negotiat|agree|align|tailor|adapt|adjust|match|incorporat|"
+    r"establish|collaborat|invit|elicit|"
+    # carrying it forward
+    r"note|record|revisit|follow up|schedul|arrang|request|document|"
+    # general
+    r"us(e|ing)|appl(y|ying)|prompt|encourag|support|address|discuss|pivot"
     r")\w*\b",
     re.IGNORECASE,
 )
@@ -177,6 +229,12 @@ def takeaway_is_actionable(takeaway: str) -> tuple[bool, str | None]:
             False,
             "takeaway is about training, curricula, or institutions, not about what to do in an encounter",
         )
+    if _ATTITUDE_NOT_ACTION.search(text):
+        return (
+            False,
+            "takeaway asks the clinician to hold an attitude or bear something in mind, "
+            "not to make a move a listener could observe",
+        )
     if not _ACTION_VERBS.search(text):
         return False, "takeaway names no communicative action a clinician can take"
     return True, None
@@ -189,7 +247,13 @@ def takeaway_is_actionable(takeaway: str) -> tuple[bool, str | None]:
 
 @dataclass(frozen=True)
 class ValidatedEntry:
-    """A `KBEntry` that survived, plus the proof it survived on."""
+    """A `KBEntry` that survived, plus the proof it survived on.
+
+    `claimed_tier` is what the extraction model asserted; `entry.evidence_tier`
+    is what the source design actually supports. They differ exactly when the
+    model overclaimed, and keeping both is what makes the correction auditable
+    instead of silent.
+    """
 
     entry: KBEntry
     paper_id: str
@@ -197,10 +261,17 @@ class ValidatedEntry:
     span_end: int
     span_was_exact: bool
     paper_sha256: str
+    claimed_tier: EvidenceTier
+    design_ceiling: EvidenceTier | None = None
+    span_match_via: str = "normalized"
 
     @property
     def entry_id(self) -> str:
         return self.entry.entry_id
+
+    @property
+    def tier_downgraded(self) -> bool:
+        return self.claimed_tier is not self.entry.evidence_tier
 
 
 @dataclass(frozen=True)
@@ -239,6 +310,25 @@ class ValidationReport:
             counts[entry.entry.theme.value] = counts.get(entry.entry.theme.value, 0) + 1
         return dict(sorted(counts.items(), key=lambda kv: -kv[1]))
 
+    @property
+    def downgraded(self) -> list[ValidatedEntry]:
+        """Accepted entries whose claimed tier was lowered to what the design supports."""
+        return [e for e in self.accepted if e.tier_downgraded]
+
+    def downgrade_counts(self) -> dict[str, int]:
+        counts: dict[str, int] = {}
+        for e in self.downgraded:
+            key = f"{e.claimed_tier.value} -> {e.entry.evidence_tier.value}"
+            counts[key] = counts.get(key, 0) + 1
+        return dict(sorted(counts.items(), key=lambda kv: -kv[1]))
+
+    def span_match_counts(self) -> dict[str, int]:
+        """How much normalisation each accepted span needed to be located."""
+        counts: dict[str, int] = {}
+        for e in self.accepted:
+            counts[e.span_match_via] = counts.get(e.span_match_via, 0) + 1
+        return dict(sorted(counts.items(), key=lambda kv: -kv[1]))
+
 
 _REASON_BUCKETS: tuple[tuple[str, str], ...] = (
     ("not found in", "fabricated span (not in source paper)"),
@@ -246,7 +336,7 @@ _REASON_BUCKETS: tuple[tuple[str, str], ...] = (
     ("unknown theme", "unparseable theme"),
     ("unknown evidence tier", "unparseable evidence tier"),
     ("unknown action type", "unparseable action type"),
-    ("claims tier", "tier overclaimed against study design"),
+    ("takeaway asks the clinician to hold an attitude", "takeaway is an attitude, not an action"),
     ("takeaway", "takeaway not actionable"),
     ("example behaviour is a script", "example behaviour is a script"),
     ("no source paper", "no usable source paper"),
@@ -333,19 +423,21 @@ def validate_candidate(
                 )
 
     # ---- tier against design -------------------------------------------------
-    if tier is not None and paper_ids:
+    # Corrected, not rejected. See the module docstring: an overclaimed tier
+    # is a defect in one field with a derivable right answer, and the evidence
+    # behind the entry is unaffected by it.
+    ceiling: EvidenceTier | None = None
+    if paper_ids:
         # Read the ceiling off the PaperText objects actually being validated
         # against, not off the module-level table. A paper missing from the
         # table would otherwise yield no ceiling and pass this check by
         # default, which is the wrong direction to fail in.
         metas = [papers[p].meta for p in paper_ids]
         ceiling = strongest_tier(m.evidence_tier for m in metas if m is not None)
-        if ceiling is not None and not tier_at_most(tier, ceiling):
-            designs = ", ".join(papers[p].design or "unknown design" for p in paper_ids)
-            reasons.append(
-                f"claims tier {tier.value!r} but the strongest source design "
-                f"({designs}) supports at most {ceiling.value!r}"
-            )
+
+    claimed_tier = tier
+    if tier is not None and ceiling is not None and not tier_at_most(tier, ceiling):
+        tier = ceiling
 
     # ---- actionability -------------------------------------------------------
     ok, why = takeaway_is_actionable(candidate.practical_takeaway)
@@ -359,6 +451,7 @@ def validate_candidate(
         return RejectedCandidate(candidate=candidate, reasons=tuple(reasons))
 
     assert theme is not None and tier is not None and action is not None
+    assert claimed_tier is not None
     assert match is not None and paper is not None
 
     phases = [p for p in (_coerce(x, _PHASE_ALIASES) for x in candidate.encounter_phase) if p]
@@ -385,6 +478,9 @@ def validate_candidate(
         span_end=match.end,
         span_was_exact=match.exact,
         paper_sha256=paper.text_sha256,
+        claimed_tier=claimed_tier,
+        design_ceiling=ceiling,
+        span_match_via=match.via,
     )
 
 
@@ -439,6 +535,21 @@ def format_report(report: ValidationReport) -> str:
     ]
     for reason, count in report.reason_counts().items():
         lines.append(f"  {count:4d}  {reason}")
+    downgrades = report.downgrade_counts()
+    if downgrades:
+        lines += [
+            "",
+            f"Evidence tier corrected against study design ({len(report.downgraded)} "
+            f"of {len(report.accepted)} accepted entries):",
+        ]
+        for change, count in downgrades.items():
+            lines.append(f"  {count:4d}  {change}")
+        lines.append("  (the model's claim is kept on each entry and printed in the review digest)")
+
+    lines += ["", "Span located after:"]
+    for via, count in report.span_match_counts().items():
+        lines.append(f"  {count:4d}  {via}")
+
     lines += ["", "Accepted entries by theme:"]
     for theme, count in report.theme_counts().items():
         lines.append(f"  {count:4d}  {theme}")
