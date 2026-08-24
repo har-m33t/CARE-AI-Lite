@@ -1,0 +1,66 @@
+# CHART checklist — completed as an appendix
+
+**Guideline:** The CHART Collaborative. Reporting guideline for chatbot health advice studies: the
+Chatbot Assessment Reporting Tool (CHART) statement. *British Journal of Surgery*.
+2025;112(8):znaf142. doi:10.1093/bjs/znaf142. Companion publications in *BMC Medicine*
+(doi:10.1186/s12916-025-04274-w) and *Annals of Family Medicine* (23(5):389). Also at the EQUATOR
+Network (equator-network.org/reporting-guidelines/reporting-guideline-for-chatbot-health-advice-studies-the-chart-statement/).
+12 items, 39 subitems, developed via systematic review, a 531-stakeholder modified Delphi process,
+and pilot testing. This appendix was completed against the August 2025 publication.
+
+**Applicability to this project.** CHART targets studies assessing a generative-AI chatbot's
+health advice or clinical evidence summarization. This project's system is a communication-support
+tool rather than a direct patient-facing advice chatbot, but its core evaluated act — a generative
+model producing text in response to an input utterance, scored against a reference standard — is
+exactly what CHART is built to make reportable, so it is used here without exemption. "Query"
+below means one scenario × condition × sample generation.
+
+| # | Item | Status | Where answered / notes |
+|---|---|---|---|
+| 1a | Title states the study assesses a generative-AI chatbot | Pending | To apply at manuscript/report title stage; `README.md`'s current title does not yet name this explicitly and should be checked at write-up time. |
+| 1b | Structured abstract | Pending | No results abstract exists yet. |
+| 2a | Background, rationale, healthcare context | Done | `README.md` "Background"; build plan v3 Part I–III. |
+| 2b | Aims/research questions: audience, intervention, comparator(s), outcome(s) | Done | `docs/preregistration.md` §1–4: six conditions as intervention/comparators, 11-dimension rubric as outcomes, clinicians as the audience the system is built for. |
+| 3a | Model/chatbot name, version, release/update date | Done | `carelite/config.py.Models`; digests recorded per generation, not tags alone (v3 §16), because tags are mutable. |
+| 3b | Open-source or closed-source/proprietary | Done | All models open-weight, run locally via Ollama (`gemma4:12b`, `qwen3.5:9b`, `gpt-oss:20b`) or `sentence-transformers` (`bge-m3`, `BAAI/bge-reranker-v2-m3`). No proprietary/closed API is in the inference path — `Settings.ollama_host` pinned to localhost, "no egress at inference." |
+| 4a | Base, novel base, tuned, or fine-tuned model | Done | All base models used off-the-shelf; no fine-tuning performed by this project (system behavior differs across conditions by prompting and retrieval, not by weight updates). |
+| 4b | Citation for base model, if used | Done | Model cards: `gemma4:12b`, `qwen3.5:9b`, `gpt-oss:20b`, `bge-m3` — citations to be pinned in the results appendix alongside recorded digests (`make pin-models`). |
+| 4c | Pre-/post-deployment data and parameters, if tuned | Not applicable | No tuned or fine-tuned model is used. |
+| 5a | Prompt development process | Done | `carelite/prompts/README.md`, per-condition prompt files, versioned (`condition_a.v1.md` etc.); developed and iterated against the 40-scenario train split only. |
+| 5ai | Sources of prompts | Done | Authored by the project team, grounded in the NURSE/Four Habits frameworks (`docs/rubric.md`) and retrieved knowledge-base guidance for Condition C. |
+| 5aii | Number/characteristics of individuals involved in prompt engineering | Done | Single-developer project (DBMI Summer Internship, solo build across the agent fleet lanes); stated per v3 §12's framing of single-rater/single-developer constraints. |
+| 5aiii | Patient/public involvement in prompt engineering | Not applicable | None — consistent with item 15 below and with `docs/limitations.md`'s "synthetic scenarios" limitation. |
+| 5b | Study prompts provided | Done | `carelite/prompts/` is version-controlled and public in this repository; every prompt used in the study is in that directory, not only described. |
+| 6a | Route of access to the generative-AI model | Done | Local inference via the Ollama HTTP API (`carelite.config.Settings.ollama_host`), not a hosted vendor API. |
+| 6b | Date(s)/location(s) of queries | Pending | To be recorded at run time from `generation.created_at`; location is the local development machine, to be named in the results write-up rather than assumed. |
+| 6c | Separate chat sessions per prompt | Done | Each generation is a single independent request (no shared conversation state across scenarios or conditions); `GuidanceRequest.history` carries only the within-scenario turn history specified by the scenario itself, never cross-scenario context. |
+| 6d | All chatbot outputs provided | Done | Every `generation.response` is persisted in the database and exported via `make reproduce`; nothing is hand-selected for reporting. |
+| 7a | Ground truth / reference standard for successful performance | Done | `docs/rubric.md`'s 11 anchored dimensions, not a single ground-truth answer — CHART's "reference standard" here is the rubric's anchor examples, since clinician communication has no single correct response. Stated explicitly because it is a deliberate departure from a fact-checkable ground truth. |
+| 7b | Performance-evaluation process description | Done | `docs/preregistration.md` §8–9: judge-primary scoring, validated against a human-rating subset, with a pre-specified confirmatory/exploratory threshold. |
+| 7bi | Number/characteristics of evaluation-team members | Pending | Judge is automated (`gpt-oss:20b`); human evaluators not yet recruited — see `docs/preregistration.md` §12. |
+| 7bii | Patient/public involvement in evaluation | Not applicable | None planned; human raters are recruited as external evaluators (e.g., medical/nursing students per v3 §12), not patients or public contributors. |
+| 7biii | Blinding of evaluators to chatbot identity | Done | `carelite/eval/human/blinding.py`: condition labels stripped, presentation order randomized per rater, recorded in `rating_assignment` so unblinding is a join rather than a guess (`docs/rubric.md` "Blinding"). The judge is not blinded to condition in the same sense but is blinded to which condition it is scoring in that it receives only the response text, never the condition label. |
+| 8 | Sample size determination | Done | `docs/preregistration.md` §6: power analysis, paired Wilcoxon, α=0.05, power=0.80, n set by the smallest expected effect (B vs. C). |
+| 9a | Statistical analysis methods, incl. reproducibility evaluation | Done | `docs/preregistration.md` §8 (Friedman/Wilcoxon/Holm–Bonferroni, bootstrap CIs, mixed-effects variance decomposition) and §9 (judge self-consistency as a reproducibility check on the evaluator itself). |
+| 9ai | Performance-evaluation measures | Done | `docs/preregistration.md` §3–4 (composite outcomes) and §5 (rubric dimensions and the `to_quality()` aggregation rule). |
+| 10a | Performance evaluation: alignment with ground truth/reference standard | Pending | Results not yet generated; to be reported per `docs/preregistration.md` §8 once the run completes. |
+| 10b | Nature of deviations from ground truth/reference standard | Pending | To be reported alongside 10a — expected to include per-dimension breakdowns (e.g., where `ritualistic` diverges from `naturalness`) once data exists. |
+| 10c | Evaluation for harmful, biased, or misleading responses | Partial | Mechanism exists (`carelite/safety/output_gate.py`, `carelite/safety/redflag.py`; adversarial input corpus under `pytest -m security`) and runs on every generation; aggregate incidence to be reported once the full run completes. Bias evaluation specifically is the equity-subgroup analysis in `docs/preregistration.md` §8.4, with its pre-specified coverage gaps stated in `docs/limitations.md` §3. |
+| 11a | Interpretation in context of relevant evidence | Pending | To be written once results exist, grounded in the corpus themes documented in `docs/limitations.md` §1. |
+| 11b | Strengths and limitations | Done (living) | `docs/limitations.md`, kept current across the build. |
+| 11c | Implications for practice, education, policy, regulation, research | Pending | To be written alongside 11a; must explicitly restate the no-deployment-claim boundary from `docs/limitations.md` §6. |
+| 12a | Conflicts of interest, all authors | Done | None declared. |
+| 12b | Funding sources and their role | Pending | DBMI Summer Internship context; no external funding identified as of this writing — see the matching TRIPOD-LLM item 14a. |
+| 12c | Ethical approval process | Not applicable | No human-subjects or patient data; synthetic scenarios only. Human-rater recruitment (external evaluators scoring de-identified synthetic text) to be checked against the recruiting institution's policy before it begins, noted here rather than assumed exempt. |
+| 12ci | Data-privacy safeguards for patient health information | Not applicable | No real patient health information is used anywhere in this project; fleet rule 4 forbids committing any. Input-side PHI detection (`carelite/safety/phi.py`) exists as a runtime guard against a user pasting real PHI into the CLI, not because the study itself handles PHI. |
+| 12cii | Permission/licensing for copyrighted data | Done | Corpus retrieval uses only open-access routes (Unpaywall, NCBI ID-converter, PMC), and paywalled papers are deliberately left unretrieved rather than obtained through unlicensed means — `data/fetch_corpus.py` behavior and `docs/limitations.md` §1. |
+| 12d | Study protocol provided | Done | `docs/preregistration.md` is the protocol, plus the OSF registration once completed. |
+| 12e | Data, code, model-parameter availability | Done | This repository (code, prompts, scenario bank); `REPRODUCE.md` and `make reproduce`; model parameters are the publicly distributed Ollama/`sentence-transformers` weights referenced by digest, not redistributed. |
+
+**Summary:** every item with an answer available today (background/rationale, model identifiers,
+prompt provenance, access route, evaluation design, sample-size justification, statistical plan,
+data/code availability) is done; every item that depends on results, human-rater recruitment, or
+manuscript-stage details (title wording, abstract, run dates, evaluator characteristics, the
+performance-evaluation results themselves) is marked pending with a pointer to the document that
+will complete it. Nothing here is marked done that is not actually verifiable in the repository
+today.
