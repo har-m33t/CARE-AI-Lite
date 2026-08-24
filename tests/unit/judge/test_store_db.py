@@ -156,58 +156,143 @@ class TestRubricScoreRoundTrip:
         assert sum(1 for r in rows if r["rater_id"].endswith(MEDIAN_RATER_SUFFIX)) == 1
 
 
+def _write_study(conn: psycopg.Connection, assignment: Assignment) -> None:
+    """The store module's study statement, on the test's own rolled-back connection."""
+    from carelite.eval.human.store import _ASSIGNMENT_UPSERT
+
+    conn.execute(
+        _ASSIGNMENT_UPSERT,
+        {
+            "rater_id": assignment.rater_id,
+            "generation_id": assignment.generation_id,
+            "display_order": assignment.display_order,
+            "blind_label": assignment.blind_label,
+        },
+    )
+
+
+def _write_calibration(conn: psycopg.Connection, assignment: Assignment) -> None:
+    """The store module's calibration statement, likewise."""
+    from carelite.eval.human.store import _CALIBRATION_UPSERT
+
+    conn.execute(
+        _CALIBRATION_UPSERT,
+        {
+            "rater_id": assignment.rater_id,
+            "calibration_id": assignment.calibration_id,
+            "display_order": assignment.display_order,
+            "blind_label": assignment.blind_label,
+        },
+    )
+
+
+def _rejected(
+    conn: psycopg.Connection, constraint: str, values: str, params: tuple[object, ...] = ()
+) -> None:
+    """Assert one `rating_assignment` row is refused by the named CHECK constraint.
+
+    `values` is the tail of the VALUES list, after the rater id. The insert runs
+    inside a savepoint that always rolls back, because a constraint violation
+    aborts the surrounding transaction and would otherwise poison every
+    statement after it — including the fixture's own cleanup.
+    """
+    sql = (
+        "INSERT INTO rating_assignment (rater_id, generation_id, calibration_id, "
+        f"display_order, blind_label, is_calibration) VALUES ('R01', {values})"
+    )
+    with (
+        conn.transaction(force_rollback=True),
+        pytest.raises(psycopg.errors.CheckViolation, match=constraint),
+    ):
+        conn.execute(sql, params)
+
+
 class TestRatingAssignmentRoundTrip:
     def test_assignment_persists_and_unblinds_by_join(
         self, rolled_back: psycopg.Connection
     ) -> None:
         """The blinding key is a table, so unblinding is a join."""
-        from carelite.eval.human.store import _ASSIGNMENT_UPSERT
-
-        assignment = Assignment(
-            rater_id="R01",
-            generation_id=GENERATION_ID,
-            display_order=7,
-            blind_label="R01-042",
-            is_calibration=False,
-        )
-        rolled_back.execute(
-            _ASSIGNMENT_UPSERT,
-            {
-                "rater_id": assignment.rater_id,
-                "generation_id": assignment.generation_id,
-                "display_order": assignment.display_order,
-                "blind_label": assignment.blind_label,
-                "is_calibration": assignment.is_calibration,
-            },
-        )
+        _write_study(rolled_back, Assignment.for_generation("R01", GENERATION_ID, 7, "R01-042"))
 
         row = rolled_back.execute(
-            "SELECT ra.blind_label, g.condition FROM rating_assignment ra "
-            "JOIN generation g USING (generation_id) WHERE ra.rater_id = %s",
+            "SELECT ra.blind_label, ra.is_calibration, ra.calibration_id, g.condition "
+            "FROM rating_assignment ra JOIN generation g USING (generation_id) "
+            "WHERE ra.rater_id = %s",
             ("R01",),
         ).fetchone()
         assert row["blind_label"] == "R01-042"
         assert row["condition"] == "C"
+        assert row["is_calibration"] is False
+        assert row["calibration_id"] is None
 
-    def test_calibration_items_have_no_generation_row_to_reference(
+    def test_a_calibration_assignment_persists_without_a_generation_row(
         self, rolled_back: psycopg.Connection
     ) -> None:
-        """Documents the schema constraint that keeps calibration out of the table.
+        """The case the schema was amended for, now actually exercised.
 
-        `rating_assignment.generation_id` is a foreign key to `generation`, and
-        calibration items are fixtures. `store_assignments` therefore filters
-        them out by default rather than failing mid-batch on the constraint.
+        `calibration_id` is deliberately not a foreign key, so a fixture with no
+        `generation` row stores cleanly — which is what makes a rater's packet
+        recoverable from the database rather than only from the export file.
         """
-        from carelite.eval.human.store import _ASSIGNMENT_UPSERT
+        _write_calibration(rolled_back, Assignment.for_calibration("R01", "CAL-01", 1, "R01-C01"))
 
-        with pytest.raises(psycopg.errors.ForeignKeyViolation):
-            rolled_back.execute(
-                _ASSIGNMENT_UPSERT,
-                {
-                    "rater_id": "R01",
-                    "generation_id": "CAL-01",
-                    "display_order": 1,
-                    "blind_label": "R01-C01",
-                    "is_calibration": True,
-                },
-            )
+        row = rolled_back.execute(
+            "SELECT generation_id, calibration_id, is_calibration, blind_label "
+            "FROM rating_assignment WHERE rater_id = %s AND calibration_id = %s",
+            ("R01", "CAL-01"),
+        ).fetchone()
+        assert row["generation_id"] is None
+        assert row["calibration_id"] == "CAL-01"
+        assert row["is_calibration"] is True
+        assert row["blind_label"] == "R01-C01"
+
+    def test_a_calibration_row_never_joins_to_a_generation(
+        self, rolled_back: psycopg.Connection
+    ) -> None:
+        """The unblinding join must return study rows only, silently and correctly.
+
+        This is the quiet-defect check. A calibration item that unblinded to
+        something — or to a NULL that a downstream group-by kept — would land in
+        the agreement computation as an extra unit, which raises alpha rather
+        than raising an error.
+        """
+        _write_study(rolled_back, Assignment.for_generation("R01", GENERATION_ID, 7, "R01-042"))
+        _write_calibration(rolled_back, Assignment.for_calibration("R01", "CAL-01", 1, "R01-C01"))
+
+        rows = rolled_back.execute(
+            "SELECT ra.blind_label FROM rating_assignment ra "
+            "JOIN generation g USING (generation_id) WHERE ra.rater_id = %s",
+            ("R01",),
+        ).fetchall()
+        assert [r["blind_label"] for r in rows] == ["R01-042"]
+
+    def test_both_targets_null_is_rejected(self, rolled_back: psycopg.Connection) -> None:
+        _rejected(rolled_back, "one_target", "NULL, NULL, 1, 'R01-001', FALSE")
+
+    def test_both_targets_set_is_rejected(self, rolled_back: psycopg.Connection) -> None:
+        _rejected(rolled_back, "one_target", "%s, 'CAL-01', 1, 'R01-001', TRUE", (GENERATION_ID,))
+
+    def test_the_flag_disagreeing_with_the_target_is_rejected(
+        self, rolled_back: psycopg.Connection
+    ) -> None:
+        """Both directions. This is the constraint the old `store.py` violated.
+
+        The old statement wrote `'CAL-01'` into `generation_id` with
+        `is_calibration = true` and `calibration_id` left NULL — the first of
+        these two rows, near enough.
+        """
+        _rejected(rolled_back, "flag_agrees", "%s, NULL, 1, 'R01-001', TRUE", (GENERATION_ID,))
+        _rejected(rolled_back, "flag_agrees", "NULL, 'CAL-01', 1, 'R01-C01', FALSE")
+
+    def test_both_upserts_are_idempotent(self, rolled_back: psycopg.Connection) -> None:
+        """Re-exporting a packet must not duplicate-key on either unique constraint."""
+        study = Assignment.for_generation("R01", GENERATION_ID, 7, "R01-042")
+        cal = Assignment.for_calibration("R01", "CAL-01", 1, "R01-C01")
+        for _ in range(2):
+            _write_study(rolled_back, study)
+            _write_calibration(rolled_back, cal)
+
+        count = rolled_back.execute(
+            "SELECT count(*) AS n FROM rating_assignment WHERE rater_id = %s", ("R01",)
+        ).fetchone()
+        assert count["n"] == 2

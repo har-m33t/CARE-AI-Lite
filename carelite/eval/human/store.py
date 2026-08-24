@@ -1,19 +1,31 @@
 """Persist blinded assignments and returned human ratings.
 
-One schema note that shapes this module. `rating_assignment.generation_id` is a
-foreign key to `generation`, and the five calibration responses are fixtures in
-`carelite.eval.rubric.calibration` — they are not generated, have no scenario
-row, no prompt version and no model digest, and inserting them as generations to
-satisfy the constraint would put five fabricated rows in the table every
-analysis query reads.
+One schema note that shapes this module. `rating_assignment` names one of two
+kinds of target in two separate columns. `generation_id` is a foreign key to
+`generation` and carries study responses. `calibration_id` is a plain nullable
+text column, deliberately *not* a foreign key, and carries the five calibration
+responses — which are fixtures in `carelite.eval.rubric.calibration`, not
+generated: no scenario row, no prompt version, no model digest. Giving them
+`generation` rows to satisfy an FK would put five fabricated rows in the table
+every analysis query reads, which is why the column was added instead.
 
-So calibration assignments are **not persisted by default**. They live in the
-`BlindedPacket` and in the ingestion report, which is where they are used: they
-gate whether a rater is calibrated, and they never enter the results. The
-`is_calibration` column stays available for a future amendment that gives
-calibration items real generation rows; until then `store_assignments` will
-refuse them rather than fail on the foreign key halfway through a batch. That
-constraint is reported to the foundation lane rather than worked around here.
+Three CHECK constraints hold that shape together, and this module writes to
+satisfy them rather than defending against them:
+
+- `rating_assignment_one_target` — exactly one of the two ids is set;
+- `rating_assignment_calibration_flag_agrees` — `is_calibration` is true for
+  precisely the rows with a `calibration_id`;
+- `UNIQUE (rater_id, generation_id)` and `UNIQUE (rater_id, calibration_id)` —
+  which are two separate constraints, so the two kinds need two upserts. A
+  single statement cannot name both as its conflict target.
+
+Calibration assignments are now persisted by default. The earlier behaviour —
+holding them out of the table — was a workaround for the FK that no longer
+exists, and holding them out cost something real: a rater's packet could not be
+rebuilt from the database alone, so a lost export meant a lost calibration
+record. What must still never happen is a calibration id entering the *results*,
+and that is enforced further up, in `ingest_ratings` and `unblind`, which route
+calibration ratings to the ingestion report and never to `rubric_score`.
 """
 
 from __future__ import annotations
@@ -32,20 +44,34 @@ __all__ = [
     "store_human_scores",
 ]
 
+#: Study responses. `calibration_id` is left NULL and `is_calibration` FALSE, so
+#: both CHECK constraints hold by construction rather than by hope.
 _ASSIGNMENT_UPSERT = """
-INSERT INTO rating_assignment (rater_id, generation_id, display_order, blind_label, is_calibration)
-VALUES (%(rater_id)s, %(generation_id)s, %(display_order)s, %(blind_label)s, %(is_calibration)s)
+INSERT INTO rating_assignment
+    (rater_id, generation_id, calibration_id, display_order, blind_label, is_calibration)
+VALUES (%(rater_id)s, %(generation_id)s, NULL, %(display_order)s, %(blind_label)s, FALSE)
 ON CONFLICT (rater_id, generation_id) DO UPDATE SET
     display_order = EXCLUDED.display_order,
-    blind_label = EXCLUDED.blind_label,
-    is_calibration = EXCLUDED.is_calibration
+    blind_label = EXCLUDED.blind_label
+"""
+
+#: Calibration fixtures. The mirror image: `generation_id` NULL, `is_calibration`
+#: TRUE, and a different conflict target because the two UNIQUE constraints are
+#: separate and one statement can only name one of them.
+_CALIBRATION_UPSERT = """
+INSERT INTO rating_assignment
+    (rater_id, generation_id, calibration_id, display_order, blind_label, is_calibration)
+VALUES (%(rater_id)s, NULL, %(calibration_id)s, %(display_order)s, %(blind_label)s, TRUE)
+ON CONFLICT (rater_id, calibration_id) DO UPDATE SET
+    display_order = EXCLUDED.display_order,
+    blind_label = EXCLUDED.blind_label
 """
 
 
 def store_assignments(
     assignments: Sequence[Assignment],
     *,
-    include_calibration: bool = False,
+    include_calibration: bool = True,
 ) -> int:
     """Write the blinding key to `rating_assignment`. Returns rows written.
 
@@ -54,9 +80,16 @@ def store_assignments(
     rater before its assignments are stored is a packet whose ratings cannot be
     unblinded if the process that built it is gone.
 
+    Study rows and calibration rows take different statements, because they land
+    in different columns and collide on different unique constraints. Which one
+    an assignment takes is decided by `is_calibration`, which `Assignment`
+    already guarantees agrees with the id it carries — so this function does not
+    re-check it, and a hand-built assignment that disagreed would have failed at
+    construction.
+
     Args:
-        include_calibration: Persist calibration rows too. Only safe once
-            calibration items have `generation` rows — see the module docstring.
+        include_calibration: Persist calibration rows too. Default on; turn it
+            off only to write the study half alone.
     """
     rows = [a for a in assignments if include_calibration or not a.is_calibration]
     if not rows:
@@ -64,23 +97,43 @@ def store_assignments(
     with connect() as conn:
         with conn.cursor() as cur:
             for a in rows:
-                cur.execute(
-                    _ASSIGNMENT_UPSERT,
-                    {
-                        "rater_id": a.rater_id,
-                        "generation_id": a.generation_id,
-                        "display_order": a.display_order,
-                        "blind_label": a.blind_label,
-                        "is_calibration": a.is_calibration,
-                    },
-                )
+                if a.is_calibration:
+                    cur.execute(
+                        _CALIBRATION_UPSERT,
+                        {
+                            "rater_id": a.rater_id,
+                            "calibration_id": a.calibration_id,
+                            "display_order": a.display_order,
+                            "blind_label": a.blind_label,
+                        },
+                    )
+                else:
+                    cur.execute(
+                        _ASSIGNMENT_UPSERT,
+                        {
+                            "rater_id": a.rater_id,
+                            "generation_id": a.generation_id,
+                            "display_order": a.display_order,
+                            "blind_label": a.blind_label,
+                        },
+                    )
         conn.commit()
     return len(rows)
 
 
 def fetch_assignments(rater_id: str | None = None) -> list[Assignment]:
-    """Read the blinding key back. This is the unblinding join, as a query."""
-    sql = "SELECT * FROM rating_assignment"
+    """Read the blinding key back. This is the unblinding join, as a query.
+
+    Columns are named rather than `SELECT *`. The star is what let this reader
+    keep working, silently, through the schema amendment that added
+    `calibration_id`: it returned rows that simply had no calibration in them and
+    nothing raised. Naming the columns means a future amendment breaks the read
+    instead of quietly narrowing it.
+    """
+    sql = (
+        "SELECT rater_id, generation_id, calibration_id, display_order, blind_label, "
+        "is_calibration FROM rating_assignment"
+    )
     params: dict[str, object] = {}
     if rater_id is not None:
         sql += " WHERE rater_id = %(rater_id)s"
@@ -95,6 +148,7 @@ def fetch_assignments(rater_id: str | None = None) -> list[Assignment]:
             display_order=row["display_order"],
             blind_label=row["blind_label"],
             is_calibration=row["is_calibration"],
+            calibration_id=row["calibration_id"],
         )
         for row in rows
     ]

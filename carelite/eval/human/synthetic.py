@@ -109,9 +109,9 @@ def synthetic_ratings(
     for item in packet.items:
         assignment = lookup[item.blind_label]
         source: Mapping[str, int] | None = (
-            consensus.get(assignment.generation_id)
+            consensus.get(assignment.calibration_id or "")
             if assignment.is_calibration
-            else truth.get(assignment.generation_id)
+            else truth.get(assignment.generation_id or "")
         )
         if source is None:
             continue
@@ -155,11 +155,14 @@ def synthetic_retest_ratings(
     quietly regenerates from truth each time.
 
     Labels differ between the two packets — the retest is reshuffled — so rows
-    are re-keyed through the generation id.
+    are re-keyed through the generation id. `label_to_generation` is study-only,
+    so calibration rows in either packet drop out here, which is correct: a
+    retest measures the stability of the study ratings, and the rater has
+    already seen the calibration consensus by the second occasion.
     """
     rng = random.Random(seed)
     first_by_generation: dict[str, Mapping[str, Any]] = {}
-    original_lookup = {a.blind_label: a.generation_id for a in original_packet.assignments}
+    original_lookup = original_packet.label_to_generation()
     for row in first_pass:
         generation_id = original_lookup.get(str(row.get("blind_label", "")))
         if generation_id:
@@ -170,6 +173,8 @@ def synthetic_retest_ratings(
     rows: list[dict[str, Any]] = []
     for item in retest_packet.items:
         assignment = retest_lookup[item.blind_label]
+        if assignment.generation_id is None:
+            continue
         earlier = first_by_generation.get(assignment.generation_id)
         if earlier is None:
             continue

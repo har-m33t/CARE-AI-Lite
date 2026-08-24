@@ -15,6 +15,14 @@ from the export. That is what `assert_blinded` enforces, and it is checked
 rather than trusted because the failure is silent: an export that leaks
 condition through the ordering still produces sixty perfectly plausible ratings.
 
+An assignment names one of two kinds of target, in two separate columns:
+`generation_id` for a study response and `calibration_id` for one of the five
+calibration fixtures, with `is_calibration` agreeing with whichever is set. The
+split exists because calibration items are not generations and must never be
+joined as if they were; `Assignment` and the schema both enforce it. The
+one-way property above is unaffected — a calibration item is openly labelled as
+calibration to the rater, so there is nothing about it to blind.
+
 Three leaks this guards against, all of which are easy to ship by accident:
 
 1. **The label.** `blind_label` is derived from the rater's shuffled position,
@@ -93,18 +101,88 @@ class BlindItem:
 class Assignment:
     """One row of `rating_assignment`: the key that unblinds one rating.
 
-    Note the FK: `rating_assignment.generation_id` references `generation`, so
-    calibration items — which are fixtures in `carelite.eval.rubric.calibration`,
-    not generated responses — have no row to reference. Calibration assignments
-    are therefore kept in the packet and not persisted by default; see
-    `carelite.eval.human.store`.
+    An assignment points at **exactly one** of two kinds of thing, and which one
+    it is decides the column it lands in:
+
+    - a study response, in `generation_id`, an FK to `generation`;
+    - a calibration response, in `calibration_id`, which is deliberately *not* a
+      foreign key — calibration items are fixtures in
+      `carelite.eval.rubric.calibration`, with no scenario row, prompt version
+      or model digest, and giving them `generation` rows to satisfy an FK would
+      put five fabricated rows in the table every analysis query reads.
+
+    `is_calibration` is not free-floating: it must agree with which of the two
+    ids is set. The schema enforces all three rules
+    (`rating_assignment_one_target`, `rating_assignment_calibration_flag_agrees`)
+    and `__post_init__` enforces the same three here, so an assignment that
+    could not be stored cannot be constructed either. That duplication is
+    deliberate — the database check only fires where a database is running, and
+    the harness is developed and tested mostly where one is not.
+
+    Prefer `for_generation` and `for_calibration` over the raw constructor.
     """
 
     rater_id: str
-    generation_id: str
+    generation_id: str | None
     display_order: int
     blind_label: str
     is_calibration: bool = False
+    calibration_id: str | None = None
+
+    def __post_init__(self) -> None:
+        n_targets = sum(x is not None for x in (self.generation_id, self.calibration_id))
+        if n_targets != 1:
+            raise ValueError(
+                f"assignment {self.blind_label!r} must name exactly one target, got "
+                f"{n_targets} (generation_id={self.generation_id!r}, "
+                f"calibration_id={self.calibration_id!r})"
+            )
+        if self.is_calibration != (self.calibration_id is not None):
+            raise ValueError(
+                f"assignment {self.blind_label!r} has is_calibration="
+                f"{self.is_calibration} but calibration_id={self.calibration_id!r}; "
+                "the flag and the target must agree"
+            )
+
+    @classmethod
+    def for_generation(
+        cls, rater_id: str, generation_id: str, display_order: int, blind_label: str
+    ) -> Assignment:
+        """A study item: goes to `generation_id`, `is_calibration` false."""
+        return cls(
+            rater_id=rater_id,
+            generation_id=generation_id,
+            display_order=display_order,
+            blind_label=blind_label,
+            is_calibration=False,
+        )
+
+    @classmethod
+    def for_calibration(
+        cls, rater_id: str, calibration_id: str, display_order: int, blind_label: str
+    ) -> Assignment:
+        """A calibration fixture: goes to `calibration_id`, `is_calibration` true."""
+        return cls(
+            rater_id=rater_id,
+            generation_id=None,
+            display_order=display_order,
+            blind_label=blind_label,
+            is_calibration=True,
+            calibration_id=calibration_id,
+        )
+
+    @property
+    def target_id(self) -> str:
+        """Whichever id this assignment carries. Use when the kind does not matter.
+
+        Use `generation_id` — and let it be `None` for calibration — wherever the
+        kind *does* matter, which is anywhere the value is about to be treated
+        as a result. A calibration id that reaches `rubric_score` or a
+        Krippendorff unit list is a silent contamination, not an error.
+        """
+        target = self.generation_id if self.calibration_id is None else self.calibration_id
+        assert target is not None  # guaranteed by __post_init__
+        return target
 
 
 @dataclass(frozen=True, slots=True)
@@ -127,8 +205,27 @@ class BlindedPacket:
         return tuple(i for i in self.items if i.is_calibration)
 
     def label_to_generation(self) -> dict[str, str]:
-        """The join key, for ingestion. Not part of the rater-facing export."""
-        return {a.blind_label: a.generation_id for a in self.assignments}
+        """The join key, for ingestion. Not part of the rater-facing export.
+
+        **Study items only.** Calibration labels are absent rather than mapped
+        to their `calibration_id`, because everything downstream of this mapping
+        treats its values as generation ids: a `CAL-01` in here becomes a
+        `rubric_score` row with no generation, and then a Krippendorff unit that
+        every rater scored against a published answer key. That inflates alpha
+        instead of failing, which is why it is excluded here rather than
+        filtered by each caller. Use `label_to_calibration` for the other half.
+        """
+        return {
+            a.blind_label: a.generation_id for a in self.assignments if a.generation_id is not None
+        }
+
+    def label_to_calibration(self) -> dict[str, str]:
+        """The calibration half of the join. Feeds `ingest.calibration_check` only."""
+        return {
+            a.blind_label: a.calibration_id
+            for a in self.assignments
+            if a.calibration_id is not None
+        }
 
 
 def _tag(rater_id: str) -> str:
@@ -203,12 +300,11 @@ def build_packet(
                 )
             )
             assignments.append(
-                Assignment(
+                Assignment.for_calibration(
                     rater_id=rater_id,
-                    generation_id=cal.item_id,
+                    calibration_id=cal.item_id,
                     display_order=order,
                     blind_label=label,
-                    is_calibration=True,
                 )
             )
 
@@ -228,12 +324,11 @@ def build_packet(
             )
         )
         assignments.append(
-            Assignment(
+            Assignment.for_generation(
                 rater_id=rater_id,
                 generation_id=item.generation_id,
                 display_order=order,
                 blind_label=label,
-                is_calibration=False,
             )
         )
 
@@ -298,11 +393,25 @@ def unblind(
     label this rater was never assigned — which means either a typo in a
     returned spreadsheet or ratings from the wrong rater's packet, and both are
     worth stopping for.
+
+    **Calibration ratings are dropped, not unblinded.** They have no generation
+    to join to, and a calibration id sitting in a dict of generation ids becomes
+    a fake unit in the alpha computation — every rater scored those five items
+    against a consensus they were then shown, so including them raises agreement
+    on exactly the responses the study is not about. Their labels are still
+    *recognised*, so a genuinely unknown label keeps raising: the distinction
+    this function has to preserve is "not a result" versus "not this rater's".
+    `ingest.ingest_ratings` routes them to `IngestReport.calibration`, which is
+    where a calibration rating is meant to end up.
     """
-    lookup = {a.blind_label: a.generation_id for a in assignments}
+    known = {a.blind_label for a in assignments}
+    lookup = {a.blind_label: a.generation_id for a in assignments if a.generation_id is not None}
     out: dict[str, Mapping[str, int | None]] = {}
     for label, scores in ratings_by_label.items():
-        if label not in lookup:
+        if label not in known:
             raise KeyError(f"rating returned under unknown blind label {label!r}")
-        out[lookup[label]] = scores
+        generation_id = lookup.get(label)
+        if generation_id is None:  # a calibration label; see the docstring
+            continue
+        out[generation_id] = scores
     return out

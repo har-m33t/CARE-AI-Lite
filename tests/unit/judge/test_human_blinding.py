@@ -40,8 +40,10 @@ class TestPacketShape:
         assert len(cal) == len(CALIBRATION_SET)
         assert [c.display_order for c in cal] == [1, 2, 3, 4, 5]
         assert packet.study_items[0].display_order == 6
-        ids = [a.generation_id for a in packet.assignments if a.is_calibration]
-        assert ids == [c.item_id for c in CALIBRATION_SET]
+        cal_assignments = [a for a in packet.assignments if a.is_calibration]
+        assert [a.calibration_id for a in cal_assignments] == [c.item_id for c in CALIBRATION_SET]
+        # And never in generation_id, which is an FK these fixtures cannot satisfy.
+        assert all(a.generation_id is None for a in cal_assignments)
 
     def test_every_study_item_gets_exactly_one_assignment(self) -> None:
         packet = build_packet("R01", items())
@@ -134,6 +136,43 @@ class TestBlinding:
         assert_blinded(build_packet("R01", source), source)
 
 
+class TestAssignmentInvariant:
+    """The one schema-level invariant of this harness, checked without Postgres.
+
+    `rating_assignment` enforces these three rules with CHECK constraints, but
+    those only fire where a database is running. The harness is developed, and
+    `make check` is run, mostly where one is not — so the same three rules are
+    enforced in `Assignment.__post_init__` and asserted here, in a test that is
+    not marked `db` and therefore actually runs. The db-marked round trip in
+    `test_store_db.py` proves the constraints agree with these; this proves the
+    rules are enforced at all on an ordinary run.
+    """
+
+    def test_both_targets_null_is_refused(self) -> None:
+        with pytest.raises(ValueError, match="exactly one target"):
+            Assignment("R01", None, 1, "R01-001")
+
+    def test_both_targets_set_is_refused(self) -> None:
+        with pytest.raises(ValueError, match="exactly one target"):
+            Assignment("R01", "gen-0001", 1, "R01-001", True, "CAL-01")
+
+    def test_flag_disagreeing_with_the_target_is_refused(self) -> None:
+        with pytest.raises(ValueError, match="flag and the target must agree"):
+            Assignment("R01", "gen-0001", 1, "R01-001", is_calibration=True)
+        with pytest.raises(ValueError, match="flag and the target must agree"):
+            Assignment("R01", None, 1, "R01-C01", is_calibration=False, calibration_id="CAL-01")
+
+    def test_a_valid_calibration_assignment_is_accepted(self) -> None:
+        a = Assignment.for_calibration("R01", "CAL-01", 1, "R01-C01")
+        assert (a.generation_id, a.calibration_id, a.is_calibration) == (None, "CAL-01", True)
+        assert a.target_id == "CAL-01"
+
+    def test_a_valid_study_assignment_is_accepted(self) -> None:
+        a = Assignment.for_generation("R01", "gen-0001", 6, "R01-001")
+        assert (a.generation_id, a.calibration_id, a.is_calibration) == ("gen-0001", None, False)
+        assert a.target_id == "gen-0001"
+
+
 class TestUnblind:
     def test_join_recovers_generation_ids(self) -> None:
         packet = build_packet("R01", items(6))
@@ -147,3 +186,32 @@ class TestUnblind:
         packet = build_packet("R01", items(6))
         with pytest.raises(KeyError, match="unknown blind label"):
             unblind(packet.assignments, {"R02-001": {"de": 4}})
+
+    def test_calibration_labels_are_dropped_not_unblinded(self) -> None:
+        """The quiet defect: a calibration id landing in a dict of generation ids.
+
+        Every rater scores the five calibration items against a consensus they
+        are then shown, so a `CAL-0x` key here becomes a near-unanimous unit in
+        the alpha computation. That raises agreement rather than erroring, which
+        is why it is dropped at the join instead of being left to each caller.
+        """
+        packet = build_packet("R01", items(6))
+        ratings = {a.blind_label: {"de": 4} for a in packet.assignments}
+        joined = unblind(packet.assignments, ratings)
+
+        cal_ids = {c.item_id for c in CALIBRATION_SET}
+        assert not cal_ids & set(joined)
+        assert None not in joined
+        assert len(joined) == 6
+
+    def test_a_calibration_label_is_recognised_rather_than_unknown(self) -> None:
+        """Dropped is not the same as unknown, and the error must keep saying so."""
+        packet = build_packet("R01", items(6))
+        cal_label = packet.assignments[0].blind_label
+        assert unblind(packet.assignments, {cal_label: {"de": 4}}) == {}
+
+    def test_label_to_generation_is_study_only(self) -> None:
+        packet = build_packet("R01", items(6))
+        assert len(packet.label_to_generation()) == 6
+        assert len(packet.label_to_calibration()) == len(CALIBRATION_SET)
+        assert not set(packet.label_to_generation()) & set(packet.label_to_calibration())

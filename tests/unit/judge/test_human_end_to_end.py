@@ -35,6 +35,7 @@ from carelite.eval.human import (
     synthetic_truth,
 )
 from carelite.eval.judge import LLMJudge, ReplayClient, judge_human_validity
+from carelite.eval.rubric.calibration import CALIBRATION_SET
 from carelite.eval.rubric.dimensions import to_quality
 from carelite.types import RUBRIC_DIMENSIONS, Condition
 
@@ -278,6 +279,68 @@ class TestSingleRaterFallback:
         _, _, report = run_rater("R01", items, truth, noise=0.2, seed=1)
         with pytest.raises(ValueError, match="different rater ids"):
             intra_rater_reliability(report.scores, report.scores)
+
+
+class TestCalibrationNeverReachesTheResults:
+    """Calibration items are rated, stored, and then must vanish from the analysis.
+
+    The five calibration responses go out in every packet, get scored by every
+    rater, and are the one set of items whose answers the raters are shown. So
+    if they leak into the units Krippendorff's alpha runs over, they arrive as
+    five near-unanimous units and *raise* the coefficient. Nothing errors. The
+    number simply becomes wrong in the flattering direction, which is the worst
+    shape a defect can take in a validation study.
+
+    They now live in their own column, `rating_assignment.calibration_id`, so
+    the "which kind is this" question has an answer in the schema rather than in
+    a naming convention. These tests check the answer is honoured at every point
+    the two kinds could be confused.
+    """
+
+    def test_alpha_units_are_study_items_only(self) -> None:
+        items = study_items(30)
+        truth = synthetic_truth([i.generation_id for i in items], seed=15)
+        _, _, r1 = run_rater("K01", items, truth, noise=0.3, seed=1)
+        _, _, r2 = run_rater("K02", items, truth, noise=0.3, seed=2)
+
+        rated = {s.generation_id for s in [*r1.scores, *r2.scores]}
+        assert rated == {i.generation_id for i in items}
+        assert not any(gid.startswith("CAL-") for gid in rated)
+        for key in RUBRIC_DIMENSIONS:
+            assert inter_rater_alpha([*r1.scores, *r2.scores])[key].n_units == 30
+
+    def test_calibration_ratings_are_kept_but_kept_separate(self) -> None:
+        """Not discarded — they gate whether a rater is calibrated at all."""
+        items = study_items(10)
+        truth = synthetic_truth([i.generation_id for i in items], seed=16)
+        _, _, report = run_rater("K03", items, truth, noise=0.0, seed=1)
+
+        assert set(report.calibration) == {c.item_id for c in CALIBRATION_SET}
+        assert calibration_check("K03", report.calibration).n_items == len(CALIBRATION_SET)
+        assert not any(gid in report.calibration for gid in (i.generation_id for i in items))
+
+    def test_consensus_has_no_calibration_row(self) -> None:
+        items = study_items(10)
+        truth = synthetic_truth([i.generation_id for i in items], seed=17)
+        _, _, r1 = run_rater("K04", items, truth, noise=0.2, seed=1)
+        _, _, r2 = run_rater("K05", items, truth, noise=0.2, seed=2)
+
+        consensus = human_consensus([*r1.scores, *r2.scores])
+        assert set(consensus) == {i.generation_id for i in items}
+
+    def test_a_stored_packet_round_trips_both_kinds(self) -> None:
+        """`Assignment` keeps the split in memory, not only in the database.
+
+        The db-marked round trip proves Postgres agrees; this proves the objects
+        that reach it already carry the distinction, on a run with no database.
+        """
+        packet = build_packet("K06", study_items(6))
+        study = [a for a in packet.assignments if not a.is_calibration]
+        cal = [a for a in packet.assignments if a.is_calibration]
+
+        assert len(study) == 6 and len(cal) == len(CALIBRATION_SET)
+        assert all(a.calibration_id is None and a.generation_id is not None for a in study)
+        assert all(a.generation_id is None and a.calibration_id is not None for a in cal)
 
 
 class TestSyntheticRatersUseOnlyWhatARaterSees:

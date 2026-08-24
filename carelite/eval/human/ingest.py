@@ -175,9 +175,16 @@ def ingest_ratings(
             values[key] = value
 
         if assignment.is_calibration:
-            report.calibration[assignment.generation_id] = values
+            # Keyed by `calibration_id`, which is what `calibration_check`
+            # looks up in `CALIBRATION_SET`. These never become `RubricScore`
+            # rows: a calibration item has no generation, and the raters were
+            # shown its consensus scores, so it would be an agreement unit whose
+            # answer was published in advance.
+            assert assignment.calibration_id is not None  # Assignment invariant
+            report.calibration[assignment.calibration_id] = values
             continue
 
+        assert assignment.generation_id is not None  # Assignment invariant
         report.scores.append(
             RubricScore(
                 generation_id=assignment.generation_id,
