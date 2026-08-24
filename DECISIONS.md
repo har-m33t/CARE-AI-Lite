@@ -287,3 +287,49 @@ everywhere else.
 
 `.claude/CLAUDE.md` itself stays with the orchestrating session, since it is fleet
 instruction rather than project documentation, and is corrected in the same pass.
+
+---
+
+## D3 — outcome (2026-08-24): the re-extraction did not work, and that is the finding
+
+**Recorded outcome: zero net new equity entries. The variant was not loaded. `equity`
+stands at 3, and it is now established as a property of the corpus rather than of
+the prompt.**
+
+D3 approved re-extracting equity entries with a prompt that asks for the
+*compensating move* rather than the awareness statement, on the reasoning that three
+entries out of 114 understated what the corpus held. It did not. Six candidates came
+back from the two anchor papers: four were aspirations ("proactively work to bridge
+the empathy gap", "engage in more consistent and attentive communication"), one
+duplicated an existing span exactly, and one was a genuine compensating move that
+restated advice already in the base.
+
+**Which paper failed is the whole result.** Holdsworth *describes interactions*, so a
+compensating move was there to quote and the model quoted one. Roberts is a
+meta-analysis: it quantifies a gap and correctly never says what closes it. Asked for
+a move, the model invented one. That is not a prompt defect and no prompt fixes it —
+the literature that measures a disparity is not the literature that prescribes a
+remedy, and this corpus holds the former.
+
+**The guard in D3 was the part that mattered.** It said the takeaway must be supported
+by the quoted span rather than merely adjacent to it, and that every equity entry from
+the re-run be read individually rather than sampled. Both were applied, and the run was
+quarantined behind `--prompt-version` so an experiment reaches the knowledge base only
+once its guard has been applied — never merely because inference finished. Without
+that, four aspirations would have loaded and `equity` would read 7 instead of 3, which
+would have looked like progress and been a regression.
+
+**One judgement recorded because it could have gone wrong.** The lane added three
+clauses to an aspiration filter to reject that sentence shape, and correctly identified
+that such a filter can become self-fulfilling — tuned until the answer it produces is
+the answer expected. Its guard was that each clause be justifiable without reference to
+equity and measured for false positives across the whole base; the three added match 1,
+0 and 0 of 114 entries. It **declined** a fourth clause that matched three good entries,
+and recorded in the code that the actionability gate cannot be the whole of the guard.
+That refusal is the reason the filter is trustworthy.
+
+**Consequence for the write-up.** `equity` at 3 entries, and the `racial_ethnic`
+scenario axis narrowed under D5, are now two independent measurements of the same
+underlying gap: this corpus documents disparities far better than it documents what to
+do about them. That belongs in `docs/limitations.md` as a finding about the evidence
+base, stated once and plainly, not as an apology distributed across three sections.
