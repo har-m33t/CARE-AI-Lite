@@ -669,3 +669,46 @@ def test_ritualistic_discrimination_is_computed_on_the_quality_scale() -> None:
     results = _fake_results(20)
     disc = discrimination(results)
     assert disc["ritualistic"].n_generations == 20
+
+
+# ---------------------------------------------------------------------------
+# D10: every result is descriptive
+# ---------------------------------------------------------------------------
+
+
+def test_the_report_says_results_are_descriptive() -> None:
+    """D10 dropped the pre-registration. The rendered report is what a reader
+    sees, so the disclaimer belongs in it and not only in a docstring."""
+    from carelite.eval.judge.validation import build_validation_report
+
+    text = build_validation_report(validation_results=_fake_results(30), responses={}).render()
+    assert "ALL RESULTS DESCRIPTIVE" in text
+    assert "NOT pre-registered" in text
+
+
+def test_no_module_claims_a_pre_registration_still_exists() -> None:
+    """The words survive only inside their own negation. A future edit that
+    reintroduces the claim fails here rather than in a write-up."""
+    import pathlib
+    import re
+
+    root = pathlib.Path(__file__).resolve().parents[3] / "carelite" / "eval"
+    # A mention is acceptable only when the same sentence disclaims it.
+    negated = re.compile(
+        r"(not\s+(a\s+)?pre-?regist|never\b|no\s+registration|dropped\s+the\s+pre|"
+        r"in\s+the\s+(pre-?)?registered\s+sense|nothing\b.*\bconfirmatory)",
+        re.IGNORECASE,
+    )
+    mention = re.compile(r"pre-?regist|pre-?specified", re.IGNORECASE)
+
+    offenders: list[str] = []
+    for path in sorted(root.rglob("*.py")):
+        lines = path.read_text(encoding="utf-8").splitlines()
+        for i, line in enumerate(lines):
+            if not mention.search(line):
+                continue
+            # Look at the line and its two neighbours: these are wrapped prose.
+            window = "\n".join(lines[max(0, i - 2) : i + 3])
+            if not negated.search(window):
+                offenders.append(f"{path.name}:{i + 1}: {line.strip()}")
+    assert not offenders, "pre-registration claimed without disclaimer:\n" + "\n".join(offenders)

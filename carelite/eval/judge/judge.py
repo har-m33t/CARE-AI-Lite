@@ -25,7 +25,7 @@ Two sampling regimes, both from `settings.experiment` (v3 §13):
 
 `for_full_run()` and `for_validation()` read those numbers from config rather
 than taking them as arguments, so the two regimes cannot drift apart from what
-the pre-registration says they are.
+`settings.experiment` says they are.
 """
 
 from __future__ import annotations
@@ -361,7 +361,7 @@ class LLMJudge:
 
     Construct through `for_full_run` or `for_validation` unless you are
     deliberately running an off-protocol configuration — those two classmethods
-    are where the pre-registered sampling regimes live.
+    are where the two sampling regimes live.
     """
 
     client: ChatClient

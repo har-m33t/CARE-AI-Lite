@@ -24,8 +24,14 @@ Five metrics, each answering a different question about the instrument:
 4. **Validity** — Krippendorff's alpha (ordinal) and Spearman's rho against
    human consensus, per dimension. Answers "does this agree with the thing it
    is standing in for".
-5. **The pre-specified threshold** — fixed below, before the numbers exist,
-   because a threshold chosen after seeing the data is not a threshold.
+5. **The threshold** — fixed below, before the numbers exist, because a
+   threshold chosen after seeing the data is not a threshold. It is *not* a
+   pre-registered threshold: D10 records that this project is a personal proof
+   of concept and is not being published, so there is no registration and
+   **every result here is descriptive.** The threshold is kept anyway, because
+   its purpose was never the registration — it is how you avoid fooling
+   yourself about which numbers you are entitled to lean on, and that is worth
+   the same with an audience of one.
 
 Everything is a pure function of `JudgeResult` objects and human scores. No
 model calls, no database, no I/O — the whole study recomputes from the judge
@@ -82,11 +88,19 @@ __all__ = [
 ]
 
 # ---------------------------------------------------------------------------
-# PRE-SPECIFIED. Fixed at sprint 0, before any eval data existed. Changing a
-# number below after seeing results turns a confirmatory study into a story.
+# Fixed at sprint 0, before any eval data existed. Changing a number below
+# after seeing results turns an analysis into a story.
+#
+# NOT pre-registered: D10 dropped the OSF gate, so nothing here may be
+# described as pre-registered and every result is descriptive. The names below
+# keep the word "confirmatory" because `carelite.stats` and `carelite.viz`
+# import `EvidenceStatus` and these constants; renaming them is a cross-lane
+# change, not a docstring edit. Read `CONFIRMATORY` as "cleared the fixed
+# agreement threshold", never as "confirmatory evidence" in the registered
+# sense.
 # ---------------------------------------------------------------------------
 
-#: Bump only with a documented, dated amendment to the pre-registration.
+#: Bump only with a documented, dated amendment recorded in DECISIONS.md.
 VALIDATION_PLAN_VERSION = "1.0.0"
 
 #: Krippendorff's conventional cut for drawing tentative conclusions. The
@@ -113,7 +127,8 @@ N_SPANS_TO_REVIEW = 30
 class EvidenceStatus(StrEnum):
     """What a judge-only result on this dimension may be reported as."""
 
-    #: Agreement cleared the pre-specified threshold. Report as a finding.
+    #: Agreement cleared the fixed threshold. Reportable as a descriptive
+    #: finding — never as confirmatory evidence in the pre-registered sense.
     CONFIRMATORY = "confirmatory"
     #: Below threshold, or too few units. Report as exploratory, and say so in
     #: the sentence that reports it, not only in a limitations paragraph.
@@ -121,7 +136,7 @@ class EvidenceStatus(StrEnum):
 
 
 def classify_dimension(alpha: float, rho: float, n_units: int) -> EvidenceStatus:
-    """Apply the pre-specified threshold to one dimension.
+    """Apply the fixed agreement threshold to one dimension.
 
     A `nan` coefficient — undefined because a series was constant or too sparse —
     is treated as failing. Undefined agreement is not evidence of agreement.
@@ -675,7 +690,7 @@ def judge_among_raters_alpha(
 
 @dataclass(frozen=True, slots=True)
 class ValidationReport:
-    """Every §13 metric in one object, plus the pre-specified verdict.
+    """Every §13 metric in one object, plus the threshold verdict.
 
     `render()` produces the text that goes in the write-up. It leads with the
     exploratory dimensions rather than burying them, because the whole purpose
@@ -722,6 +737,10 @@ class ValidationReport:
         lines: list[str] = []
         lines.append("JUDGE VALIDATION STUDY (build plan v3 §13)")
         lines.append(
+            "ALL RESULTS DESCRIPTIVE. D10 dropped the pre-registration; nothing below is "
+            "confirmatory or pre-specified in the registered sense."
+        )
+        lines.append(
             f"plan version {self.plan_version} | rubric {self.rubric_version} | "
             f"prompt {self.prompt_version}"
         )
@@ -735,7 +754,7 @@ class ValidationReport:
         lines.append(f"  Generations judged: {self.n_generations}")
         lines.append("")
 
-        lines.append("PRE-SPECIFIED THRESHOLD")
+        lines.append("AGREEMENT THRESHOLD (fixed in advance; NOT pre-registered — D10)")
         lines.append(
             f"  Confirmatory requires ordinal alpha >= {MIN_ALPHA_FOR_CONFIRMATORY} AND "
             f"Spearman rho >= {MIN_RHO_FOR_CONFIRMATORY} on >= {MIN_UNITS_FOR_CONFIRMATORY} "

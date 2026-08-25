@@ -11,13 +11,13 @@ separation is not cosmetic. Everything in `validation.py` is a pure function of
 cached judge output, so the analysis re-runs in milliseconds after a change to
 the grounding rule, and only the stages here ever touch a model.
 
-**The holdout is not touched, at any stage.** The OSF pre-registration is not
-submitted, `DECISIONS.md` gates the holdout on it, and build plan §10's argument
-— that pre-registration is what makes an against-you naturalness result
-credible — is worth more than the convenience of judging a slightly better
-sample. `_require_train` refuses any scenario whose own record says `holdout`,
-checking the record rather than the flag, which is the same rule
-`generate.runner` applies at line 237.
+**This study runs on the train split.** It was written while the OSF gate was
+still in force; D10 has since dropped the pre-registration and unblocked the
+holdout, so the gate is no longer the reason. The split is kept anyway, because
+the holdout is what the main experiment is measured on and spending it to
+validate the instrument would be a poor trade whatever the registration status.
+`_require_train` refuses any scenario whose own record says `holdout`, checking
+the record rather than the flag — the same rule `generate.runner` applies.
 
 **Why 10 scenarios x 6 conditions x 1 sample, and not `--limit 60`.**
 
@@ -36,7 +36,7 @@ six conditions at `sample_idx=0`. Sixty responses, and every one of them is a
 cell the full train run would produce anyway — same seed, same cache key — so
 this is a subset of that run rather than a parallel artefact.
 
-Sixty is also the smallest number that lets the pre-specified threshold mean
+Sixty is also the smallest number that lets the agreement threshold mean
 anything: `MIN_UNITS_FOR_CONFIRMATORY` is 30 paired units, and a subset that
 lands near it demotes every dimension for a reason that has nothing to do with
 the judge.
@@ -198,9 +198,9 @@ def _require_train(scenarios: Sequence[Scenario]) -> None:
     leaked = sorted(s.scenario_id for s in scenarios if s.split is not Split.TRAIN)
     if leaked:
         raise RuntimeError(
-            "the judge-validation study runs on the train split only — the OSF "
-            "pre-registration is not submitted and DECISIONS.md gates the holdout on "
-            f"it. These scenarios say holdout: {leaked}"
+            "the judge-validation study runs on the train split only — the holdout is "
+            "what the main experiment is measured on, and spending it to validate the "
+            f"instrument is a poor trade. These scenarios say holdout: {leaked}"
         )
 
 
