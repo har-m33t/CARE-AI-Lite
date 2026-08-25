@@ -69,10 +69,10 @@ def _result(scores: dict[str, int] | int = 4, n: int = 1):
 
 def _upsert(conn: psycopg.Connection, result, sample_idx: int, rater_id: str) -> None:
     """The store module's SQL, executed on the test's own rolled-back connection."""
-    from carelite.eval.judge.store import _UPSERT, _params
+    from carelite.eval.judge.store import UPSERT_SQL, upsert_params
 
     score = result.to_rubric_score(rater_id=rater_id)
-    conn.execute(_UPSERT, _params(score, sample_idx))
+    conn.execute(UPSERT_SQL, upsert_params(score, sample_idx))
 
 
 class TestRubricScoreRoundTrip:
@@ -138,13 +138,13 @@ class TestRubricScoreRoundTrip:
         would collide with sample 0 — and since the median usually equals sample
         0, the collision would look like it worked.
         """
-        from carelite.eval.judge.store import _UPSERT, _params
+        from carelite.eval.judge.store import UPSERT_SQL, upsert_params
 
         result = _result({**dict.fromkeys(RUBRIC_DIMENSIONS, 3), "de": 5}, n=5)
         for sample, score in zip(
             result.samples, result.per_sample_rubric_scores(rater_id="gpt-oss:20b"), strict=True
         ):
-            rolled_back.execute(_UPSERT, _params(score, sample.sample_idx))
+            rolled_back.execute(UPSERT_SQL, upsert_params(score, sample.sample_idx))
         _upsert(rolled_back, result, 0, median_rater_id("gpt-oss:20b"))
 
         rows = rolled_back.execute(

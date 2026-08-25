@@ -31,11 +31,13 @@ from carelite.types import Condition, Generation, RaterType, RubricScore
 
 __all__ = [
     "MEDIAN_RATER_SUFFIX",
+    "UPSERT_SQL",
     "fetch_generations",
     "fetch_scenario_texts",
     "median_rater_id",
     "store_judge_result",
     "store_rubric_scores",
+    "upsert_params",
 ]
 
 #: Appended to the judge's rater id for the aggregate row. See the module docstring.
@@ -46,7 +48,7 @@ def median_rater_id(rater_id: str) -> str:
     return f"{rater_id}{MEDIAN_RATER_SUFFIX}"
 
 
-_UPSERT = """
+UPSERT_SQL = """
 INSERT INTO rubric_score (
     generation_id, rater_type, rater_id, sample_idx,
     name, understand, respect, support, explore,
@@ -75,7 +77,8 @@ ON CONFLICT (generation_id, rater_type, rater_id, sample_idx) DO UPDATE SET
 """
 
 
-def _params(score: RubricScore, sample_idx: int) -> dict[str, object]:
+def upsert_params(score: RubricScore, sample_idx: int) -> dict[str, object]:
+    """Bind one score to `UPSERT_SQL`. Public so the JSONL bridge shares the statement."""
     return {
         "generation_id": score.generation_id,
         "rater_type": str(score.rater_type),
@@ -104,7 +107,7 @@ def store_rubric_scores(scores: Sequence[tuple[RubricScore, int]]) -> int:
     with connect() as conn:
         with conn.cursor() as cur:
             for score, sample_idx in scores:
-                cur.execute(_UPSERT, _params(score, sample_idx))
+                cur.execute(UPSERT_SQL, upsert_params(score, sample_idx))
         conn.commit()
     return len(scores)
 
