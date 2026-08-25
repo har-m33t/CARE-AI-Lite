@@ -313,6 +313,23 @@ def retrieve_detailed(
         # so no downstream lane can pass it to a prompt by accident.
         rejected = list(candidates)
         kept = []
+    elif flags.crag_filter_items and report.relevant_ids:
+        # Use the per-passage judgments the grader already made instead of
+        # only its aggregate verdict. Without this, a turn graded RELEVANT
+        # keeps every candidate including the ones the same grader just called
+        # useless — measured at 25% of everything condition C receives.
+        useful = set(report.relevant_ids)
+        kept = [i for i in candidates if i.ref_id in useful]
+        rejected = [i for i in candidates if i.ref_id not in useful]
+        if not kept:
+            # A non-NONE grade with nothing kept would be indistinguishable
+            # downstream from a fallback, which means something different.
+            # Defer rather than manufacture a silent empty context.
+            kept, rejected = candidates, []
+            leg_notes.append(
+                "crag_filter_items: grade was not NONE but no passage was marked "
+                "useful; kept the full set rather than emitting an empty context"
+            )
 
     trace = RetrievalTrace(
         route=decision.route,

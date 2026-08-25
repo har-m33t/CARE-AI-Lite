@@ -115,6 +115,29 @@ class RetrievalFlags:
     """Discard publication apparatus (funding statements, copyright blocks,
     author-affiliation front matter) before reranking. See `filters.py`."""
 
+    crag_filter_items: bool = False
+    """Keep only the passages CRAG judged useful, instead of all-or-nothing.
+
+    `LLMGrader` already records *which* passages help this turn
+    (`GradeReport.relevant_ids`); the pipeline currently uses only the
+    aggregate verdict and keeps all `rerank_top_n` on any non-NONE grade.
+    Measured over 20 train turns plus 3 off-domain: of 60 passages placed in
+    condition C prompts, 45 were judged useful and **15 (25%) were judged
+    useless and injected anyway**. Per-turn useful counts were 2, 3 or 4 — a
+    real continuum that the all-or-nothing rule flattens into the 4-or-0
+    distribution seen downstream.
+
+    **Default off, deliberately.** Turning it on changes what condition C puts
+    in its prompt, and cells have already been generated against the current
+    behaviour. Enabling it is a study decision, not a lane decision.
+
+    **It also makes the context-precision gate partly circular**, which must be
+    disclosed wherever that number is reported: filtering with the judge and
+    then measuring precision with the same judge family on a closely related
+    question guarantees the number rises. The generation-quality argument for
+    filtering is sound on its own; the precision improvement it produces is
+    not independent evidence."""
+
     metadata_filter: bool = True
     """Apply theme / encounter-phase / equity filters to the kb_entry legs."""
 

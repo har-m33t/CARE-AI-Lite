@@ -229,3 +229,54 @@ def test_encounter_phase_reaches_query_construction(fake_llm, offline_flags, off
     )
     assert result.queryset is not None
     assert result.queryset.metadata.encounter_phase is EncounterPhase.PLANNING
+
+
+def test_crag_per_passage_filtering_is_off_by_default(monkeypatch, fake_llm, offline_legs) -> None:
+    """Default preserves the behaviour cells were already generated against.
+    Enabling it is a study decision, not a lane decision."""
+    import carelite.retrieval.pipeline as pipeline
+
+    monkeypatch.setattr(pipeline, "rrf_fuse", lambda *a, **k: [make_item("a"), make_item("b")])
+    fake_llm.default = (
+        '{"passages": [{"id": 1, "useful": true}, {"id": 2, "useful": false}], '
+        '"overall": "relevant"}'
+    )
+    flags = preset("R9").with_(hyde=False, rerank=False, router=False)
+    trace = retrieve("What does that mean?", flags=flags, grader_client=fake_llm)
+    assert [i.ref_id for i in trace.retrieved] == ["a", "b"]
+
+
+def test_crag_per_passage_filtering_drops_what_the_grader_called_useless(
+    monkeypatch, fake_llm, offline_legs
+) -> None:
+    """CRAG already records *which* passages help; the pipeline used only the
+    aggregate verdict. Measured over 23 turns, 15 of 60 passages placed in
+    condition C prompts (25%) had been judged useless by the same grader."""
+    import carelite.retrieval.pipeline as pipeline
+
+    monkeypatch.setattr(pipeline, "rrf_fuse", lambda *a, **k: [make_item("a"), make_item("b")])
+    fake_llm.default = (
+        '{"passages": [{"id": 1, "useful": true}, {"id": 2, "useful": false}], '
+        '"overall": "relevant"}'
+    )
+    flags = preset("R9").with_(hyde=False, rerank=False, router=False, crag_filter_items=True)
+    result = retrieve_detailed("What does that mean?", flags=flags, grader_client=fake_llm)
+    assert [i.ref_id for i in result.trace.retrieved] == ["a"]
+    assert [i.ref_id for i in result.rejected] == ["b"]
+    assert result.trace.fell_back_to_b is False
+
+
+def test_filtering_defers_rather_than_emitting_a_silent_empty_context(
+    monkeypatch, fake_llm, offline_legs
+) -> None:
+    """A non-NONE grade with nothing kept would be indistinguishable
+    downstream from a Condition-B fallback, which means something different."""
+    import carelite.retrieval.pipeline as pipeline
+
+    monkeypatch.setattr(pipeline, "rrf_fuse", lambda *a, **k: [make_item("a")])
+    # Grader contradicts itself: says ambiguous, marks nothing useful.
+    fake_llm.default = '{"passages": [{"id": 1, "useful": false}], "overall": "ambiguous"}'
+    flags = preset("R9").with_(hyde=False, rerank=False, router=False, crag_filter_items=True)
+    result = retrieve_detailed("x", flags=flags, grader_client=fake_llm)
+    assert [i.ref_id for i in result.trace.retrieved] == ["a"]
+    assert result.trace.fell_back_to_b is False
