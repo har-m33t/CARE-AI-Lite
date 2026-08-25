@@ -575,3 +575,47 @@ it.
 The one thing genuinely lost: if this project is ever written up for real, the
 naturalness result cannot be reclaimed as pre-specified. Registering later, after the
 data exists, would be worse than not registering at all.
+
+---
+
+## D11 — Condition LC is dropped from the evaluation run
+
+**Decision (2026-08-25, project owner): stop generating LC. The 39 LC cells already
+produced are kept as a partial record; the remaining 141 are not generated. The five
+other conditions complete in full.**
+
+LC was costing more than the rest of the experiment combined. Measured on the L40S at
+**3.3 minutes per cell against 6 seconds for the A/A2/D group** — roughly 33× — with
+~8.5 hours and about $8.50 left to run when the other five conditions were within the
+hour of finishing. For a local proof of concept that is not a defensible ratio.
+
+**The cause is understood and is not a defect in the pipeline.** `lc_sample()` is
+query-independent and deterministic by design (D7), so all 1,080 LC prompts share an
+identical ~119,500-token prefix. That should be nearly free after the first prefill
+through KV cache reuse. The measured per-cell time says Ollama is re-prefilling the
+whole prefix on every request instead. The design anticipated the saving; the runtime
+does not deliver it.
+
+**What is lost.** Secondary outcome 3 — C vs LC, "does query-dependent selection beat a
+fixed context" — can no longer be tested. That was already the *reduced* form of the
+question under D7, which established the corpus does not fit the window (255%
+utilisation) and that any selection rule is itself a form of retrieval. So the claim
+being given up is a second-order one, and it was already weaker than build plan v3 §3
+intended.
+
+**What survives intact.** The primary outcome (composite NURSE, A vs B), the retrieval
+comparison that motivates the whole architecture (B vs C), the cross-model baseline
+(A vs A2), and the negative control (B vs D). Every condition the study's main
+questions depend on is complete at 3 samples across all 60 held-out scenarios.
+
+**This is the second time LC was dropped for cost, by an independent lane, for the same
+measured reason.** `carelite-judge` excluded it from the §13 validation subset after
+measuring ~21 minutes per LC generation locally and projecting ~59 hours. Two lanes
+reaching the same conclusion from different hardware is itself the finding: **under
+this architecture, a long-context baseline is not affordable to evaluate at the scale
+the rest of the design assumes.** That belongs in `docs/limitations.md` as a result
+about the method, not as an apology for a missing column.
+
+The 39 completed LC cells are retained rather than discarded. They are not a usable
+sample for the C-vs-LC comparison — they cover 13 of 60 scenarios and were never
+randomised for partial analysis — and any use of them must say so.
