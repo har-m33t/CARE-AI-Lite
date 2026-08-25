@@ -103,6 +103,7 @@ class GenerationMeta:
     model: str
     model_digest: str
     output_gate_blocked: bool
+    output_gate_flags: tuple[str, ...]
 
 
 def load_holdout(
@@ -174,6 +175,7 @@ def load_holdout(
                 model=record.model,
                 model_digest=record.key.model_digest,
                 output_gate_blocked=bool(extra.get("output_gate_blocked", False)),
+                output_gate_flags=tuple(extra.get("output_gate_flags") or ()),
             )
     return generations, scenario_texts, meta
 
@@ -320,6 +322,8 @@ def rows_for(
                     "generator_model": m.model,
                     "generator_digest": m.model_digest,
                     "partial_condition": m.condition == Condition.LC.value,
+                    "output_gate_blocked": m.output_gate_blocked,
+                    "output_gate_flags": list(m.output_gate_flags),
                 }
             )
         out.append(row)
@@ -395,6 +399,7 @@ def build_manifest(
                 "`partial_condition: true`."
             ),
         },
+        "output_gate_blocked": _gate_block_summary(rows),
         "reporting": {
             "descriptive_only": True,
             "note": (
@@ -425,6 +430,63 @@ def build_manifest(
     }
 
 
+def _gate_block_summary(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """The cells whose text the output safety gate refused, and why they are hard.
+
+    These rows are in the run like any other — the gate refused the text, it did
+    not stop the cell being generated — so judging them scores output the system
+    would never have delivered. They are judged and flagged rather than dropped,
+    because **neither choice is neutral and the choice is not this module's to
+    make**:
+
+    * Leaving them in scores refused content as ordinary model output.
+    * Taking them out is not a symmetric trim. On this run the blocked cells are
+      not spread evenly: condition A2 carries 7 of 17, four of them on scenarios
+      no other condition tripped, so excluding them removes A2's worst-behaved
+      outputs and flatters its mean.
+
+    Both facts are recorded here so whoever runs the analysis chooses knowingly
+    and can run it both ways. `--skip-gate-blocked` drops them at load time.
+    """
+    from collections import Counter
+
+    blocked = [r for r in rows if r.get("output_gate_blocked")]
+    by_condition = Counter(str(r.get("condition")) for r in blocked)
+    by_scenario = Counter(str(r.get("scenario_id")) for r in blocked)
+    flags = Counter(f for r in blocked for f in (r.get("output_gate_flags") or []))
+    # Scenarios where every blocked cell came from a single condition: the
+    # asymmetric ones, which are what makes exclusion a judgement call.
+    conditions_per_scenario: dict[str, set[str]] = {}
+    for r in blocked:
+        conditions_per_scenario.setdefault(str(r.get("scenario_id")), set()).add(
+            str(r.get("condition"))
+        )
+    single = {
+        scenario: next(iter(conds))
+        for scenario, conds in sorted(conditions_per_scenario.items())
+        if len(conds) == 1
+    }
+
+    return {
+        "n_blocked": len(blocked),
+        "by_condition": dict(sorted(by_condition.items())),
+        "by_scenario": dict(sorted(by_scenario.items())),
+        "by_flag": dict(sorted(flags.items())),
+        "scenarios_only_one_condition_tripped": single,
+        "default_analysis": (
+            "EXCLUDE these rows from any headline condition comparison: the gate "
+            "refused this text, so scoring it measures something the system would "
+            "not have said."
+        ),
+        "but_note": (
+            "Exclusion is not symmetric on this run. The blocked cells concentrate "
+            "in A2, which carries 7 of 17 across four scenarios no other condition "
+            "tripped, so dropping them removes that arm's worst-behaved outputs. "
+            "Report the comparison both ways rather than picking one silently."
+        ),
+    }
+
+
 def _write(path: Path, rows: Sequence[Mapping[str, Any]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as fh:
@@ -443,6 +505,11 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - CLI wr
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--num-ctx", type=int, default=None)
     parser.add_argument("--skip-lc", action="store_true", help="drop the partial LC arm")
+    parser.add_argument(
+        "--skip-gate-blocked",
+        action="store_true",
+        help="drop cells the output safety gate refused (see the manifest first)",
+    )
     parser.add_argument("--allow-any-split", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
@@ -460,6 +527,8 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - CLI wr
     )
     if args.skip_lc:
         generations = [g for g in generations if g.condition is not Condition.LC]
+    if args.skip_gate_blocked:
+        generations = [g for g in generations if not meta[g.generation_id].output_gate_blocked]
     # Deterministic order so a resumed run works through the same sequence.
     generations.sort(key=lambda g: (g.scenario_id, g.condition.value, g.sample_idx))
     if args.limit:

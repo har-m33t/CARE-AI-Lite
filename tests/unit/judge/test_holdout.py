@@ -338,3 +338,73 @@ def test_an_absolute_glob_is_accepted(tmp_path: Path) -> None:
     assert len(matched) == 1
     gens, _, _ = load_holdout([Path(m) for m in matched])
     assert len(gens) == 1
+
+
+# ---------------------------------------------------------------------------
+# Output-gate-blocked cells
+# ---------------------------------------------------------------------------
+
+
+def _blocked_row(scenario: str, condition: str, flag: str, sample_idx: int = 0) -> dict[str, Any]:
+    r = _row(scenario, condition, sample_idx)
+    r["extra"]["output_gate_blocked"] = True
+    r["extra"]["output_gate_flags"] = [flag]
+    return r
+
+
+def test_gate_blocked_cells_are_flagged_on_every_row(tmp_path: Path) -> None:
+    """The gate refused this text, so scoring it measures something the system
+    would never have said. It must not reach a results table looking ordinary."""
+    journal = _journal(
+        tmp_path,
+        [
+            _blocked_row("SC-029", "A", "output.clinical_dosing"),
+            _row("SC-030", "A"),
+        ],
+    )
+    gens, texts, meta = load_holdout([journal])
+    run = judge_holdout(gens, texts, cache_path=tmp_path / "c.jsonl", client=_Client())
+    rows = {r["scenario_id"]: r for r in rows_for(run.results, meta)}
+    assert rows["SC-029"]["output_gate_blocked"] is True
+    assert rows["SC-029"]["output_gate_flags"] == ["output.clinical_dosing"]
+    assert rows["SC-030"]["output_gate_blocked"] is False
+
+
+def test_the_manifest_records_that_exclusion_is_not_symmetric(tmp_path: Path) -> None:
+    """On the real run A2 carries 7 of 17 blocked cells across scenarios no other
+    condition tripped, so dropping them flatters that arm. Both directions have
+    to be visible or the choice gets made silently."""
+    journal = _journal(
+        tmp_path,
+        [
+            _blocked_row("SC-029", "A", "output.clinical_dosing"),
+            _blocked_row("SC-029", "D", "output.clinical_dosing"),
+            _blocked_row("SC-057", "A2", "output.phi_leak"),
+            _blocked_row("SC-072", "A2", "output.clinical_dosing"),
+            _row("SC-030", "B"),
+        ],
+    )
+    gens, texts, meta = load_holdout([journal])
+    run = judge_holdout(gens, texts, cache_path=tmp_path / "c.jsonl", client=_Client())
+    manifest = build_manifest(run, rows_for(run.results, meta), meta)
+    gate = manifest["output_gate_blocked"]
+
+    assert gate["n_blocked"] == 4
+    assert gate["by_condition"] == {"A": 1, "A2": 2, "D": 1}
+    assert gate["by_flag"] == {"output.clinical_dosing": 3, "output.phi_leak": 1}
+    # SC-029 was tripped by two conditions; the A2 scenarios by one each.
+    assert gate["scenarios_only_one_condition_tripped"] == {"SC-057": "A2", "SC-072": "A2"}
+    assert "EXCLUDE" in gate["default_analysis"]
+    assert "not symmetric" in gate["but_note"]
+
+
+def test_blocked_cells_are_judged_by_default_not_dropped(tmp_path: Path) -> None:
+    """Dropping them up front would destroy the option to analyse both ways;
+    the flag preserves it. `--skip-gate-blocked` exists for the other choice."""
+    journal = _journal(
+        tmp_path, [_blocked_row("SC-029", "A", "output.clinical_dosing"), _row("SC-030", "B")]
+    )
+    gens, _, meta = load_holdout([journal])
+    assert len(gens) == 2
+    kept = [g for g in gens if not meta[g.generation_id].output_gate_blocked]
+    assert len(kept) == 1
