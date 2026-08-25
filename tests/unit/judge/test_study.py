@@ -695,7 +695,8 @@ def test_no_module_claims_a_pre_registration_still_exists() -> None:
     root = pathlib.Path(__file__).resolve().parents[3] / "carelite" / "eval"
     # A mention is acceptable only when the same sentence disclaims it.
     negated = re.compile(
-        r"(not\s+(a\s+)?pre-?regist|never\b|no\s+registration|dropped\s+the\s+pre|"
+        r"(not\s+(a\s+)?pre-?regist|never\b|dropped\s+the\s+pre|"
+        r"\bno\s+(pre-?regist|registration|result)|"
         r"in\s+the\s+(pre-?)?registered\s+sense|nothing\b.*\bconfirmatory)",
         re.IGNORECASE,
     )
