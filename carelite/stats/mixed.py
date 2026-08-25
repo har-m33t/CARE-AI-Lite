@@ -37,7 +37,7 @@ invites someone to quote it.
 
 **Two decompositions, deliberately both.**
 
-`fit_random_intercept` is the pre-specified model: `value ~ condition` with a
+`fit_random_intercept` is the model the plan names: `value ~ condition` with a
 random intercept for scenario, fitted by REML. It gives the between-condition
 fixed effects with standard errors that account for scenarios being repeated
 across conditions, plus the scenario variance component.
@@ -208,7 +208,7 @@ class IndependenceCheck:
     intervals too narrow -- and how far above 1 measures the scenario-by-condition
     structure in the data. At or below 1 means a cell's samples differ by
     sampling noise alone, where the naive analysis is accidentally right; it is
-    still not the analysis that was registered, because whether that holds is
+    still not the analysis that was planned, because whether that holds is
     only knowable after the fact.
     """
 
@@ -238,7 +238,7 @@ def independence_check(
     Sample-level pairs are matched on `sample_idx`, which is what a naive
     analysis would do -- the samples inside a cell are exchangeable, so there is
     no better pairing available, and the arbitrariness of the choice is part of
-    why the sample-level analysis is not the registered one.
+    why the sample-level analysis is not the planned one.
     """
     per_generation = measure_by_generation(long, m)
     if per_generation.empty or "sample_idx" not in per_generation.columns:
@@ -345,7 +345,7 @@ class MixedModelResult:
                 "    Above 1.00x, the sample-level analysis understates the standard error and "
                 "every\n    p-value it produces is too small. At 1.00x a cell's samples differ "
                 "by sampling noise\n    alone — which is only knowable after the fact, and is "
-                "not the registered analysis either."
+                "not the planned analysis either."
             )
         return "\n".join(lines)
 
