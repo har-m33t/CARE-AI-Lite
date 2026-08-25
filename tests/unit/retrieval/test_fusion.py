@@ -141,3 +141,37 @@ def test_bfs_on_an_empty_graph_is_empty() -> None:
     """`graph_edge` is empty until the carelite-graph lane lands; the leg is a
     no-op in the fusion rather than an error."""
     assert bfs_hops({}, ["a"], max_hops=2) == {}
+
+
+def test_bfs_limit_must_not_be_spent_on_unresolvable_hub_nodes() -> None:
+    """The bug that made the graph leg silently inert against a populated table.
+
+    This is a curated property graph: `theme:*`, `phase:*`, `tier:*` and paper
+    ids are hubs that connect entries but carry no retrievable text, and
+    `_fetch_graph_nodes` drops them. Reaching a second kb_entry from a first
+    takes two hops *through* such a hub. Capping the traversal at `top_k` raw
+    nodes therefore spends the whole budget at depth 1 on nodes that are about
+    to be discarded.
+
+    Here every depth-1 neighbour is a hub; the two real entries sit at depth 2.
+    A tight cap returns nothing usable, a generous one reaches both.
+    """
+    adjacency = {
+        "kb-a": ["theme:x", "phase:y", "tier:z", "paper-1"],
+        "theme:x": ["kb-a", "kb-b"],
+        "phase:y": ["kb-a", "kb-c"],
+        "tier:z": ["kb-a"],
+        "paper-1": ["kb-a"],
+    }
+    tight = bfs_hops(adjacency, ["kb-a"], max_hops=2, limit=4)
+    assert not [n for n in tight if n.startswith("kb-")], "tight cap yields no usable node"
+
+    generous = bfs_hops(adjacency, ["kb-a"], max_hops=2, limit=500)
+    assert {n for n in generous if n.startswith("kb-")} == {"kb-b", "kb-c"}
+
+
+def test_bfs_traverses_through_hubs_rather_than_stopping_at_them() -> None:
+    adjacency = {"kb-a": ["theme:x"], "theme:x": ["kb-a", "kb-b"]}
+    reached = bfs_hops(adjacency, ["kb-a"], max_hops=2, limit=500)
+    assert reached["theme:x"] == 1
+    assert reached["kb-b"] == 2

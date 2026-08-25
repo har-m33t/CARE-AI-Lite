@@ -436,3 +436,13 @@ def test_lc_sample_respects_the_budget(monkeypatch) -> None:
     monkeypatch.setattr("carelite.db.connection.fetch_all", lambda *a, **k: rows, raising=False)
     sample = ablation.lc_sample(budget_tokens=1000, seed=1)
     assert len(sample) * 100 <= 1000
+
+
+def test_table_states_results_are_descriptive() -> None:
+    """D10: the project is a local proof of concept, not pre-registered.
+    The gate is an engineering threshold this lane set for itself, and the
+    table must not let a reader take a PASS for a hypothesis test."""
+    table = format_markdown([AblationRow("R9", "", "", n_scored=8, context_precision=0.8)])
+    assert "Descriptive results" in table
+    assert "not a hypothesis test" in table
+    assert "D10" in table

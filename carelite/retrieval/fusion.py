@@ -442,6 +442,11 @@ def bfs_hops(
     return {n: seen[n] for n in ordered}
 
 
+#: Ceiling on nodes visited during traversal, before resolution. Generous
+#: rather than tight: see `graph_search` for why a tight cap silently emptied
+#: this leg. The graph is ~715 edges, so this is never the binding constraint.
+_TRAVERSAL_CAP = 500
+
 _ADJACENCY_SQL = """
 SELECT source_id, target_id FROM graph_edge
 WHERE source_id = ANY(%(ids)s) OR target_id = ANY(%(ids)s)
@@ -498,7 +503,24 @@ def graph_search(
             adjacency.setdefault(key, [])
             adjacency[key] = sorted(set(adjacency[key]) | set(value))
 
-    reached = bfs_hops(adjacency, frontier, max_hops=max_hops, limit=top_k)
+    # Traverse without a tight cap, then truncate *after* resolution.
+    #
+    # The limit must not be applied to raw nodes. This is a curated property
+    # graph: `theme:*`, `phase:*`, `tier:*`, `nurse:*`, `habit:*` and paper ids
+    # are hub nodes that connect entries but carry no retrievable text, and
+    # `_fetch_graph_nodes` drops them. Capping the traversal at `top_k` raw
+    # nodes therefore spends the budget on nodes that are about to be
+    # discarded — measured against the live graph, a 20-seed traversal with
+    # limit=10 returned 5 usable entries, and inside the full pipeline (whose
+    # seeds are mostly chunk ids, and *no* edge has a chunk as its source) it
+    # returned **zero**, making the graph leg silently inert even though
+    # `graph_edge` holds 715 rows.
+    #
+    # Resolving first and truncating second costs nothing here — a 2-hop
+    # traversal over ~715 edges is trivial — and avoids hardcoding the graph
+    # lane's id conventions into this module, which would rot the moment they
+    # add a node kind.
+    reached = bfs_hops(adjacency, frontier, max_hops=max_hops, limit=_TRAVERSAL_CAP)
     if not reached:
         return RankedList(
             leg="graph",
@@ -508,8 +530,16 @@ def graph_search(
             note="no nodes reached",
         )
 
-    hits = _fetch_graph_nodes(reached)
-    return RankedList(leg="graph", query=",".join(frontier[:3]), target="kb_entry", hits=hits)
+    hits = _fetch_graph_nodes(reached)[:top_k]
+    note = ""
+    if not hits and reached:
+        note = (
+            f"{len(reached)} nodes reached but none resolve to a kb_entry "
+            f"(hub nodes carry no retrievable text)"
+        )
+    return RankedList(
+        leg="graph", query=",".join(frontier[:3]), target="kb_entry", hits=hits, note=note
+    )
 
 
 def _fetch_graph_nodes(reached: dict[str, int]) -> list[LegHit]:

@@ -78,6 +78,22 @@ class RetrievalResult:
     leg_notes: list[str] = field(default_factory=list)
     rerank_available: bool | None = None
     stage_ms: dict[str, int] = field(default_factory=dict)
+    leg_hits: dict[str, int] = field(default_factory=dict)
+    """Hits contributed per `(leg, target)`, before fusion.
+
+    Kept because "CRAG rejected this turn" and "the legs never found anything
+    to reject" look identical from the trace alone, and they are opposite
+    diagnoses. `n_candidates` below distinguishes them at the fusion stage;
+    this attributes a thin candidate set to the leg responsible."""
+
+    @property
+    def n_candidates(self) -> int:
+        """Candidates that reached the CRAG gate.
+
+        The number that separates "the gate made a semantic call on a healthy
+        set" from "the gate was handed almost nothing". `retrieved` alone
+        cannot show this: a fallback empties it by design."""
+        return len(self.trace.retrieved) + len(self.rejected)
 
     @property
     def retrieved(self) -> list[RetrievedItem]:
@@ -138,6 +154,7 @@ def retrieve_detailed(
     started = time.monotonic()
     stage_ms: dict[str, int] = {}
     leg_notes: list[str] = []
+    leg_hits: dict[str, int] = {}
 
     # -- 1. adaptive router ------------------------------------------------
     t0 = time.monotonic()
@@ -212,6 +229,8 @@ def retrieve_detailed(
             for ranked in dense_search(vec, label, top_k=flags.dense_top_k, metadata=metadata):
                 if ranked.note:
                     leg_notes.append(f"dense[{ranked.target}]: {ranked.note}")
+                key = f"dense:{ranked.target}"
+                leg_hits[key] = leg_hits.get(key, 0) + len(ranked.hits)
                 ranked_lists.append(ranked)
 
     if flags.lexical:
@@ -219,6 +238,8 @@ def retrieve_detailed(
             for ranked in lexical_search(lq, top_k=flags.lexical_top_k, metadata=metadata):
                 if ranked.note:
                     leg_notes.append(f"lexical[{ranked.target}]: {ranked.note}")
+                key = f"lexical:{ranked.target}"
+                leg_hits[key] = leg_hits.get(key, 0) + len(ranked.hits)
                 ranked_lists.append(ranked)
 
     if flags.graph:
@@ -226,6 +247,7 @@ def retrieve_detailed(
         ranked = graph_search(seeds, top_k=flags.graph_top_k)
         if ranked.note:
             leg_notes.append(f"graph: {ranked.note}")
+        leg_hits["graph"] = leg_hits.get("graph", 0) + len(ranked.hits)
         ranked_lists.append(ranked)
 
     fused = rrf_fuse(ranked_lists, rrf_k=flags.rrf_k, limit=max(flags.dense_top_k, 20))
@@ -312,4 +334,5 @@ def retrieve_detailed(
         leg_notes=leg_notes,
         rerank_available=rerank_available,
         stage_ms=stage_ms,
+        leg_hits=leg_hits,
     )

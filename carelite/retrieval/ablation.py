@@ -739,6 +739,14 @@ def format_markdown(rows: Sequence[AblationRow]) -> str:
         )
     lines.append("")
     lines.append(
+        "**Descriptive results from a single local run (D10).** This project is a "
+        "local proof of concept and is not pre-registered. Nothing in this table is "
+        "confirmatory or pre-specified; the gate below is an engineering threshold "
+        "this lane set for itself, not a hypothesis test, and a row that clears or "
+        "misses it is an observation about one run on one corpus."
+    )
+    lines.append("")
+    lines.append(
         f"Gate: on-domain context precision > {CONTEXT_PRECISION_GATE}, "
         f"and only where at least {MIN_SCORED_FOR_GATE} turns were scored."
     )
