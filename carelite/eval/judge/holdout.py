@@ -49,6 +49,7 @@ can support — see `manifest.json["judge_caveats"]`.
 from __future__ import annotations
 
 import argparse
+import glob
 import json
 import sys
 import threading
@@ -446,7 +447,10 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - CLI wr
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
 
-    paths = sorted(Path().glob(args.glob))
+    # `Path().glob` refuses an absolute pattern; the stdlib `glob` does not,
+    # and an absolute path is the normal way to name a journal on a pod whose
+    # working directory is not the repo.
+    paths = [Path(p) for p in sorted(glob.glob(args.glob))]
     if not paths:
         print(f"no journals matched {args.glob!r}", file=sys.stderr)
         return 2

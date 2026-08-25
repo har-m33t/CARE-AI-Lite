@@ -323,3 +323,18 @@ def test_skip_lc_is_available_but_not_the_default(tmp_path: Path) -> None:
     assert {g.condition for g in gens} == {Condition.LC, Condition.A}
     kept = [g for g in gens if g.condition is not Condition.LC]
     assert len(kept) == 1
+
+
+def test_an_absolute_glob_is_accepted(tmp_path: Path) -> None:
+    """`Path().glob` refuses absolute patterns. An absolute path is the normal
+    way to name a journal on a pod whose working directory is not the repo, so
+    the CLI must not depend on being run from the right place."""
+    import glob as globmod
+
+    _journal(tmp_path, [_row("SC-001", "A")])
+    pattern = str(tmp_path / "generations-*.jsonl")
+    assert pattern.startswith("/")
+    matched = sorted(globmod.glob(pattern))
+    assert len(matched) == 1
+    gens, _, _ = load_holdout([Path(m) for m in matched])
+    assert len(gens) == 1
