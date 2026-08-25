@@ -658,9 +658,17 @@ def run_ablation(
     max_turns: int | None = 8,
     score_precision: bool = True,
     include_off_domain: bool = True,
+    on_row: Any = None,
 ) -> list[AblationRow]:
     """Run the whole ladder. Shares one embedder, one loaded cross-encoder and
-    one judge client across every row, so the model load cost is paid once."""
+    one judge client across every row, so the model load cost is paid once.
+
+    `on_row(row)` is called as each row completes. A full ladder is on the
+    order of an hour of judge calls, and emitting only at the end means a
+    process killed at 90% loses everything — which happened. Callers use this
+    to checkpoint, so a restart resumes against a warm cache with the finished
+    rows already on disk.
+    """
     if turns is None:
         turns = default_turns(limit=max_turns)
     off_domain: tuple[str, ...] = OFF_DOMAIN_TURNS if include_off_domain else ()
@@ -690,19 +698,20 @@ def run_ablation(
 
         for name in rows:
             flags = preset(name)
-            out.append(
-                run_row(
-                    flags,
-                    turns,
-                    off_domain=off_domain,
-                    embedder=embedder,
-                    generator=generator,
-                    grader_client=judge,
-                    reranker=reranker,
-                    precision_client=judge,
-                    score_precision=score_precision,
-                )
+            row = run_row(
+                flags,
+                turns,
+                off_domain=off_domain,
+                embedder=embedder,
+                generator=generator,
+                grader_client=judge,
+                reranker=reranker,
+                precision_client=judge,
+                score_precision=score_precision,
             )
+            out.append(row)
+            if on_row is not None:
+                on_row(row)
     finally:
         embedder.close()
         generator.close()
@@ -805,21 +814,33 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - CLI
     parser.add_argument("--out", default="", help="write JSON results here")
     args = parser.parse_args(argv)
 
+    from pathlib import Path
+
+    settings = get_settings()
+    path = Path(args.out or (settings.runs_dir / "retrieval" / "ablation.json"))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    done: list[AblationRow] = []
+
+    def checkpoint(row: AblationRow) -> None:
+        """Emit and persist each row as it lands, so a killed run keeps what
+        it already paid for."""
+        done.append(row)
+        print(
+            f"[{len(done)}/{len(args.rows)}] {row.label}: "
+            f"precision={row.gate_label} on-dom-fb={row.on_domain_fallback_rate:.0%} "
+            f"n_ret={row.mean_retrieved:.1f}",
+            flush=True,
+        )
+        path.write_text(json.dumps([r.to_dict() for r in done], indent=2))
+
     rows = run_ablation(
         rows=args.rows,
         max_turns=args.max_turns,
         score_precision=not args.no_precision,
+        on_row=checkpoint,
     )
-    table = format_markdown(rows)
-    print(table)
-
-    settings = get_settings()
-    out_path = args.out or (settings.runs_dir / "retrieval" / "ablation.json")
-    from pathlib import Path
-
-    path = Path(out_path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps([r.to_dict() for r in rows], indent=2))
+    print()
+    print(format_markdown(rows))
     print(f"\nwrote {path}")
 
     full = next((r for r in rows if r.label == "R9"), None)
