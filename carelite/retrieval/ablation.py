@@ -790,6 +790,18 @@ def format_markdown(rows: Sequence[AblationRow]) -> str:
     )
     lines.append("")
     lines.append(
+        "**A CRAG row's precision is not comparable to a non-CRAG row's.** With "
+        "`crag_filter_items` off, CRAG does not change *what* is retrieved on a turn "
+        "it keeps — so on those turns a CRAG row and its non-CRAG twin (R9 vs R8, R7 "
+        "vs R6) hold identical passages and score identically. The only difference is "
+        "that the CRAG row has dropped its hardest turns from the denominator, and the "
+        "model family that dropped them is the one that then scores precision. Read a "
+        'CRAG row\'s precision as "precision on the turns the gate accepted", never as '
+        "evidence that the gate improved retrieval. What the gate is actually worth is "
+        "in `off-dom rej` and `on-dom fb`, which are counts rather than judged scores."
+    )
+    lines.append("")
+    lines.append(
         "**`grader` attributes each CRAG decision.** `llm` is the prompted "
         "retrieval evaluator; `score` is the cosine-threshold fallback, which "
         "cannot detect an off-domain turn (see crag.py). A row showing `score` "

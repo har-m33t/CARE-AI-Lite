@@ -446,3 +446,15 @@ def test_table_states_results_are_descriptive() -> None:
     assert "Descriptive results" in table
     assert "not a hypothesis test" in table
     assert "D10" in table
+
+
+def test_table_warns_that_crag_precision_is_a_selection_effect() -> None:
+    """R8 and R9 differ only in the CRAG flag, and with per-passage filtering
+    off CRAG does not change what is retrieved on a kept turn. So the two rows
+    hold identical passages on those turns and score identically; the whole
+    R8->R9 precision gap is CRAG having removed its hardest turns from the
+    denominator, adjudicated by the same model family that scores precision.
+    A reader must not take that gap for evidence the gate improves retrieval."""
+    table = format_markdown([AblationRow("R9", "", "", n_scored=15, context_precision=0.856)])
+    assert "not comparable to a non-CRAG row" in table
+    assert "never as evidence that the gate improved retrieval" in table
