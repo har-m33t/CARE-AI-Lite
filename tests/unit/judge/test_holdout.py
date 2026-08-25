@@ -408,3 +408,76 @@ def test_blocked_cells_are_judged_by_default_not_dropped(tmp_path: Path) -> None
     assert len(gens) == 2
     kept = [g for g in gens if not meta[g.generation_id].output_gate_blocked]
     assert len(kept) == 1
+
+
+# ---------------------------------------------------------------------------
+# Score summary
+# ---------------------------------------------------------------------------
+
+
+def _score_row(condition: str, value: int, **over: Any) -> dict[str, Any]:
+    row: dict[str, Any] = {
+        "condition": condition,
+        "output_gate_blocked": False,
+        "fell_back_to_b": False,
+    }
+    row.update({k: value for k in RUBRIC_DIMENSIONS})
+    row.update(over)
+    return row
+
+
+def test_a_dimension_the_judge_never_varied_is_named_degenerate() -> None:
+    """`ritualistic` was scored 1 on all 30 validation responses. Whether that
+    holds over 939 is the question the summary exists to answer, and a constant
+    dimension must be named rather than left looking stable."""
+    from carelite.eval.judge.holdout import summarise_scores
+
+    rows = [_score_row("A", 3) for _ in range(20)]
+    for i, r in enumerate(rows):
+        r["name"] = 1 + (i % 5)  # this one varies
+    summary = summarise_scores(rows)
+
+    assert summary["dimensions"]["ritualistic"]["n_distinct"] == 1
+    assert summary["dimensions"]["ritualistic"]["degenerate"] is True
+    assert "ritualistic" in summary["degenerate_dimensions"]
+    assert summary["dimensions"]["name"]["n_distinct"] == 5
+    assert "name" not in summary["degenerate_dimensions"]
+
+
+def test_condition_c_is_split_on_the_fallback_flag() -> None:
+    """C fell back to B on 38% of cells, and on those it is B. The split has to
+    be visible without re-deriving it."""
+    from carelite.eval.judge.holdout import summarise_scores
+
+    rows = (
+        [_score_row("C", 5, fell_back_to_b=False) for _ in range(6)]
+        + [_score_row("C", 2, fell_back_to_b=True) for _ in range(4)]
+        + [_score_row("B", 2) for _ in range(5)]
+    )
+    groups = summarise_scores(rows)["quality_means_by_group"]
+    assert groups["C (retrieved)"]["n"] == 6
+    assert groups["C (fell back to B)"]["n"] == 4
+    assert groups["C (retrieved)"]["name"] == 5.0
+    assert groups["C (fell back to B)"]["name"] == 2.0
+    assert groups["C"]["n"] == 10  # the pooled figure is still there, and misleading
+
+
+def test_the_summary_reports_on_the_quality_scale() -> None:
+    """`ritualistic` raw 1 is the *best* score. Reported raw beside its ten
+    neighbours it would read as the worst."""
+    from carelite.eval.judge.holdout import summarise_scores
+
+    rows = [_score_row("A", 1) for _ in range(4)]
+    means = summarise_scores(rows)["quality_means_by_group"]["A"]
+    assert means["ritualistic"] == 5.0  # 6 - 1
+    assert means["name"] == 1.0
+
+
+def test_gate_blocked_rows_are_excluded_from_the_summary_but_kept_in_the_file() -> None:
+    from carelite.eval.judge.holdout import summarise_scores
+
+    rows = [_score_row("A", 4) for _ in range(3)] + [_score_row("A", 1, output_gate_blocked=True)]
+    summary = summarise_scores(rows)
+    assert summary["n_rows"] == 4
+    assert summary["n_scored_excluding_gate_blocked"] == 3
+    assert summary["quality_means_by_group"]["A"]["name"] == 4.0

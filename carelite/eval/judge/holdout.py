@@ -400,6 +400,7 @@ def build_manifest(
             ),
         },
         "output_gate_blocked": _gate_block_summary(rows),
+        "score_summary": summarise_scores(rows),
         "reporting": {
             "descriptive_only": True,
             "note": (
@@ -483,6 +484,75 @@ def _gate_block_summary(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
             "in A2, which carries 7 of 17 across four scenarios no other condition "
             "tripped, so dropping them removes that arm's worst-behaved outputs. "
             "Report the comparison both ways rather than picking one silently."
+        ),
+    }
+
+
+def summarise_scores(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """Per-dimension distribution over the judged holdout, and the C-split means.
+
+    Two questions this answers that nothing else does.
+
+    **Does the validation study's degeneracy hold at scale?** On the train-split
+    validation subset `ritualistic` was scored 1 on all 30 responses and
+    `naturalness` had a discrimination ratio of 0.68. Those were 30 responses;
+    this is 939. `n_distinct` and `modal_share` per dimension say whether the
+    judge is discriminating here, and a dimension that used one value across 939
+    responses spanning five conditions is measuring nothing, however
+    self-consistent it looks.
+
+    **Does condition C differ from B where it actually retrieved?** C fell back
+    to B on 38% of cells, and on those it *is* B. Means are reported for C split
+    on `fell_back_to_b` alongside B, so the comparison that matters is visible
+    without re-deriving it. Quality scale via `to_quality`, so every dimension
+    points the same way and `ritualistic` does not read backwards next to its
+    neighbours.
+    """
+    import statistics
+    from collections import Counter
+
+    from carelite.eval.rubric.dimensions import to_quality
+
+    scored = [r for r in rows if not r.get("output_gate_blocked")]
+
+    dimensions: dict[str, Any] = {}
+    for key in RUBRIC_DIMENSIONS:
+        values = [r[key] for r in scored if r.get(key) is not None]
+        counts = Counter(values)
+        dimensions[key] = {
+            "n": len(values),
+            "distribution": dict(sorted(counts.items())),
+            "n_distinct": len(counts),
+            "modal_share": round(counts.most_common(1)[0][1] / len(values), 4) if values else None,
+            "between_variance": round(statistics.variance(values), 4) if len(values) > 1 else 0.0,
+            "degenerate": len(counts) <= 1,
+        }
+
+    def _mean(subset: Sequence[Mapping[str, Any]], key: str) -> float | None:
+        vals = [to_quality(key, r[key]) for r in subset if r.get(key) is not None]
+        return round(statistics.fmean(vals), 3) if vals else None
+
+    groups: dict[str, list[Mapping[str, Any]]] = {}
+    for r in scored:
+        groups.setdefault(str(r.get("condition")), []).append(r)
+    c_rows = groups.get("C", [])
+    groups["C (retrieved)"] = [r for r in c_rows if not r.get("fell_back_to_b")]
+    groups["C (fell back to B)"] = [r for r in c_rows if r.get("fell_back_to_b")]
+
+    return {
+        "n_rows": len(rows),
+        "n_scored_excluding_gate_blocked": len(scored),
+        "dimensions": dimensions,
+        "degenerate_dimensions": [k for k, v in dimensions.items() if v["degenerate"]],
+        "quality_means_by_group": {
+            group: {"n": len(subset), **{k: _mean(subset, k) for k in RUBRIC_DIMENSIONS}}
+            for group, subset in sorted(groups.items())
+            if subset
+        },
+        "note": (
+            "Quality scale (`to_quality`), so higher is better on every dimension "
+            "including `ritualistic`. Gate-blocked rows are excluded here; they are "
+            "present in rubric_scores.jsonl and flagged."
         ),
     }
 
