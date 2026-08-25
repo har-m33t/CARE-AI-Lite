@@ -27,13 +27,14 @@ conditions are complete: 180 cells each, no gaps.
 | CRAG fell back to B | 69 of 180 C cells (38%) | Reported both ways. See §4. |
 | Incomplete on ≥1 dimension | 46 of 900 generations | Kept; the missing dimension only is dropped. |
 
-**Missing data.** 204 of 9,900 (generation, dimension) cells are unscored — between 10 and 22 per
+**Missing data.** 189 of 9,900 (generation, dimension) cells are unscored — between 10 and 22 per
 dimension, scattered rather than concentrated. Following analysis plan §10, an unscored dimension is
 missing *for that dimension only*: it is not imputed and not treated as a 1, the generation keeps its
 composite computed from the dimensions that were scored, and `n_dimensions` records how many
 contributed. Dropping the whole generation instead would have discarded 46 otherwise-good rows to
-recover 204 cells; imputing would have invented data. (The judge lane counts 50 incomplete rows
-across all 939; the four-row difference is LC.)
+recover 189 cells; imputing would have invented data. (Across all 939 judged rows including LC the
+figures are 50 incomplete generations and 204 unscored cells; the difference is the 39 dropped LC
+cells.)
 
 ---
 
