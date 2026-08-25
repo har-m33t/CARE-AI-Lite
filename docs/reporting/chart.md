@@ -45,7 +45,7 @@ below means one scenario × condition × sample generation.
 | 9ai | Performance-evaluation measures | Done | `docs/preregistration.md` §3–4 (composite outcomes) and §5 (rubric dimensions and the `to_quality()` aggregation rule). |
 | 10a | Performance evaluation: alignment with ground truth/reference standard | Pending | Results not yet generated; to be reported per `docs/preregistration.md` §8 once the run completes. |
 | 10b | Nature of deviations from ground truth/reference standard | Pending | To be reported alongside 10a — expected to include per-dimension breakdowns (e.g., where `ritualistic` diverges from `naturalness`) once data exists. |
-| 10c | Evaluation for harmful, biased, or misleading responses | Partial | Mechanism exists (`carelite/safety/output_gate.py`, `carelite/safety/redflag.py`; adversarial input corpus under `pytest -m security`) and runs on every generation; aggregate incidence to be reported once the full run completes. Bias evaluation specifically is the equity-subgroup analysis in `docs/preregistration.md` §8.4, with its pre-specified coverage gaps stated in `docs/limitations.md` §3. |
+| 10c | Evaluation for harmful, biased, or misleading responses | Partial | Mechanism exists (`carelite/safety/output_gate.py`, `carelite/safety/redflag.py`; adversarial input corpus under `pytest -m security`) and runs on every generation; aggregate incidence to be reported once the full run completes. Bias evaluation specifically is the equity subgroup analysis in `docs/preregistration.md` §8.5 (n = 20 holdout, descriptive per D9/D10), with its coverage gaps stated in `docs/limitations.md` §3. |
 | 11a | Interpretation in context of relevant evidence | Pending | To be written once results exist, grounded in the corpus themes documented in `docs/limitations.md` §1. |
 | 11b | Strengths and limitations | Done (living) | `docs/limitations.md`, kept current across the build. |
 | 11c | Implications for practice, education, policy, regulation, research | Pending | To be written alongside 11a; must explicitly restate the no-deployment-claim boundary from `docs/limitations.md` §6. |
@@ -54,7 +54,7 @@ below means one scenario × condition × sample generation.
 | 12c | Ethical approval process | Not applicable | No human-subjects or patient data; synthetic scenarios only. Human-rater recruitment (external evaluators scoring de-identified synthetic text) to be checked against the recruiting institution's policy before it begins, noted here rather than assumed exempt. |
 | 12ci | Data-privacy safeguards for patient health information | Not applicable | No real patient health information is used anywhere in this project; fleet rule 4 forbids committing any. Input-side PHI detection (`carelite/safety/phi.py`) exists as a runtime guard against a user pasting real PHI into the CLI, not because the study itself handles PHI. |
 | 12cii | Permission/licensing for copyrighted data | Done | Corpus retrieval uses only open-access routes (Unpaywall, NCBI ID-converter, PMC), and paywalled papers are deliberately left unretrieved rather than obtained through unlicensed means — `data/fetch_corpus.py` behavior and `docs/limitations.md` §1. |
-| 12d | Study protocol provided | Done | `docs/preregistration.md` is the protocol, plus the OSF registration once completed. |
+| 12d | Study protocol provided | Done | `docs/preregistration.md` is the protocol. **No OSF registration exists or will — `DECISIONS.md` D10 dropped it by decision**, this being a local proof of concept; the document is kept as a timestamped record of the plan rather than an active registration. |
 | 12e | Data, code, model-parameter availability | Done | This repository (code, prompts, scenario bank); `REPRODUCE.md` and `make reproduce`; model parameters are the publicly distributed Ollama/`sentence-transformers` weights referenced by digest, not redistributed. |
 
 **Summary:** every item with an answer available today (background/rationale, model identifiers,
@@ -63,4 +63,6 @@ data/code availability) is done; every item that depends on results, human-rater
 manuscript-stage details (title wording, abstract, run dates, evaluator characteristics, the
 performance-evaluation results themselves) is marked pending with a pointer to the document that
 will complete it. Nothing here is marked done that is not actually verifiable in the repository
-today.
+today. **Per `DECISIONS.md` D10, every performance-evaluation result reported once items 10a–10c are
+filled in is descriptive, not confirmatory or pre-specified in a registered sense** — OSF
+registration (item 12d) was dropped by decision rather than merely delayed.

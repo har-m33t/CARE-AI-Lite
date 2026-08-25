@@ -210,8 +210,9 @@ def render_report(report: ReproReport) -> str:
     elif n_gen == 0:
         lines.append(
             "0 generations. Nothing to reproduce yet — this is expected on a fresh clone that has "
-            "only had the schema applied. See REPRODUCE.md section 7 for the (multi-hour, "
-            "OSF-pre-registration-gated) inference run that populates this table."
+            "only had the schema applied. See REPRODUCE.md section 7 for the multi-hour inference "
+            "run that populates this table (no registration gate applies: DECISIONS.md D10 dropped "
+            "OSF registration, so results are descriptive rather than gated on it)."
         )
     elif n_gen < EXPECTED_HOLDOUT_GENERATIONS:
         lines.append(

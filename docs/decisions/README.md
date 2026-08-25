@@ -99,12 +99,19 @@ pass exists and the validation study clears its pre-registered threshold on a gi
 
 ## Later decisions
 
-`DECISIONS.md` D1–D5 (2026-08-24, orchestrating session) — theme taxonomy (seven, not ten), equity
-stratum membership (SC-077 and SC-010 reclassified out), the equity knowledge-base re-extraction
-(approved, sequenced after corpus fixes, not yet run as of `docs/limitations.md`'s last update),
-dropping the human-verification claim, and describing the `racial_ethnic` axis as narrower than its
-name — are recorded there, not duplicated here. `docs/limitations.md` and `docs/preregistration.md`
-both cite the specific decisions that affect their content directly.
+`DECISIONS.md` D1–D10 (all 2026-08-24, orchestrating session and project owner) are recorded there,
+not duplicated here; `docs/limitations.md` and `docs/preregistration.md` cite the specific decisions
+that affect their content directly, at the point they affect it. In brief, for orientation:
+theme taxonomy (D1, seven not ten); equity stratum membership (D2); the equity knowledge-base
+re-extraction, approved and — per its own outcome entry — run with a negative result: zero net new
+equity entries, because the mechanism is a property of the corpus (D3); dropping the
+human-verification claim (D4); the `racial_ethnic` axis described as narrower than its name (D5);
+`README.md` assigned to this lane (D6); Condition LC redefined as `LC-sample` because the corpus
+does not fit the context window (D7); NURSE `respect` and `support` having zero knowledge-base
+grounding (D8); six analysis specifications the pre-registration left open, settled (D9); and
+**OSF pre-registration dropped — this project is a local proof of concept and every result is
+descriptive (D10),** which is the decision that changes how every other document in this project
+may describe its own findings, this one included.
 
 Future entries in this log should be dated, should state the decision in one sentence before the
 reasoning, and should link the commit or file that encodes it — the pattern followed above.

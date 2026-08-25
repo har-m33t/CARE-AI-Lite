@@ -4,10 +4,12 @@ Cold-start instructions for a machine that is not the one this project was built
 sections in order — each one is a gate for the next. Runtimes are stated honestly, including the
 multi-hour inference lanes; do not expect this to finish in an afternoon.
 
-**Before you start anything here, read `docs/preregistration.md`.** If you are about to generate
-the 1,080 holdout evaluation responses (§6, §7 below in this document — "Full evaluation run"),
-the analysis plan must already be registered on OSF. That is not a formality this document can
-satisfy for you.
+**Before you start anything here, read `docs/preregistration.md`.** It is an analysis plan, not an
+active registration — per `DECISIONS.md` D10 this project is a local proof of concept and OSF
+registration was dropped by decision, so there is no registration gate to satisfy before §6/§7's
+1,080 holdout generations run. What still applies: every result this reproduction produces is
+**descriptive**, not confirmatory or pre-specified in a registered sense, however precisely the
+analysis plan fixed its thresholds in advance — say so in anything you write up from this run.
 
 ---
 
@@ -288,24 +290,27 @@ uv run python -m carelite.generate.runner --limit 5 --dry-run   # plan and count
 
 ### Full evaluation run
 
-**Do not start this until `docs/preregistration.md` has been registered on OSF.** That document's
-opening section explains why: every one of the 1,080 responses this step generates becomes
-post-hoc analysis data the moment it exists, and the entire credibility argument for the
-naturalness finding in particular depends on the plan predating the data.
+**No registration gate applies — `DECISIONS.md` D10 dropped OSF registration by decision.** What the
+gate has been replaced with is honesty in the write-up: every one of the 1,080 responses this step
+generates is analysis data from a single local (or, as below, rented-GPU) run, and any conclusion
+drawn from it is reported as descriptive, not as a pre-specified finding.
 
-Once registered:
-
-- **Generation:** 60 held-out scenarios × 6 conditions × 3 samples = **1,080 generations**, run
-  locally against `gemma4:12b` (5 of 6 conditions) and `qwen3.5:9b` (condition A2), with Condition C
-  additionally paying retrieval latency (dense + lexical + graph fusion, rerank, and for a subset,
-  HyDE). This is genuinely multi-hour on local CPU/consumer-GPU inference — the exact wall-clock
-  depends heavily on your hardware and has not been measured end-to-end in this repository as of
-  this writing, because the pre-registration gate above means it has not yet been run. Budget
-  **several hours to most of a day** and expect it, not a fixed number quoted here as fact. Every
-  generation is cached and keyed by `(scenario_id, condition, prompt_version, model_digest, seed,
-  sample_idx)` per build plan v3 §16, so an interrupted run resumes rather than restarts — confirm
-  this against `carelite/generate/`'s actual caching behavior once that lane lands, since it is
-  still in flight.
+- **Generation:** 60 held-out scenarios × 6 conditions × 3 samples = **1,080 generations**, against
+  `gemma4:12b` (5 of 6 conditions) and `qwen3.5:9b` (condition A2), with Condition C additionally
+  paying retrieval latency (dense + lexical + graph fusion, rerank, and for a subset, HyDE).
+  **Condition LC-sample is the dominant cost in the whole experiment, measured directly rather than
+  estimated** (`carelite/eval/judge/study.py`): filling the 112,000-token budget D7 caps it at is a
+  ~119,500-token prefill at roughly 95 tok/s on local hardware — about 21 minutes per generation,
+  which extrapolates to **~59 hours for Condition LC alone** across the 60-scenario, 3-sample
+  holdout. That cost is a direct consequence of D7's fix (it made LC implementable by filling the
+  window, not affordable by shrinking it) and is why this project's own holdout run does not stay
+  local: it runs on a **rented L40S (48 GB)** with all four models pinned in VRAM and four parallel
+  workers, at roughly **2.1 minutes per cell**. Expect your own local single-worker run to be far
+  slower than that for any condition that includes LC, and budget accordingly — this is not a "your
+  hardware is unusually slow" situation, it is the measured cost of the condition. Every generation
+  is cached and keyed by `(scenario_id, condition, prompt_version, model_digest, seed, sample_idx)`
+  per build plan v3 §16, so an interrupted run resumes rather than restarts — confirm this against
+  `carelite/generate/`'s actual caching behavior once that lane lands, since it is still in flight.
 - **Judging:** the full run is judged **single-pass at temperature 0** deliberately, not 5-sample
   self-consistency, specifically to keep this lane closer to **~8 hours than the ~35 hours** that
   5× sampling on all 1,080 generations would cost (`carelite/config.py`,
@@ -383,7 +388,7 @@ uv run python -m carelite.corpus.fetch --email you@example.com
 # ... KB extraction/load (see §5) ...
 # ... index build (see §6) ...
 make eval-smoke
-# --- OSF pre-registration happens here, before the next line ---
+# --- no registration gate (DECISIONS.md D10); results below are descriptive ---
 uv run python -m carelite.generate.runner             # --split defaults to holdout
 uv run python -m carelite.eval.judge.runner --split holdout
 make reproduce

@@ -1,30 +1,45 @@
-# OSF Pre-Registration — Draft
+# Analysis Plan — Kept as a Historical Record, Not a Registration
 
-**Status: DRAFT, NOT YET REGISTERED.** This document is written to be pasted into an OSF
-registration template, not to be treated as a substitute for one. Registration is an
-account-holder action that only the project owner can take (`DECISIONS.md`, "Gates that remain
-with a person"). This file exists so that action costs an afternoon of copy-editing, not a
-from-scratch drafting effort, and so the analysis is fixed in writing before anyone can be tempted
-to peek.
+**Status: SUPERSEDED. Per `DECISIONS.md` D10 (2026-08-24, project owner), OSF registration is
+dropped and every result this project produces is descriptive.** This project is a personal proof
+of concept that needs to work locally — it is not being published, submitted, or handed to anyone
+else, and pre-registration existed to serve one argument (build plan v3 §10) that only pays off with
+an audience. There is none, so the registration gate was removed rather than kept as a formality.
+
+**This document is kept, not deleted, because D10 says explicitly why it is still worth something:**
+it remains an accurate, git-timestamped record of the analysis plan as it stood before any holdout
+data existed, and the analysis below still runs exactly as specified — Holm correction, two-sided
+tests, bootstrap CIs reported before p-values, the weakest-link composite rule, judge-agreement
+demotion, all of it, because that discipline is what keeps this project from fooling itself,
+independent of whether anyone else is watching. What changed is only what this document may be
+*claimed as*: **nothing below — the primary outcome, the eight comparisons, the equity subgroup, the
+naturalness prediction — may be described as confirmatory, pre-specified, or hypothesis-testing, in
+this document, in `docs/limitations.md`, in `README.md`, or in any write-up this project produces.**
+Every one of them is an observation from a single local run. Where the text below still says
+"primary," "confirmatory," or "registered," read it as *the plan as originally specified* — history,
+not a claim about the status of a result. D1–D9 all stand; nothing about the corpus, the knowledge
+base, the equity findings, or the instrument defects this document and `docs/limitations.md`
+describe becomes less true because the audience changed. The one thing genuinely lost: if this
+project is ever written up for a real audience later, the naturalness result cannot be reclaimed as
+pre-specified after the fact — registering post hoc would be worse than never registering.
 
 ---
 
-## ⚠ THE ORDERING DEPENDENCY — READ THIS FIRST
+## What this document was written to prevent, kept for the record
 
-**This must be registered on OSF before any of the 1,080 holdout generations exist.**
+**This document was drafted to be registered on OSF before any of the 1,080 holdout generations
+existed — that registration never happened, by decision, not by delay.** Build plan v3 §10 states
+the argument the plan below still follows even without a registry behind it: *"Pre-registration is
+what makes the naturalness result credible if it goes against you. Without it, 'Condition A beat B
+on naturalness' reads as a post-hoc excuse. With it, it reads as a pre-specified secondary outcome
+that came out the interesting way."* Without the registry, a naturalness result against the system
+reads as an honestly-run local observation rather than a registered finding — a weaker claim, stated
+as what it now is rather than dressed as what it cannot be.
 
-Build plan v3 §10 states the argument this project rests on: *"Pre-registration is what makes the
-naturalness result credible if it goes against you. Without it, 'Condition A beat B on
-naturalness' reads as a post-hoc excuse. With it, it reads as a pre-specified secondary outcome
-that came out the interesting way."* The generator, judge, and rubric all exist as code right now
-and none of the 60 held-out scenarios have been run through them for the full evaluation. That is
-the window this document is written in, and it is the only window in which it is free — the moment
-inference lane III runs, everything below stops being a pre-specification and starts being a
-description of what the numbers happened to look like.
-
-**Everything not explicitly listed as primary, secondary, or a pre-specified sensitivity analysis
-below is exploratory.** That includes any comparison, subgroup, or figure that occurs to a reader
-of the results but was not written down here first.
+**Everything not explicitly listed as primary, secondary, or a specified sensitivity analysis below
+was exploratory under the original plan and remains so** — but per D10, "primary" and "secondary"
+themselves no longer carry registered, confirmatory weight; they describe what the plan prioritized,
+not a status this run's results actually hold.
 
 ---
 
@@ -350,13 +365,17 @@ has occurred**; the harness is built and exercised against synthetic rater data
 (`carelite/eval/human/synthetic.py`) specifically so that a blinding bug or a reversed
 `ritualistic` column is caught before a real rater's time is spent, not after.
 
-## 13. Registration checklist
+## 13. Incorporation checklist (registration items retired by D10)
 
-- [ ] `HOLDOUT_DIGEST` above matches `carelite.scenarios.freeze.HOLDOUT_DIGEST` at the moment of
-      registration.
-- [ ] Rubric version (`docs/rubric.md`, currently 1.0.0) and judge validation-plan version
-      (`carelite.eval.judge.validation.VALIDATION_PLAN_VERSION`, currently `1.0.0`) match what is
-      pasted into the OSF template.
+This section was a registration checklist; per `DECISIONS.md` D10 there is no registration to
+complete, so it now tracks whether the plan below stayed internally consistent as decisions landed,
+which is the part of this checklist's original job that still matters.
+
+- [x] `HOLDOUT_DIGEST` above matches `carelite.scenarios.freeze.HOLDOUT_DIGEST`
+      (`5a3cb128…653395`, confirmed against the live constant).
+- [x] Rubric version (`docs/rubric.md`, 1.0.0) and judge validation-plan version
+      (`carelite.eval.judge.validation.VALIDATION_PLAN_VERSION`, `1.0.0`) match what this document
+      cites.
 - [x] `DECISIONS.md` D7 (LC-sample) incorporated: §2's LC row and §4 outcome 3 state that LC is a
       fixed 169-chunk (35.9%) round-robin sample, not the whole corpus, and what the C-vs-LC
       comparison actually tests as a result.
@@ -368,9 +387,15 @@ has occurred**; the harness is built and exercised against synthetic rater data
       stated (§8.1); the equity subgroup corrected to holdout n = 20 and labeled descriptive (§8.5);
       the `pct_range_ge_2 > 0.25` self-consistency threshold given a number (§8.6c); all three point
       estimators specified as always-reported (§8.3); the weakest-link composite rule stated (§9).
-- [ ] Registered on OSF, timestamped, before `carelite.repro` or any inference-lane script
-      generates a single holdout response.
-- [ ] Registration URL recorded in `docs/decisions/` as a dated entry once complete.
+- [x] `DECISIONS.md` D10 incorporated: this document's status header states the plan is kept as a
+      historical record rather than an active registration, and every result described anywhere in
+      this project's documentation is labeled descriptive, not confirmatory.
+- [x] The §13 judge-validation study's completed n = 30 findings (`ritualistic` degenerate,
+      variance bounding agreement at r = 0.878, all eleven dimensions exploratory for want of a
+      human comparator rather than as a failure — `runs/judge/validation_report.json`) are recorded
+      in `docs/limitations.md` §4, where the results actually live, rather than duplicated here.
+- [x] **OSF registration retired by decision, not left pending.** `DECISIONS.md` D10: this project
+      will not be registered. No URL exists to record because none will be sought.
 
 ---
 

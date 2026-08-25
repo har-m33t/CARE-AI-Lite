@@ -267,19 +267,107 @@ against an actual encounter transcript.
 Human ratings are the credibility ceiling on this project (build plan v3 §12) and they are
 deferred: the human-rating harness (`carelite/eval/human/`) is built and exercised end-to-end
 against synthetic rater data (`carelite/eval/human/synthetic.py`) rather than real raters, so that
-a blinding bug or a reversed `ritualistic` column is caught before, not after, a paid rater spends
-a weekend on 60 responses. As of this writing no real human rating has occurred. Every number this
-project reports is judge-only until that changes, and carries that caveat in the sentence that
-reports it — not only in this document.
+a blinding bug or a reversed `ritualistic` column is caught before, not after, a rater spends time
+on 60 responses. As of this writing no real human rating has occurred. Every number this project
+reports is judge-only until that changes, and carries that caveat in the sentence that reports
+it — not only in this document.
 
 The judge itself (`gpt-oss:20b`, a different model family from the `gemma4:12b` generator, per v3
 §13's independence requirement) is validated as its own component study rather than assumed
-trustworthy: self-consistency, positional-bias, span-grounding, and per-dimension
-Krippendorff's-α/Spearman's-ρ checks are implemented in `carelite/eval/judge/validation.py` against
-a pre-specified threshold (α ≥ 0.667, ρ ≥ 0.5, ≥ 30 paired units — see
-`docs/preregistration.md`). Below that threshold on a given dimension, results on that dimension are
-reported as exploratory. The validation study itself needs the human-rating data it is meant to
-validate against, so it cannot run until human rating happens, which has not yet occurred.
+trustworthy, per `carelite/eval/judge/validation.py`. **Per `DECISIONS.md` D10, this project is a
+local proof of concept: OSF pre-registration was dropped, and every result below — including every
+finding in this section — is descriptive, not confirmatory or pre-specified in a registered sense,
+however precisely a threshold was fixed in advance of the data.** The threshold itself
+(Krippendorff's α ≥ 0.667, Spearman's ρ ≥ 0.5, ≥ 30 paired units) is still the honest bar this
+project holds itself to; it just is not a registered one.
+
+### The §13 validation study ran at n = 30, and produced three findings
+
+`runs/judge/validation_report.json` and `.txt` record a completed run — 30 generations, 1,650
+attempted judge scores, self-consistency and positional-bias measured directly, and an instrument
+check run against a generated (not human) synthetic panel, because no human comparator exists yet.
+**None of the following is, or is being reported as, a confirmatory result.** It is what the
+instrument does, measured, before any human rating exists to validate it against.
+
+- **1. The judge's `ritualistic` dimension is degenerate, and this breaks the mechanism behind the
+naturalness hypothesis specifically.** It scored **1 on every one of the 30 responses** — zero
+between-generation variance, one distinct value used. That makes it perfectly self-consistent (it
+tops the stability column, mean sample variance 0.11) while discriminating nothing at all;
+`discrimination.ratio = 0.0`, `degenerate = true`. Build plan v3 predicts Condition B loses to
+Condition A on `naturalness` *because* framework prompting induces ritualistic, script-like
+phrasing — `ritualistic` is the dimension built to detect that mechanism (`docs/rubric.md`). A judge
+that emits `ritualistic = 1` for every response, framework-prompted or not, cannot register that
+effect, which weakens confidence in the mechanism behind `docs/preregistration.md` §4 outcome 4 (A
+> `naturalness` > B) specifically, not only the dimension's own reliability. `naturalness` itself is
+nearly as compromised: discrimination ratio **0.68** — within-generation sampling noise exceeds
+between-generation signal. `ie` sits at 93% modal share with only 2 distinct values used across 30
+responses. **This belongs where the naturalness hypothesis is discussed, not only in a limitations
+list**, because it bears on whether the judge can detect the study's most interesting predicted
+result at all, independent of whether the effect exists.
+- **2. Chance-corrected agreement is bounded above by how much variance the judge produces, and no
+sample size repairs that.** Measured against the synthetic instrument-check panel at n = 30: the
+correlation between a dimension's between-generation variance and its recovered Krippendorff's α is
+**r = 0.878** (up from r = 0.818 at an earlier n = 12 check — the relationship strengthens, not
+weakens, with more data). Low-variance dimensions (`ie`, `naturalness`, `ritualistic`) average α
+**0.140**; high-variance ones (`name`, `understand`, `explore`, `epp`, `de`) average **0.910** —
+same generator, same injected noise, same threshold, radically different apparent agreement. This
+is Krippendorff's α's own prevalence effect (the kappa paradox): when a dimension's scores barely
+vary, *expected* disagreement collapses, so ordinary rater noise dominates the ratio and the
+coefficient falls toward zero even where raters are in fact agreeing on nearly every unit. **State
+this as a methods finding about chance-corrected agreement as an evaluation instrument, not as an
+apology for this judge** — it is the most transferable result this validation study has produced,
+and it would recur with any judge or any rater pool scoring a low-variance construct. Its practical
+consequence: a dimension failing the confirmatory threshold has **two distinguishable causes** that
+deserve different sentences — the judge disagreeing with raters, or the judge not discriminating
+between responses at all — and `discrimination.ratio` (not the stability/self-consistency column
+alone) is what separates them. Read variance and agreement together, never one without the other.
+- **3. All eleven dimensions are exploratory, and for this run that is a correct verdict, not a
+failure to report as one.** α and ρ are undefined (`n_units = 0`) for every dimension because no
+human ratings exist yet — human rating is sprint 10, deliberately deferred while the harness is exercised against synthetic raters (`carelite/eval/human/__init__.py`). `verdict.reason` in
+the report states this precisely: *"With no human consensus there is no comparator, so every
+dimension is exploratory for want of one — which is a statement about the study's stage, not about
+the judge."* **The threshold machinery itself is independently verified working**, via a synthetic
+instrument check that is explicitly labeled *not a result* in the report: a null-control panel
+(independent synthetic raters) produces 0/11 confirmatory, as it should; a positive-control panel
+(raters converging on a shared truth) produces **5/11 confirmatory at n = 30**, up from 0/11 at
+n = 12 purely on paired-unit count clearing the ≥ 30 threshold. The gate moves with the data in the
+direction it should, on data with no human in it at all — which is exactly what an instrument check
+is supposed to demonstrate before a real comparator exists.
+
+**Supporting numbers, verified directly against `runs/judge/validation_report.json`:** span
+grounding admitted **1,584/1,650 = 96.0%** of attempted scores (verbatim span located), all 66
+rejections `span_not_found`; **zero `no_score` results across all 1,650 attempted scores** — the
+same empty-output, reasoning-token-budget-starvation failure mode documented in
+`carelite/retrieval/ablation.py` (`JUDGE_NUM_PREDICT`), which once produced a false 0.000
+context-precision reading on R0/R8/R9 of the retrieval ablation before being sized with headroom,
+does not appear here. A manual adjudication of 30 spans
+found 24 actually support their score (**80.0%, 95% CI 62.7–90.5%**) — the judge lane labeled this
+explicitly as **not** the v3 §13 human spot-check, because an adjudicator is not a rater; that
+distinction is preserved here rather than blurred, and **the human spot-check remains outstanding.**
+Positional bias across 12 reversed-order pairs averages **|Δ| 0.26** scale points across the eleven
+dimensions, with `explore` a clear outlier at **−1.08 mean signed delta, 42% of pairs shifting by at
+least one full point** — worth a specific look before `explore` is trusted in any comparison that
+depends on presentation order.
+
+**A defect this project already fixed is now confirmed against real data, not only unit tests, and
+belongs in the reproducibility record for that reason.** `carelite/eval/human/dry_run.py`'s
+contamination check (regression-tested by
+`tests/unit/judge/test_study.py::test_leaking_calibration_inflates_alpha_on_every_dimension`,
+fixing commit `da38cd1`) found that leaking the 5 calibration items into a rating panel's unit list
+inflates Krippendorff's α on **every one of the 11 dimensions** — raters are shown the calibration
+consensus and discuss it, so calibration ratings converge on a published answer key, and
+near-unanimous units mechanically raise α. A synthetic sweep at varying panel sizes
+(`runs/judge/contamination_by_size.json`) confirms the direction is universal (`all_positive: true`
+at every size tested) and the magnitude shrinks as the clean unit count grows — at the smallest
+tested size the mean inflation is +0.048 and the largest single-dimension inflation is +0.113 (on
+`support`). The judge lane's own report of the effect measured against the real n = 30 instrument
+panels puts it larger still — mean +0.088, maximum **+0.783 on `ie`** — worst precisely on the
+floored, low-discrimination dimensions this section already flags as least trustworthy, which is
+the load-bearing part: **without this fix, the headline agreement numbers would have been flattered
+most exactly where the judge is weakest.** (That specific n = 30 magnitude is reported here as
+relayed from the judge lane rather than independently reproduced from a persisted artifact in this
+repository as of this writing; the direction, the universality across all 11 dimensions, and the
+concentration on low-discrimination dimensions are independently verified above.)
 
 ---
 
@@ -318,6 +406,19 @@ validate against, so it cannot run until human rating happens, which has not yet
   a practitioner would actually build, but a different one from what build plan v3 posed. This
   distinction is carried in `docs/preregistration.md` §2 and §4 rather than left to a results-section
   footnote.
+- **D7's window-filling fix made LC implementable, not affordable, and that cost moved the holdout
+  run off local hardware.** `carelite/eval/judge/study.py` measured LC's prefill directly: roughly
+  119,500 tokens at ~95 tok/s locally (degrading from ~101 as the KV cache grows) — about **21
+  minutes per generation**. D7's 112,000-token budget cap barely helps (~19.6 minutes at the same
+  rate), because the cost is set by how full the window is, not by which selection rule fills it.
+  Extrapolated across the full holdout run (60 scenarios × 3 samples for LC alone), that is
+  **roughly 59 hours for Condition LC by itself** on local hardware — the dominant single cost in
+  the entire experiment, and a direct consequence of D7 rather than of anything else in the
+  pipeline. The full six-condition holdout run is therefore executed on a rented L40S (48 GB) with
+  all four models pinned in VRAM and four parallel workers, at roughly 2.1 minutes per cell rather
+  than local, single-worker generation. This is a local proof of concept per `DECISIONS.md` D10, and
+  renting compute to make the originally-specified LC condition tractable at all is part of that
+  scope, not a departure from it.
 - **Index build is complete and independently verified: 471/471 chunks embedded.** The 342
   pre-existing embeddings were confirmed byte-identical against a fresh embed, 0 mismatches, and
   mean pairwise cosine across the corpus is 0.5788 (decomposing to old-old 0.5755, new-new 0.6100,

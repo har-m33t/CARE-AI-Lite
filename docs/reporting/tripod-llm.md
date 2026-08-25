@@ -54,7 +54,7 @@ marked pending and point to the document that will hold the answer once the run 
 | 14a | Funding source and role | Pending | Project context: DBMI Summer Internship, University of Arizona College of Medicine – Phoenix. No external funding identified as of this writing. |
 | 14b | Conflicts of interest | Done | None declared. |
 | 14c | Study protocol location (healthcare settings) | Done | This repository; `docs/preregistration.md` is the protocol. |
-| 14d | Registration information (healthcare settings) | **Pending — this is the gate.** | OSF registration not yet completed. See "ordering dependency" at the top of `docs/preregistration.md`. |
+| 14d | Registration information (healthcare settings) | Not applicable | **Retired by decision, not pending — `DECISIONS.md` D10.** This is a local proof of concept; OSF registration was dropped rather than completed, and there is no registration URL to report. `docs/preregistration.md` is kept as a timestamped analysis-plan record instead. |
 | 14e | Data availability | Done | Public repository (see repo README); no PDFs, database dumps, or real patient data committed, per fleet rule 4. Synthetic scenarios and generated text are committed or reproducible via `make reproduce`. |
 | 14f | Code availability | Done | This repository; `REPRODUCE.md` and `make reproduce`. |
 | 15 | Patient and public involvement | Not applicable | No patients or public contributors were involved in scenario design, prompt design, or rubric design; all scenarios are synthetic and authored by the project team. Stated plainly rather than omitted. |
@@ -72,6 +72,7 @@ marked pending and point to the document that will hold the answer once the run 
 **Summary:** 14 of 14 universally-applicable main items have a completed answer or an explicit "not
 applicable" with reasoning; the results-dependent items (7d, 8a–8c, 12, 14a, 16a/16b/16d, 17,
 18–19a, 19g) are marked pending and will be completed by `carelite-repro` alongside the results
-write-up once `carelite.repro` runs against real evaluation data. Item 14d — OSF registration — is
-the one pending item that is a hard prerequisite for the rest, not a scheduling convenience; see
-`docs/preregistration.md`.
+write-up once `carelite.repro` runs against real evaluation data. **Per `DECISIONS.md` D10, every
+result reported anywhere in this appendix — once 17/18/19a are filled in — is descriptive, not
+confirmatory or pre-specified in a registered sense**, since OSF registration was dropped by
+decision (item 14d) rather than merely not yet completed.

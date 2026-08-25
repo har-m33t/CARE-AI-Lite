@@ -158,7 +158,7 @@ carelite-ai/
 │
 ├── docs/
 │   ├── rubric.md                  # The rating rubric humans and the judge are scored against
-│   ├── preregistration.md         # OSF pre-registration draft — NOT YET REGISTERED
+│   ├── preregistration.md         # Analysis plan; OSF registration dropped by D10, kept as a record
 │   ├── limitations.md             # Kept-current limitations record (build plan v3 §17)
 │   ├── decisions/                 # Dated decision log (foundational build decisions)
 │   └── reporting/                 # TRIPOD-LLM and CHART checklists, completed as an appendix
@@ -199,8 +199,8 @@ behind each of these and `docs/limitations.md` for what each one does not yet cl
 | LLM-as-judge and its validation study | Built; validation cannot run until human-rating data exists |
 | Human-rating harness | Built, exercised only against synthetic raters — **no real human rating has occurred** |
 | Terminal (CLI) interface | Built |
-| Full evaluation run (1,080 holdout generations) | **Not started — blocked on OSF pre-registration by design** |
-| OSF pre-registration | Drafted (`docs/preregistration.md`); **not yet registered** |
+| Full evaluation run (1,080 holdout generations) | In progress, on rented GPU hardware (see `docs/limitations.md` §5) — **every result is descriptive, per `DECISIONS.md` D10, not confirmatory or pre-specified** |
+| OSF pre-registration | **Retired by decision, not pending** — `DECISIONS.md` D10: this is a local proof of concept, not being published or submitted, so registration was dropped rather than completed. `docs/preregistration.md` is kept as a timestamped record of the analysis plan as it stood before evaluation data existed. |
 | Statistical analysis (Friedman/Wilcoxon/Holm-Bonferroni, mixed-effects) | Not started |
 | Figures | Not started |
 | Reporting checklists (TRIPOD-LLM, CHART) | Drafted as a living appendix (`docs/reporting/`); items that depend on results are marked pending, not filled in |
