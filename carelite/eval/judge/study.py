@@ -87,6 +87,7 @@ from carelite.types import RUBRIC_DIMENSIONS, Condition, Generation, Scenario, S
 
 __all__ = [
     "EXCLUDED_CONDITIONS",
+    "JUDGE_NUM_CTX",
     "N_REVERSED",
     "N_SUBSET_SCENARIOS",
     "SUBSET_CONDITIONS",
@@ -142,6 +143,28 @@ SUBSET_CONDITIONS: tuple[Condition, ...] = tuple(
 #: covers; a paired delta over 30 cells detects a bias worth acting on, and
 #: spending the same hours on the other 30 would buy a third decimal place.
 N_REVERSED = 30
+
+
+#: `num_ctx` for the judge client, overriding `settings.models.judge.context_window`.
+#:
+#: That default is 128,000. The judge prompt is the rubric plus one response —
+#: **measured at ~3,740 tokens, with the longest observed completion at 725** —
+#: so the configured window is roughly 28x what the work needs, and llama.cpp
+#: allocates the KV cache up front from it. On this 24 GB machine that put
+#: llama-server at 14.7 GB resident with nothing else running, drove the system
+#: into swap (pageouts 13k -> 97k, swap grown to 8 GB and 82% used), and cut
+#: generation throughput to 11-12 tok/s. Per-generation judging time went from
+#: ~540s to 1,366s over the same run.
+#:
+#: 16,384 is ~3.6x the largest prompt+completion seen, so nothing truncates and
+#: the judge sees byte-identical input. `num_ctx` is deliberately **not** part of
+#: `cache_key` — it cannot change the answer, only whether the machine can
+#: compute it — so samples taken under either setting are interchangeable.
+#:
+#: This is a study-level override, not a config change: `carelite/config.py` is
+#: frozen and belongs to the foundation lane. The number there is worth revisiting
+#: for any lane that loads a large model on this hardware.
+JUDGE_NUM_CTX = 16_384
 
 
 def study_dir() -> Path:
@@ -371,6 +394,7 @@ def judge_subset(
     order: OptionOrder,
     cache_path: Path,
     client: ChatClient | None = None,
+    num_ctx: int = JUDGE_NUM_CTX,
 ) -> JudgeRun:
     """Run the five-sample validation regime over `generations`, resumably.
 
@@ -392,7 +416,7 @@ def judge_subset(
 
     with JudgeCache(cache_path) as cache:
         judge = LLMJudge.for_validation(
-            client or OllamaChatClient(),
+            client or OllamaChatClient(num_ctx=num_ctx),
             cache=cache,
             order=order,
             rater_id=f"judge-{order.value}",
@@ -839,6 +863,7 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - CLI wr
         default=None,
         help="comma-separated override of SUBSET_CONDITIONS, e.g. A,B,C",
     )
+    parser.add_argument("--num-ctx", type=int, default=JUDGE_NUM_CTX)
     parser.add_argument("--journal", type=Path, default=None)
     parser.add_argument("--limit", type=int, default=None, help="cap generations judged")
     args = parser.parse_args(argv)
@@ -892,6 +917,7 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - CLI wr
             scenario_texts,
             order=order,
             cache_path=out / f"validation-{order.value}.jsonl",
+            num_ctx=args.num_ctx,
         )
         print(
             f"judged={run.n_judged} errors={len(run.errors)} "
