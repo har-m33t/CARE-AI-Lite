@@ -99,19 +99,23 @@ pass exists and the validation study clears its pre-registered threshold on a gi
 
 ## Later decisions
 
-`DECISIONS.md` D1–D10 (all 2026-08-24, orchestrating session and project owner) are recorded there,
-not duplicated here; `docs/limitations.md` and `docs/preregistration.md` cite the specific decisions
-that affect their content directly, at the point they affect it. In brief, for orientation:
-theme taxonomy (D1, seven not ten); equity stratum membership (D2); the equity knowledge-base
-re-extraction, approved and — per its own outcome entry — run with a negative result: zero net new
-equity entries, because the mechanism is a property of the corpus (D3); dropping the
+`DECISIONS.md` D1–D12 (2026-08-24 through 2026-08-25, orchestrating session and project owner) are
+recorded there, not duplicated here; `docs/limitations.md` and `docs/preregistration.md` cite the
+specific decisions that affect their content directly, at the point they affect it. In brief, for
+orientation: theme taxonomy (D1, seven not ten); equity stratum membership (D2); the equity
+knowledge-base re-extraction, approved and — per its own outcome entry — run with a negative result:
+zero net new equity entries, because the mechanism is a property of the corpus (D3); dropping the
 human-verification claim (D4); the `racial_ethnic` axis described as narrower than its name (D5);
 `README.md` assigned to this lane (D6); Condition LC redefined as `LC-sample` because the corpus
 does not fit the context window (D7); NURSE `respect` and `support` having zero knowledge-base
-grounding (D8); six analysis specifications the pre-registration left open, settled (D9); and
-**OSF pre-registration dropped — this project is a local proof of concept and every result is
-descriptive (D10),** which is the decision that changes how every other document in this project
-may describe its own findings, this one included.
+grounding (D8); six analysis specifications the pre-registration left open, settled (D9); **OSF
+pre-registration dropped — this project is a local proof of concept and every result is descriptive
+(D10),** which is the decision that changes how every other document in this project may describe
+its own findings, this one included; Condition LC stopped at 39 of its planned 180 holdout cells
+after costing ~33× the other conditions per cell on rented GPU hardware, the second lane to reach
+that conclusion independently (D11); and `generation.gate_blocked` added so a response the output
+safety gate refused is visible and excludable rather than silently scored as though it had passed —
+17 of 939 holdout generations, 13 of them on one scenario (D12).
 
 Future entries in this log should be dated, should state the decision in one sentence before the
 reasoning, and should link the commit or file that encodes it — the pattern followed above.

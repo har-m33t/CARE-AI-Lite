@@ -59,8 +59,17 @@ PIPELINE_STAGES: tuple[tuple[str, str], ...] = (
     ("human rating assignment", "rating_assignment"),
 )
 
-#: Full holdout run per `docs/preregistration.md` §6: 60 scenarios x 6 conditions x 3 samples.
+#: Full holdout run as originally specified, `docs/preregistration.md` §6: 60 scenarios x 6
+#: conditions x 3 samples. Kept for reference; `EXPECTED_HOLDOUT_GENERATIONS_ACTUAL` below is the
+#: number this run actually reaches, and is what completion is checked against.
 EXPECTED_HOLDOUT_GENERATIONS = 60 * 6 * 3
+
+#: What the holdout run actually completes to, per `DECISIONS.md` D11: Condition LC was stopped
+#: at 39 of its planned 180 cells (cost ~33x the other conditions per cell on the rented GPU), so
+#: this run is complete, by decision, at 5 conditions x 180 + 39 = 939 -- not at 1,080. Checking
+#: against the original 1,080 would report a run that finished exactly as decided as "still
+#: partial", which is a worse error than the one this constant fixes.
+EXPECTED_HOLDOUT_GENERATIONS_ACTUAL = 5 * 60 * 3 + 39
 
 #: The two downstream lanes this module hands off to once they exist. See the module docstring
 #: for the call contract each is expected to expose.
@@ -214,16 +223,25 @@ def render_report(report: ReproReport) -> str:
             "run that populates this table (no registration gate applies: DECISIONS.md D10 dropped "
             "OSF registration, so results are descriptive rather than gated on it)."
         )
-    elif n_gen < EXPECTED_HOLDOUT_GENERATIONS:
+    elif n_gen == EXPECTED_HOLDOUT_GENERATIONS_ACTUAL:
         lines.append(
-            f"{n_gen:,} of the expected {EXPECTED_HOLDOUT_GENERATIONS:,} holdout generations "
-            f"present (60 scenarios x 6 conditions x 3 samples, docs/preregistration.md SS6). "
-            "The full run has not completed — figures and tables below reflect a partial run."
+            f"{n_gen:,} generations present — the holdout run is complete at the figure "
+            "DECISIONS.md D11 fixed it at (5 conditions x 180 cells + 39 partial LC cells), not "
+            f"at the originally-specified {EXPECTED_HOLDOUT_GENERATIONS:,}. Condition LC was "
+            "stopped by decision, not by failure — see docs/limitations.md SS4."
+        )
+    elif n_gen < EXPECTED_HOLDOUT_GENERATIONS_ACTUAL:
+        lines.append(
+            f"{n_gen:,} of the expected {EXPECTED_HOLDOUT_GENERATIONS_ACTUAL:,} holdout "
+            "generations present (5 conditions x 180 + 39 partial LC cells, per DECISIONS.md "
+            "D11 — see docs/limitations.md SS4). The full run has not completed — figures and "
+            "tables below reflect a partial run."
         )
     else:
         lines.append(
-            f"{n_gen:,} generations present — the full holdout run "
-            f"({EXPECTED_HOLDOUT_GENERATIONS:,} expected) appears complete."
+            f"{n_gen:,} generations present, exceeding the {EXPECTED_HOLDOUT_GENERATIONS_ACTUAL:,} "
+            "this run was expected to complete to under DECISIONS.md D11 — check whether LC "
+            "generation resumed after being stopped, or whether this is a different run."
         )
 
     lines.append("")

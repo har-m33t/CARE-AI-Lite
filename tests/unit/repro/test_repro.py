@@ -53,18 +53,32 @@ def test_render_report_partial_run_says_so() -> None:
     )
     text = render_report(report)
     assert "500" in text
-    assert "1,080" in text
+    assert "939" in text  # EXPECTED_HOLDOUT_GENERATIONS_ACTUAL, not the original 1,080
     assert "partial run" in text
 
 
-def test_render_report_complete_run() -> None:
+def test_render_report_complete_run_at_the_d11_figure() -> None:
+    # 939, not 1,080 -- DECISIONS.md D11 stopped Condition LC at 39/180 cells by decision.
+    report = ReproReport(
+        db_ok=True,
+        db_errors=[],
+        stages=[StageStatus(stage="generation", table="generation", n_rows=939)],
+    )
+    text = render_report(report)
+    assert "complete" in text
+    assert "D11" in text
+    assert "1,080" in text  # named as the superseded original figure, for contrast
+
+
+def test_render_report_more_than_d11_expected_flags_for_a_look() -> None:
     report = ReproReport(
         db_ok=True,
         db_errors=[],
         stages=[StageStatus(stage="generation", table="generation", n_rows=1080)],
     )
     text = render_report(report)
-    assert "appears complete" in text
+    assert "1,080" in text
+    assert "exceeding" in text
 
 
 def test_render_report_missing_table_shown_distinctly_from_zero_rows() -> None:

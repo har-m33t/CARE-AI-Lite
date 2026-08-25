@@ -32,7 +32,7 @@ below means one scenario × condition × sample generation.
 | 5aiii | Patient/public involvement in prompt engineering | Not applicable | None — consistent with item 15 below and with `docs/limitations.md`'s "synthetic scenarios" limitation. |
 | 5b | Study prompts provided | Done | `carelite/prompts/` is version-controlled and public in this repository; every prompt used in the study is in that directory, not only described. |
 | 6a | Route of access to the generative-AI model | Done | Local inference via the Ollama HTTP API (`carelite.config.Settings.ollama_host`), not a hosted vendor API. |
-| 6b | Date(s)/location(s) of queries | Pending | To be recorded at run time from `generation.created_at`; location is the local development machine, to be named in the results write-up rather than assumed. |
+| 6b | Date(s)/location(s) of queries | Done | 2026-08-25; a rented Runpod L40S GPU instance, not the local development machine (`docs/limitations.md` §4 and `REPRODUCE.md` §7 explain why local hardware could not run this experiment in reasonable time). `generation.created_at` on the loaded rows reflects the bulk-load time from the journal files rather than each cell's original generation time, per `carelite/generate/load.py`. |
 | 6c | Separate chat sessions per prompt | Done | Each generation is a single independent request (no shared conversation state across scenarios or conditions); `GuidanceRequest.history` carries only the within-scenario turn history specified by the scenario itself, never cross-scenario context. |
 | 6d | All chatbot outputs provided | Done | Every `generation.response` is persisted in the database and exported via `make reproduce`; nothing is hand-selected for reporting. |
 | 7a | Ground truth / reference standard for successful performance | Done | `docs/rubric.md`'s 11 anchored dimensions, not a single ground-truth answer — CHART's "reference standard" here is the rubric's anchor examples, since clinician communication has no single correct response. Stated explicitly because it is a deliberate departure from a fact-checkable ground truth. |
@@ -43,12 +43,12 @@ below means one scenario × condition × sample generation.
 | 8 | Sample size determination | Done | `docs/preregistration.md` §6: power analysis, paired Wilcoxon, α=0.05, power=0.80, n set by the smallest expected effect (B vs. C). |
 | 9a | Statistical analysis methods, incl. reproducibility evaluation | Done | `docs/preregistration.md` §8 (Friedman/Wilcoxon/Holm–Bonferroni, bootstrap CIs, mixed-effects variance decomposition) and §9 (judge self-consistency as a reproducibility check on the evaluator itself). |
 | 9ai | Performance-evaluation measures | Done | `docs/preregistration.md` §3–4 (composite outcomes) and §5 (rubric dimensions and the `to_quality()` aggregation rule). |
-| 10a | Performance evaluation: alignment with ground truth/reference standard | Pending | Results not yet generated; to be reported per `docs/preregistration.md` §8 once the run completes. |
-| 10b | Nature of deviations from ground truth/reference standard | Pending | To be reported alongside 10a — expected to include per-dimension breakdowns (e.g., where `ritualistic` diverges from `naturalness`) once data exists. |
-| 10c | Evaluation for harmful, biased, or misleading responses | Partial | Mechanism exists (`carelite/safety/output_gate.py`, `carelite/safety/redflag.py`; adversarial input corpus under `pytest -m security`) and runs on every generation; aggregate incidence to be reported once the full run completes. Bias evaluation specifically is the equity subgroup analysis in `docs/preregistration.md` §8.5 (n = 20 holdout, descriptive per D9/D10), with its coverage gaps stated in `docs/limitations.md` §3. |
-| 11a | Interpretation in context of relevant evidence | Pending | To be written once results exist, grounded in the corpus themes documented in `docs/limitations.md` §1. |
+| 10a | Performance evaluation: alignment with ground truth/reference standard | Partial | Run complete: 939 generations, 939/939 judged, zero errors (`docs/limitations.md` §4). Statistical alignment against the rubric's anchors is `carelite-stats`'s write-up, in progress. Six of eleven rubric dimensions discriminate meaningfully at scale; `naturalness` and `ritualistic` — the two carrying build plan v3's central prediction — do not (§4). |
+| 10b | Nature of deviations from ground truth/reference standard | Partial | The headline deviation is an instrument one, not a response one: `ritualistic` scored 1 on 912/921 (99%) of scored responses across every condition including the negative control, and `naturalness` has a discrimination ratio of 0.68 (noise exceeds signal) — `docs/limitations.md` §4 states why this is a measurement failure rather than a null finding, and is precise that this is not the per-response deviation breakdown `carelite-stats`'s write-up will still provide. |
+| 10c | Evaluation for harmful, biased, or misleading responses | Partial | Mechanism ran on every generation: **17 of 939 (1.8%) refused by the output safety gate** and flagged `generation.gate_blocked` rather than silently scored (`DECISIONS.md` D12) — 13 of 17 on one scenario (SC-029), 4 spread across four others; this is the first time the safety layer has been observed acting on real generated text at scale. Bias evaluation specifically is the equity subgroup analysis in `docs/preregistration.md` §8.5 (n = 20 holdout, descriptive per D9/D10), with its coverage gaps and the equity knowledge base's own coverage limits stated together in `docs/limitations.md` §3. |
+| 11a | Interpretation in context of relevant evidence | Partial | `docs/limitations.md` §4 interprets the process-level findings (what could and could not be measured, and what a reader must not conclude) grounded in the corpus themes documented in §1; the statistical interpretation of effect sizes against the literature is `carelite-stats`'s write-up, in progress. |
 | 11b | Strengths and limitations | Done (living) | `docs/limitations.md`, kept current across the build. |
-| 11c | Implications for practice, education, policy, regulation, research | Pending | To be written alongside 11a; must explicitly restate the no-deployment-claim boundary from `docs/limitations.md` §6. |
+| 11c | Implications for practice, education, policy, regulation, research | Pending | To be written once `carelite-stats`'s write-up lands; must explicitly restate the no-deployment-claim boundary from `docs/limitations.md` §6 and the instrument-failure finding from §4 (a rubric or judge whose most interesting dimensions are near-constant is itself a finding for anyone building a similar evaluation). |
 | 12a | Conflicts of interest, all authors | Done | None declared. |
 | 12b | Funding sources and their role | Pending | DBMI Summer Internship context; no external funding identified as of this writing — see the matching TRIPOD-LLM item 14a. |
 | 12c | Ethical approval process | Not applicable | No human-subjects or patient data; synthetic scenarios only. Human-rater recruitment (external evaluators scoring de-identified synthetic text) to be checked against the recruiting institution's policy before it begins, noted here rather than assumed exempt. |
@@ -59,10 +59,13 @@ below means one scenario × condition × sample generation.
 
 **Summary:** every item with an answer available today (background/rationale, model identifiers,
 prompt provenance, access route, evaluation design, sample-size justification, statistical plan,
-data/code availability) is done; every item that depends on results, human-rater recruitment, or
-manuscript-stage details (title wording, abstract, run dates, evaluator characteristics, the
-performance-evaluation results themselves) is marked pending with a pointer to the document that
-will complete it. Nothing here is marked done that is not actually verifiable in the repository
-today. **Per `DECISIONS.md` D10, every performance-evaluation result reported once items 10a–10c are
-filled in is descriptive, not confirmatory or pre-specified in a registered sense** — OSF
-registration (item 12d) was dropped by decision rather than merely delayed.
+data/code availability) is done; the holdout run completed 2026-08-25 (939 generations, 939/939
+judged, zero errors), so items 10a/10b/11a moved from Pending to Partial — the process-level
+findings are in `docs/limitations.md` §4, and what remains open on those items is `carelite-stats`'s
+statistical write-up specifically. Genuinely still pending: manuscript-stage details (title
+wording, abstract, run dates), human-rater characteristics (7bi — recruitment has not occurred),
+and 11c (implications, written alongside the statistical results). Nothing here is marked done that
+is not actually verifiable in the repository today. **Per `DECISIONS.md` D10, every
+performance-evaluation result in this appendix is descriptive, not confirmatory or pre-specified in
+a registered sense** — OSF registration (item 12d) was dropped by decision rather than merely
+delayed.

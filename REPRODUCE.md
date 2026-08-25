@@ -7,9 +7,19 @@ multi-hour inference lanes; do not expect this to finish in an afternoon.
 **Before you start anything here, read `docs/preregistration.md`.** It is an analysis plan, not an
 active registration — per `DECISIONS.md` D10 this project is a local proof of concept and OSF
 registration was dropped by decision, so there is no registration gate to satisfy before §6/§7's
-1,080 holdout generations run. What still applies: every result this reproduction produces is
+holdout generation runs. What still applies: every result this reproduction produces is
 **descriptive**, not confirmatory or pre-specified in a registered sense, however precisely the
 analysis plan fixed its thresholds in advance — say so in anything you write up from this run.
+
+**Hardware requirement, stated plainly because it is not optional: this experiment does not
+reproduce on a consumer laptop in reasonable time.** The judge lane measured ~21 minutes per
+Condition-LC generation on local hardware and projected ~59 hours for that condition alone; even on
+a rented 48 GB GPU, LC still cost ~33× the other conditions per cell (`DECISIONS.md` D11) and was
+stopped after 39 of its planned 180 cells for exactly that reason. **This project's own holdout run
+was executed on a rented Runpod L40S (48 GB VRAM), not a local machine.** If you are reproducing
+this on a laptop-class GPU (24 GB or less), plan on Condition LC being effectively unaffordable at
+this scale even though the other five conditions (A, A2, B, C, D — 180 cells each, the study's
+primary comparisons) are tractable; §7 has the measured per-cell numbers.
 
 ---
 
@@ -19,7 +29,9 @@ Corpus retrieval → knowledge-base extraction → index build → scenario-cond
 six experimental conditions → LLM-as-judge scoring → statistics → figures and tables. Every stage
 writes to one PostgreSQL database, and `make reproduce` at the end regenerates every figure and
 table from what's in it — it does not re-run inference. Re-running inference is a separate, much
-longer step described in §6–7.
+longer step described in §6–7. **This project's own run completed at 939 generations, not the
+1,080 originally specified** — Condition LC was stopped by decision (`DECISIONS.md` D11), not by
+failure; see §7 and `docs/limitations.md` §4 for the full account.
 
 ---
 
@@ -288,63 +300,69 @@ executed step, until that changes.
 uv run python -m carelite.generate.runner --limit 5 --dry-run   # plan and count only, no model calls
 ```
 
-### Full evaluation run
+### Full evaluation run — what this project actually did, and how to repeat it
 
-**No registration gate applies — `DECISIONS.md` D10 dropped OSF registration by decision.** What the
-gate has been replaced with is honesty in the write-up: every one of the 1,080 responses this step
-generates is analysis data from a single local (or, as below, rented-GPU) run, and any conclusion
+**No registration gate applies — `DECISIONS.md` D10 dropped OSF registration by decision.** Every
+response this step generates is analysis data from a single rented-GPU run, and any conclusion
 drawn from it is reported as descriptive, not as a pre-specified finding.
 
-- **Generation:** 60 held-out scenarios × 6 conditions × 3 samples = **1,080 generations**, against
-  `gemma4:12b` (5 of 6 conditions) and `qwen3.5:9b` (condition A2), with Condition C additionally
-  paying retrieval latency (dense + lexical + graph fusion, rerank, and for a subset, HyDE).
-  **Condition LC-sample is the dominant cost in the whole experiment, measured directly rather than
-  estimated** (`carelite/eval/judge/study.py`): filling the 112,000-token budget D7 caps it at is a
-  ~119,500-token prefill at roughly 95 tok/s on local hardware — about 21 minutes per generation,
-  which extrapolates to **~59 hours for Condition LC alone** across the 60-scenario, 3-sample
-  holdout. That cost is a direct consequence of D7's fix (it made LC implementable by filling the
-  window, not affordable by shrinking it) and is why this project's own holdout run does not stay
-  local: it runs on a **rented L40S (48 GB)** with all four models pinned in VRAM and four parallel
-  workers, at roughly **2.1 minutes per cell**. Expect your own local single-worker run to be far
-  slower than that for any condition that includes LC, and budget accordingly — this is not a "your
-  hardware is unusually slow" situation, it is the measured cost of the condition. Every generation
-  is cached and keyed by `(scenario_id, condition, prompt_version, model_digest, seed, sample_idx)`
-  per build plan v3 §16, so an interrupted run resumes rather than restarts — confirm this against
-  `carelite/generate/`'s actual caching behavior once that lane lands, since it is still in flight.
-- **Judging:** the full run is judged **single-pass at temperature 0** deliberately, not 5-sample
-  self-consistency, specifically to keep this lane closer to **~8 hours than the ~35 hours** that
-  5× sampling on all 1,080 generations would cost (`carelite/config.py`,
-  `Experiment.judge_temperature_full_run`). The 5-sample self-consistency check (temperature 0.7)
-  runs only on the smaller validation subset used for the human-agreement study, not on the full
-  run — see `docs/preregistration.md` §9 for why that split is safe to make.
+**Generate with `--store jsonl`, not straight to Postgres — this is not a style preference.** An
+earlier attempt on this project wrote directly to Postgres running on the rental pod's container
+disk; the container was restarted mid-run and **~863 already-produced generations were lost**
+(`carelite/generate/load.py`'s own docstring records this). The journal files under `runs/holdout/`
+are the durable artifact of the experiment; Postgres is loaded from them afterward, not written to
+live:
 
 ```sh
-uv run python -m carelite.generate.runner --store postgres --register-prompts
+uv run python -m carelite.generate.runner --store jsonl \
+    --journal runs/holdout/generations-b.jsonl --conditions B --split holdout --register-prompts
 ```
 
-`carelite.generate.runner` defaults to `--split holdout`; `--split train` generates the 40 training
-scenarios instead (what the judge-validation study is scored against). The split written on each
-row is taken from the scenario record itself, not from the flag, so a row cannot end up mislabelled
-by a careless invocation. It is safe to interrupt and rerun: every cell is keyed by
-`(scenario_id, condition, prompt_version, model_digest, seed, sample_idx)` and already-generated
-cells are skipped, so an interrupted run resumes rather than restarts (build plan v3 §16). Use
-`--dry-run` first to see the planned cell count without generating anything, and
-`--conditions A,B` / `--samples 1` to scope a partial run while testing.
-
-Judging (`carelite/eval/judge/runner.py`) is, as of this writing, a library function
-(`judge_generations`) rather than a standalone CLI — it has no `__main__` entry point yet. Until
-one lands, invoke it from a short script or the Python REPL:
+**This project ran four such invocations in parallel, split by condition** (one process each for
+the fast group A/A2/D, for B, for C, and for LC — matching "four parallel workers by condition" in
+the record), each writing its own journal file. `--dry-run` first to see the planned cell count
+without generating anything; `--limit N` to scope a partial run while testing. Every cell is keyed
+by `(scenario_id, condition, prompt_version, model_digest, seed, sample_idx)` and already-generated
+cells are skipped on rerun, so an interrupted invocation resumes rather than restarts. Then bridge
+every journal into Postgres:
 
 ```sh
-uv run python -c "
-from carelite.eval.judge.runner import judge_generations
-from carelite.eval.judge.judge import LLMJudge
-from carelite.generate.store import PostgresStore
-# see carelite/eval/judge/runner.py's own docstring for the current call shape —
-# this pipeline is under active development and its own module documentation is
-# kept more current than this file can promise to be.
-"
+uv run python -m carelite.generate.load runs/holdout/generations-*.jsonl
 ```
+
+**What this project's own run actually produced: 939 generations, zero failures at generation
+time**, across A/A2/B/C/D at 180 cells each (all 60 holdout scenarios × 3 samples) plus 39 partial
+LC cells. **Condition LC does not complete in this pipeline as originally specified — expect to stop
+it.** Measured on a rented L40S: ~3.3 minutes per LC cell against ~6 seconds for the fast group,
+roughly 33×, which is why `DECISIONS.md` D11 stopped it at 39/180 cells rather than let it run to
+completion at a projected extra 8+ hours and several dollars for one condition. `docs/limitations.md`
+§4 has the full account, including why the cost does not shrink with a smaller token budget (the
+serving stack re-prefills LC's shared prefix on every request rather than reusing it via KV cache,
+which the design assumed and the runtime did not deliver) and exactly which comparisons are and are
+not affected by LC's incompleteness. Budget accordingly if you intend to complete LC yourself: the
+other five conditions are tractable on a single rented mid-tier GPU in a few hours; LC at full scale
+is not, on this serving stack, regardless of hardware tier.
+
+**Judging** (`python -m carelite.eval.judge.holdout`) now has a real CLI — it did not when this
+document was last drafted, and `carelite/eval/judge/runner.py`'s bare `judge_generations` function
+is the library call it wraps, not the entry point to use directly:
+
+```sh
+uv run python -m carelite.eval.judge.holdout \
+    --glob 'runs/holdout/generations-*.jsonl' --out runs/holdout/judge --workers 8
+```
+
+Single-pass at temperature 0 deliberately, not the 5-sample self-consistency regime, which stays
+scoped to the smaller `carelite.eval.judge.study` validation subset (`docs/preregistration.md` §9
+explains why that split is safe). **This project's own judging run: 939/939 judged, zero errors,
+206 minutes**, with results written to `runs/judge-holdout/rubric_scores.jsonl` and a manifest at
+`runs/judge-holdout/manifest.json` carrying the CRAG-fallback rate, the LC-partial flag, and the
+output-gate-blocked breakdown — read the manifest before reading the scores; it has the caveats the
+raw rows don't carry on their own. `--workers` runs a thread pool over generations (the model is
+resident and requests are independent, so this is a real speedup, not oversubscription); resumption
+is automatic via `JudgeCache`, keyed by generation, model digest, prompt version, rubric version,
+temperature, sample index, and anchor order. `--skip-lc` drops the partial LC rows entirely if you
+would rather not carry them downstream at all.
 
 ### Human rating (separate track, not blocking `make reproduce`)
 
@@ -369,12 +387,20 @@ is idempotent in the ordinary sense: run it as many times as you like against th
 state and get the same output.
 
 What it does, concretely: connects to `CARELITE_DATABASE_URL`, checks that the schema and expected
-tables are present (reusing `carelite.db.connection.check_database`), and reports what pipeline
-stages have and have not produced data yet — this is a genuine gap-check, not a silent no-op,
-because at the time this entry point was written several upstream stages (`carelite/stats/`,
-`carelite/viz/`) had not landed yet. Once those lanes ship, this is where their output gets wired
-in; see `carelite/repro.py`'s own module docstring for the current state of that wiring, since it is
-kept current there rather than restated here where it would drift.
+tables are present (reusing `carelite.db.connection.check_database`), reports what pipeline stages
+have and have not produced data yet, and hands off to `carelite.stats` and `carelite.viz` for the
+statistical tables and figures — this is a genuine gap-check, not a silent no-op, because as of this
+writing only one of those two lanes has landed under the contract this entry point looks for.
+**`carelite.viz.reproduce.run(output_dir)` exists and works** — it regenerates every figure it can
+from whatever data is actually in the database, skipping (with a reason, not silently) any figure
+that needs a table still empty, so `make reproduce` on this project's own database currently
+produces at least the retrieval-quality figure even before `rubric_score` is loaded.
+**`carelite.stats` exists (`carelite/stats/`, with `report.py` and its own
+`python -m carelite.stats` CLI) but does not yet expose `carelite.stats.reproduce.run(output_dir)`**,
+so `make reproduce` correctly reports its tables as `[pending]` rather than silently producing
+nothing — run `python -m carelite.stats` directly for the statistical write-up in the meantime; see
+`carelite/repro.py`'s own module docstring for the current state of that wiring, since it is kept
+current there rather than restated here where it would drift.
 
 ---
 
@@ -389,8 +415,11 @@ uv run python -m carelite.corpus.fetch --email you@example.com
 # ... index build (see §6) ...
 make eval-smoke
 # --- no registration gate (DECISIONS.md D10); results below are descriptive ---
-uv run python -m carelite.generate.runner             # --split defaults to holdout
-uv run python -m carelite.eval.judge.runner --split holdout
+# --- expect to stop Condition LC partway through (D11); see §7 ---
+uv run python -m carelite.generate.runner --store jsonl \
+    --journal runs/holdout/generations-X.jsonl --conditions X --split holdout  # once per condition group, in parallel
+uv run python -m carelite.generate.load runs/holdout/generations-*.jsonl
+uv run python -m carelite.eval.judge.holdout --glob 'runs/holdout/generations-*.jsonl'     --out runs/holdout/judge --workers 8
 make reproduce
 ```
 

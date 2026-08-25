@@ -49,7 +49,7 @@ marked pending and point to the document that will hold the answer once the run 
 | 9b | Data used to develop prompts | Done | Train-split scenarios (40 of 100) exclusively; `docs/preregistration.md` §6 states holdout is never used for development. |
 | 10 | Summarization pre-processing | Not applicable | This system does not perform document summarization. |
 | 11 | Instruction tuning/alignment strategies | Not applicable | No instruction tuning is performed; all models are used with off-the-shelf instruction tuning as distributed by their publishers. |
-| 12 | Compute / cost / inference time / FLOPs | Pending | To be captured from `generation.latency_ms` and wall-clock run time in `REPRODUCE.md`'s stated runtimes and the results write-up. |
+| 12 | Compute / cost / inference time / FLOPs | Done | Rented Runpod L40S (48 GB), four parallel workers by condition. 939 generations, zero failures; judging 939/939 in 206 minutes. Condition LC measured ~33x the other conditions per cell and was stopped at 39/180 cells (`DECISIONS.md` D11) rather than run to its projected ~8+ additional hours — see `docs/limitations.md` §4 and `REPRODUCE.md` §7 for the full cost accounting. |
 | 13 | IRB / ethics committee | Not applicable | No human-subjects data; all scenarios are synthetic and all corpus papers are already-published, publicly available literature. Human rating (§12 of pre-registration) uses external raters scoring de-identified synthetic text, not patient data — to be confirmed against the recruiting institution's own policy before recruitment begins. |
 | 14a | Funding source and role | Pending | Project context: DBMI Summer Internship, University of Arizona College of Medicine – Phoenix. No external funding identified as of this writing. |
 | 14b | Conflicts of interest | Done | None declared. |
@@ -59,20 +59,24 @@ marked pending and point to the document that will hold the answer once the run 
 | 14f | Code availability | Done | This repository; `REPRODUCE.md` and `make reproduce`. |
 | 15 | Patient and public involvement | Not applicable | No patients or public contributors were involved in scenario design, prompt design, or rubric design; all scenarios are synthetic and authored by the project team. Stated plainly rather than omitted. |
 | 16a–16d | Participant/data flow, characteristics, outcome counts (healthcare settings) | Pending | No patient/EHR data is used, so 16a/16b/16d reduce to the scenario-bank flow (`carelite/scenarios/audit.py` coverage report) rather than a patient flow diagram; 16c (clinical-outcome variable comparison) is not applicable — this study has no clinical outcome. |
-| 17 | LLM performance per pre-specified metrics/human evaluation | Pending | `docs/preregistration.md` §3–4, §8; results not yet generated. |
+| 17 | LLM performance per pre-specified metrics/human evaluation | Partial | Generation and judging complete (939 generations, judged 939/939). **Per `DECISIONS.md` D10 no metric here is confirmatory or pre-specified in a registered sense.** The headline instrument finding: `naturalness` and `ritualistic` — the two dimensions carrying build plan v3's most-predicted effect — are measurement failures, not null results (`ritualistic` scored 1 on 99% of 921 scored rows; `naturalness` discrimination ratio 0.68). Six of eleven dimensions discriminate meaningfully (`docs/limitations.md` §4). Statistical write-up (effect sizes, corrected tests) owned by `carelite-stats`, in progress separately. Human evaluation remains not yet conducted. |
 | 18 | LLM updating results | Not applicable | No LLM updating (fine-tuning, retraining) occurs during this study. |
-| 19a | Overall interpretation, including fairness | Pending | To be written once results exist; must address the equity-subgroup findings and the narrower `racial_ethnic` axis description per `DECISIONS.md` D5. |
+| 19a | Overall interpretation, including fairness | Partial | `docs/limitations.md` §4 has the process-level interpretation (what could and could not be measured, and what a reader must not conclude); the statistical interpretation of effect sizes is `carelite-stats`'s write-up, in progress. Fairness: the equity knowledge base holds 3 entries as a property of the corpus rather than the extraction (`DECISIONS.md` D3's outcome), and the `racial_ethnic` scenario axis narrows to a single mechanism (D5) — `docs/limitations.md` §3 states both together as one finding about this evidence base's coverage of disparity vs. remedy. |
 | 19b | Limitations and their effect on bias/uncertainty/generalizability | Done (living) | `docs/limitations.md`, kept current. |
 | 19c | Known challenges using data for this task/domain (healthcare settings) | Done | `docs/limitations.md` §1 (corpus skew toward training studies), §3 (equity-axis mechanism confound). |
 | 19d | Intended use for the implementation evaluated (healthcare settings) | Done | `README.md` "What This Project Is Not"; `docs/limitations.md` §6, "no clinical deployment claim." |
 | 19e | Assessing poor-quality/unavailable input data (healthcare settings) | Done | `carelite/safety/` input screens (injection, PHI, red-flag detection) run before generation; CRAG (`crag_grade`) assesses retrieval-input quality specifically. |
 | 19f | Whether users are required to interact (healthcare settings) | Done | The system is clinician-facing and requires an active clinician turn-by-turn interaction; it does not act autonomously on a patient. |
-| 19g | Next steps for future research | Pending | To be written alongside 19a once results exist. |
+| 19g | Next steps for future research | Pending | To be written once `carelite-stats`'s statistical write-up lands; `docs/limitations.md` §4's instrument findings (the `naturalness`/`ritualistic` degeneracy, the variance-bounds-agreement result) are themselves a research direction — a judge or rubric revision that increases discrimination on those two dimensions specifically. |
 
-**Summary:** 14 of 14 universally-applicable main items have a completed answer or an explicit "not
-applicable" with reasoning; the results-dependent items (7d, 8a–8c, 12, 14a, 16a/16b/16d, 17,
-18–19a, 19g) are marked pending and will be completed by `carelite-repro` alongside the results
-write-up once `carelite.repro` runs against real evaluation data. **Per `DECISIONS.md` D10, every
-result reported anywhere in this appendix — once 17/18/19a are filled in — is descriptive, not
-confirmatory or pre-specified in a registered sense**, since OSF registration was dropped by
-decision (item 14d) rather than merely not yet completed.
+**Summary:** the holdout run completed 2026-08-25 (939 generations, 939/939 judged), so item 12
+moved to Done and items 17/19a moved from Pending to Partial — the process-level record is complete
+in `docs/limitations.md` §4, and what remains pending on those two items is `carelite-stats`'s
+statistical write-up specifically, not this project's data collection. Genuinely still pending:
+7d, 8a–8c (human-rater characteristics — recruitment has not occurred), 14a (funding), 16a–16d
+(scenario-bank flow in place of a patient-data flow, per that row's own reasoning — could now be
+filled in from `carelite/scenarios/audit.py`'s coverage report but has not been), 19g (next steps,
+written alongside the statistical results). **Per `DECISIONS.md` D10, every result reported
+anywhere in this appendix is descriptive, not confirmatory or pre-specified in a registered
+sense**, since OSF registration was dropped by decision (item 14d) rather than merely not yet
+completed.

@@ -1,16 +1,22 @@
 # Limitations
 
-Build plan v3 §17 named a limitations list before any evaluation data existed. This document is
-that list, kept current as the build proceeds. Everything here is written in advance of results,
-which is the point: a limitation named before the numbers exist is a limitation, and the same
-sentence written after is an excuse. Where a lane is still in flight, that is stated plainly rather
-than described as finished.
+Build plan v3 §17 named a limitations list before any evaluation data existed, and most of this
+document was written on that principle: a limitation named before the numbers exist is a
+limitation, and the same sentence written after is an excuse. **The holdout run and its judging
+completed on 2026-08-25** (§4), so this document now also carries what that run actually showed,
+including a limitation — the `naturalness`/`ritualistic` instrument failure — discovered only once
+real generations existed to measure. It is included here in full rather than held back, because a
+project that only publishes the limitations it predicted correctly is not being honest about the
+ones it did not. **Per `DECISIONS.md` D10, nothing in this document is confirmatory or
+pre-specified in a registered sense — every finding below, including the ones from the completed
+run, is descriptive.**
 
-Status of the underlying work as of 2026-08-24: the corpus and knowledge base are loaded and
-queried directly for the figures below; `carelite-corpus` is fixing extraction artefacts,
-`carelite-kb` is correcting evidence-tier derivation and removing out-of-scope entries, and
-`carelite-retrieval` and `carelite-orchestrator` are mid-build. No evaluation data exists yet — see
-`docs/preregistration.md` for why that ordering matters and what has and has not happened.
+Status of the underlying work as of 2026-08-25: the corpus and knowledge base are loaded, the
+100-scenario bank is frozen, and the six-condition holdout run is complete except Condition LC,
+which was stopped early by decision (D11) — see §4. `carelite-stats` is running the pre-specified
+statistical analysis on this data now and owns the results write-up; this document owns the
+end-to-end record of what was built, what was run, what was found, what could not be found and
+why, and what a reader must not conclude from any of it.
 
 ---
 
@@ -262,48 +268,123 @@ against an actual encounter transcript.
 
 ---
 
-## 4. Judge-primary evaluation
+## 4. The completed holdout run, and its judge-primary evaluation
 
-Human ratings are the credibility ceiling on this project (build plan v3 §12) and they are
-deferred: the human-rating harness (`carelite/eval/human/`) is built and exercised end-to-end
-against synthetic rater data (`carelite/eval/human/synthetic.py`) rather than real raters, so that
-a blinding bug or a reversed `ritualistic` column is caught before, not after, a rater spends time
-on 60 responses. As of this writing no real human rating has occurred. Every number this project
-reports is judge-only until that changes, and carries that caveat in the sentence that reports
-it — not only in this document.
+**Per `DECISIONS.md` D10, this project is a local proof of concept: OSF pre-registration was
+dropped, and every result in this section — the run itself, the judge validation, the completed
+holdout figures — is descriptive, not confirmatory or pre-specified in a registered sense, however
+precisely a threshold or a rubric was fixed in advance of the data.** `carelite-stats` owns the
+statistical analysis of this data (effect sizes, corrected tests, the write-up of what the numbers
+mean); this section owns what actually happened when the run executed, what could and could not be
+measured, and what a reader must not conclude from either.
 
-The judge itself (`gpt-oss:20b`, a different model family from the `gemma4:12b` generator, per v3
-§13's independence requirement) is validated as its own component study rather than assumed
-trustworthy, per `carelite/eval/judge/validation.py`. **Per `DECISIONS.md` D10, this project is a
-local proof of concept: OSF pre-registration was dropped, and every result below — including every
-finding in this section — is descriptive, not confirmatory or pre-specified in a registered sense,
-however precisely a threshold was fixed in advance of the data.** The threshold itself
-(Krippendorff's α ≥ 0.667, Spearman's ρ ≥ 0.5, ≥ 30 paired units) is still the honest bar this
-project holds itself to; it just is not a registered one.
+### What ran, on what hardware, and what it cost
 
-### The §13 validation study ran at n = 30, and produced three findings
+The 1,080-cell holdout run (60 scenarios × 6 conditions × 3 samples) does not run on a local laptop
+in reasonable time — see `REPRODUCE.md`'s environment note for the measured reason — and was
+executed on a **rented Runpod L40S (48 GB)**, all four models resident in VRAM, four parallel
+workers split by condition. **One further operational fact belongs in this record, and is
+independently confirmed in the codebase rather than merely relayed: partway through the project, a
+Postgres instance sitting on the pod's container disk was restarted and lost its data, and roughly
+863 generations already produced had to be regenerated.** `carelite/generate/load.py`'s own module
+docstring states the consequence and the fix directly: *"The holdout run was written with
+`--store jsonl` on purpose — an earlier attempt lost ~863 generations when Postgres sat on a
+container disk that was restarted — so the durable artifact of the experiment is a set of journal
+files."* That is why generation, judging, and loading became three separate steps (`carelite.generate.runner
+--store jsonl` → `carelite.eval.judge.holdout` reading the journals directly → `carelite.generate.load`
+bridging the journal into Postgres) rather than writing straight to the database, and it is included
+here because an honest process record does not omit the parts that make the project look less
+tidy.
 
-`runs/judge/validation_report.json` and `.txt` record a completed run — 30 generations, 1,650
-attempted judge scores, self-consistency and positional-bias measured directly, and an instrument
-check run against a generated (not human) synthetic panel, because no human comparator exists yet.
-**None of the following is, or is being reported as, a confirmatory result.** It is what the
-instrument does, measured, before any human rating exists to validate it against.
+**939 generations, zero failures at generation time.** Conditions A, A2, B, C, and D completed in
+full: 180 cells each (all 60 holdout scenarios × 3 samples). Condition LC did not: see "LC was
+dropped, twice, for the same reason" below. All 939 route decisions are `informational`; zero route
+`emotional_only` anywhere in the holdout set, at any condition, including the 39 completed LC cells.
+
+**17 of the 939 generations were refused by the output safety gate and are flagged
+`generation.gate_blocked` rather than silently dropped or silently scored — `DECISIONS.md` D12.**
+That decision is worth restating precisely because the direction of the risk is counter-intuitive:
+a *missing* cell is visible (a condition with 178 rows where the others have 180 invites a
+question), but text the safety gate refused, scored as though it had passed, is invisible and
+flatters whichever condition produced it. Measured breakdown, by condition — A 3, A2 7, B 2, C 2,
+D 3 — and by scenario — **SC-029 13**, SC-092 1, SC-055 1, SC-072 1, SC-057 1. SC-029 is
+overwhelmingly the driver and fires across multiple conditions, so this is largely a *scenario*
+property rather than a condition difference, but it is not a single-scenario story: 4 of the 17 sit
+elsewhere. **Because 13 of 17 sit on one scenario, excluding blocked cells removes SC-029 unevenly
+across conditions rather than symmetrically** — neither including nor excluding gate-blocked cells
+from the primary analysis is obviously correct, and a reader should expect (per D12) the primary
+comparison reported both ways rather than one silently chosen. What is not acceptable, and does not
+happen here: refused text scored as though it were a real response. This is also the first time in
+this project that the safety layer has been observed doing its job against real generated text at
+scale, which is itself worth recording as a positive finding about `carelite/safety/`, not only a
+data-quality caveat.
+
+**Condition C fell back to Condition-B behavior on 69 of 180 cells (38%).** CRAG graded the
+retrieved evidence `relevant` on 111 cells and `none` on 69, and a `none` grade means C generates
+exactly as B would on that cell — framework-prompted, ungrounded. **38% of the treatment arm
+therefore received no treatment, and any C-vs-B comparison has to be read two ways: pooled (which
+compares C's full, realistic operating behavior including its fallback rate, against B) and split
+on `fell_back_to_b` (which compares C's retrieval-grounded cells specifically against B, and the
+CRAG-fallback cells against nothing, since they are B in substance).** Pooling without disclosing
+the split risks either understating C's best-case effect (diluted by 38% of cells that are really B)
+or, read carelessly, being mistaken for a retrieval failure rate rather than what it is: the CRAG
+gate correctly declining to inject irrelevant evidence, which is the gate working as designed
+(`docs/preregistration.md` §8.6b already pre-specifies this as a sensitivity analysis).
+
+### LC was dropped, twice, for the same measured reason
+
+**`DECISIONS.md` D11: Condition LC was stopped after 39 of its planned 180 cells.** Measured on the
+rented L40S, LC cost **3.3 minutes per cell against 6 seconds for the A/A2/D group — roughly 33×** —
+with about 8.5 hours and $8.50 left to run when the other five conditions were within the hour of
+finishing. The cause is understood and is not a pipeline defect: `lc_sample()` is deterministic and
+query-independent by design (D7), so every LC prompt shares an identical ~119,500-token prefix that
+should be nearly free after the first prefill via KV-cache reuse. The measured per-cell time says
+the serving stack re-prefills that whole prefix on every request instead of reusing it — the design
+anticipated a saving the runtime did not deliver. **This is the second time LC was dropped for cost,
+by an independent lane, for the same measured reason**: `carelite-judge` had already excluded LC
+from the §13 validation subset after measuring ~21 minutes per LC generation locally and projecting
+~59 hours. Two lanes reaching the same conclusion from different hardware is itself the finding:
+**under this architecture, a long-context baseline is not affordable to evaluate at the scale the
+rest of the design assumes.** That is a result about the method, not an apology for a missing
+column, and it closes secondary outcome 3 (C vs. LC — `docs/preregistration.md` §4) as untestable
+rather than merely incomplete. What survives intact and complete: the primary outcome (composite
+NURSE, A vs. B), the retrieval comparison that motivates the whole architecture (B vs. C), the
+cross-model baseline (A vs. A2), and the negative control (B vs. D) — every condition the study's
+main questions depend on. **The 39 completed LC cells are kept in the database as a partial record,
+not discarded, and support no comparison against a complete arm**: they cover 13 of the 60 holdout
+scenarios, were never randomized for partial analysis, and any use of them must say so plainly.
+
+### The §13 judge-validation study, first measured at n = 30, now confirmed at n = 939
+
+`runs/judge/validation_report.json` and `.txt` record the earlier, dedicated n = 30 validation
+run; the figures below are recomputed directly from `runs/judge-holdout/rubric_scores.jsonl`, the
+full holdout judging output, so what follows is independent confirmation on real production data
+rather than a restatement of the smaller study. The original n = 30 run measured self-consistency
+and positional bias directly and ran an instrument check against a generated (not human) synthetic
+panel, because no human comparator exists yet; those mechanics are not repeated below except where
+the full run adds to them. **None of the following is, or is being reported as, a confirmatory
+result.** It is what the instrument does, measured, before any human rating exists to validate it
+against.
 
 - **1. The judge's `ritualistic` dimension is degenerate, and this breaks the mechanism behind the
-naturalness hypothesis specifically.** It scored **1 on every one of the 30 responses** — zero
-between-generation variance, one distinct value used. That makes it perfectly self-consistent (it
-tops the stability column, mean sample variance 0.11) while discriminating nothing at all;
-`discrimination.ratio = 0.0`, `degenerate = true`. Build plan v3 predicts Condition B loses to
-Condition A on `naturalness` *because* framework prompting induces ritualistic, script-like
-phrasing — `ritualistic` is the dimension built to detect that mechanism (`docs/rubric.md`). A judge
-that emits `ritualistic = 1` for every response, framework-prompted or not, cannot register that
-effect, which weakens confidence in the mechanism behind `docs/preregistration.md` §4 outcome 4 (A
-> `naturalness` > B) specifically, not only the dimension's own reliability. `naturalness` itself is
-nearly as compromised: discrimination ratio **0.68** — within-generation sampling noise exceeds
-between-generation signal. `ie` sits at 93% modal share with only 2 distinct values used across 30
-responses. **This belongs where the naturalness hypothesis is discussed, not only in a limitations
-list**, because it bears on whether the judge can detect the study's most interesting predicted
-result at all, independent of whether the effect exists.
+naturalness hypothesis specifically — confirmed on all 939 holdout generations, not only the n = 30
+validation set.** At n = 30 it scored 1 on every response. **Across the full 939-generation holdout
+run it scored 1 on 912 of 921 scored rows (99%)**, mean 1.02, sd 0.16, only 3 distinct values used
+in nearly a thousand generations spanning six conditions including the deliberately degraded
+negative control. Build plan v3 predicts Condition B loses to Condition A on `naturalness`
+*because* framework prompting induces ritualistic, script-like phrasing — `ritualistic` is the
+dimension built to detect that mechanism (`docs/rubric.md`). A judge that emits `ritualistic ≈ 1`
+for nearly every response, framework-prompted or not, negative-control or not, cannot register that
+effect. `naturalness` is confirmed compromised at scale too: **922 scored rows, only 5 distinct
+values, mean 3.08, sd 0.58, with a single value (3) accounting for 795 of 922 (86%)**. `ie` shows
+the same shape: 920 scored rows, only 4 distinct values, mean 1.13, sd 0.49. **This is not "no
+significant difference" — it is a measurement failure, and build plan v3's most interesting
+predicted result (A beats B on naturalness, because B is ritualistic) cannot be tested with this
+judge, on this data, regardless of what any test of these three dimensions reports.** State it
+exactly that way wherever the naturalness prediction is discussed in any results write-up, not only
+in this limitations list — the distinction between "tested and found not significant" and "could
+not be tested" is the whole point, and collapsing it into a null result would be the single most
+misleading thing this document could let stand.
 - **2. Chance-corrected agreement is bounded above by how much variance the judge produces, and no
 sample size repairs that.** Measured against the synthetic instrument-check panel at n = 30: the
 correlation between a dimension's between-generation variance and its recovered Krippendorff's α is
@@ -321,6 +402,27 @@ consequence: a dimension failing the confirmatory threshold has **two distinguis
 deserve different sentences — the judge disagreeing with raters, or the judge not discriminating
 between responses at all — and `discrimination.ratio` (not the stability/self-consistency column
 alone) is what separates them. Read variance and agreement together, never one without the other.
+**The full holdout run confirms which dimensions actually discriminate, at real scale.** Six of the
+eleven carry real signal — `name` (sd 1.52), `understand` (sd 1.61), `respect` (sd 1.42), `explore`
+(sd 1.85), `epp` (sd 1.75), `de` (sd 1.56), all using the full 1–5 range with no single value at
+even half the mass — and they include four of the five NURSE dimensions. `support` (sd 1.14) and
+`ib` (sd 1.01) sit in between: neither degenerate nor as sharply discriminating as the top six.
+**`respect` and `support` vary meaningfully in judge scores even though `DECISIONS.md` D8
+established the knowledge base can ground neither of them with a single entry.** Those are two
+independent facts about two different parts of the pipeline — what the judge can tell apart, and
+what the retrieved evidence can support — and a results write-up should carry both rather than
+letting one imply the other: a dimension the judge discriminates well is not thereby a dimension
+Condition C's retrieval can move, and a dimension retrieval cannot ground is not thereby one the
+judge fails to measure.
+
+**Judging itself completed cleanly: 939/939 judged, zero errors, 206 minutes, temperature-0
+single-pass** with `gpt-oss:20b` (`runs/judge-holdout/manifest.json`) — the deliberate full-run
+regime `docs/preregistration.md` §9 specifies, not the 5-sample self-consistency regime, which
+stays scoped to the smaller validation subset. **889 of 939 (94.7%) are complete on all eleven
+dimensions**; the 50 partial rows are scattered across dimensions rather than concentrated on one,
+so no single dimension's numbers should be read as resting on a smaller effective n than the others
+without checking.
+
 - **3. All eleven dimensions are exploratory, and for this run that is a correct verdict, not a
 failure to report as one.** α and ρ are undefined (`n_units = 0`) for every dimension because no
 human ratings exist yet — human rating is sprint 10, deliberately deferred while the harness is exercised against synthetic raters (`carelite/eval/human/__init__.py`). `verdict.reason` in
@@ -369,6 +471,26 @@ relayed from the judge lane rather than independently reproduced from a persiste
 repository as of this writing; the direction, the universality across all 11 dimensions, and the
 concentration on low-discrimination dimensions are independently verified above.)
 
+### What this section does not license a reader to conclude
+
+- **Not** that Condition B "ties" Condition A on naturalness. The instrument cannot measure the
+  effect on `ritualistic` or `naturalness`, and `ie` is nearly as degenerate — three dimensions
+  where "no significant difference" and "could not be tested" are genuinely different claims, and
+  only the second is true here.
+- **Not** that Condition C's 180 cells may be pooled and compared to B without disclosure. 38%
+  (69/180) fell back to B behavior on CRAG's own relevance grade; a pooled comparison is a
+  comparison against an already-diluted-by-38%-B arm unless the fallback split is reported
+  alongside it.
+- **Not** that the 39 completed LC cells support any comparison against a complete condition. They
+  cover 13 of 60 scenarios, were never randomized for partial analysis, and D11 records why they
+  exist at all.
+- **Not** that excluding `gate_blocked` cells is a neutral, symmetric operation. 13 of the 17 sit on
+  one scenario (SC-029); excluding them removes that scenario's evidence unevenly across the five
+  complete conditions rather than evenly.
+- **Not** that any of the above — including the six dimensions that do discriminate — is a
+  confirmatory or pre-specified finding in the registered sense `docs/preregistration.md` describes.
+  Per `DECISIONS.md` D10, every number in this section is an observation from one local run.
+
 ---
 
 ## 5. Environment deviations from build plan v3
@@ -406,19 +528,16 @@ concentration on low-discrimination dimensions are independently verified above.
   a practitioner would actually build, but a different one from what build plan v3 posed. This
   distinction is carried in `docs/preregistration.md` §2 and §4 rather than left to a results-section
   footnote.
-- **D7's window-filling fix made LC implementable, not affordable, and that cost moved the holdout
-  run off local hardware.** `carelite/eval/judge/study.py` measured LC's prefill directly: roughly
-  119,500 tokens at ~95 tok/s locally (degrading from ~101 as the KV cache grows) — about **21
-  minutes per generation**. D7's 112,000-token budget cap barely helps (~19.6 minutes at the same
-  rate), because the cost is set by how full the window is, not by which selection rule fills it.
-  Extrapolated across the full holdout run (60 scenarios × 3 samples for LC alone), that is
-  **roughly 59 hours for Condition LC by itself** on local hardware — the dominant single cost in
-  the entire experiment, and a direct consequence of D7 rather than of anything else in the
-  pipeline. The full six-condition holdout run is therefore executed on a rented L40S (48 GB) with
-  all four models pinned in VRAM and four parallel workers, at roughly 2.1 minutes per cell rather
-  than local, single-worker generation. This is a local proof of concept per `DECISIONS.md` D10, and
-  renting compute to make the originally-specified LC condition tractable at all is part of that
-  scope, not a departure from it.
+- **D7's window-filling fix made LC implementable, not affordable, and that cost is why this
+  project rents GPU hardware at all and, ultimately, why LC did not complete.** `carelite/eval/judge/study.py`
+  measured LC's prefill directly on local hardware first — roughly 119,500 tokens at ~95 tok/s,
+  about 21 minutes per generation, projecting ~59 hours for LC alone — which is what moved the
+  holdout run to a rented L40S in the first place. **Even rented, LC still cost roughly 33× the
+  other conditions per cell** and was stopped 39 cells into its planned 180 by `DECISIONS.md` D11,
+  the second time two independent lanes reached the same conclusion about this condition on
+  different hardware. §4 above ("LC was dropped, twice, for the same measured reason") has the full
+  account, the measured per-cell numbers on the rented GPU, and what it does and does not cost the
+  study's other conclusions.
 - **Index build is complete and independently verified: 471/471 chunks embedded.** The 342
   pre-existing embeddings were confirmed byte-identical against a fresh embed, 0 mismatches, and
   mean pairwise cosine across the corpus is 0.5788 (decomposing to old-old 0.5755, new-new 0.6100,
