@@ -15,9 +15,11 @@ from carelite.stats.sensitivity import (
     DEFAULT_MAX_PCT_RANGE_GE_2,
     compare_conclusions,
     conclusions,
+    retrieval_contrast,
     run_all_sensitivity,
     scenario_judge_consistency,
     sensitivity_crag_fallback,
+    sensitivity_gate_blocked,
     sensitivity_judge_consistency,
     sensitivity_rater_type,
 )
@@ -359,3 +361,157 @@ def test_an_empty_rerun_is_not_reported_as_conclusions_holding() -> None:
     text = report.render()
     assert "nothing was tested for robustness" in text
     assert "Every conclusion holds" not in text
+
+
+# ---------------------------------------------------------------------------
+# (d) the output safety gate — D12
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def blocked_long(nurse_dimensions: tuple[str, ...]) -> pd.DataFrame:
+    """20 scenarios x {A, B} x 3 samples, with one scenario's cells gate-refused.
+
+    SC-000 carries the refusals, concentrated the way the real run's are on
+    SC-029: all three A samples and all three B samples. Excluding them removes
+    that scenario from the paired comparison entirely, which is the behaviour
+    the rerun has to demonstrate rather than assert.
+    """
+    scores: dict[tuple[str, str, int], dict[str, int]] = {}
+    blocked: list[tuple[str, str, int]] = []
+    for i in range(20):
+        scenario = f"SC-{i:03d}"
+        for sample in range(3):
+            scores[(scenario, "A", sample)] = constant_scores(nurse_dimensions, 2)
+            scores[(scenario, "B", sample)] = constant_scores(nurse_dimensions, 4)
+            if scenario == "SC-000":
+                blocked.append((scenario, "A", sample))
+                blocked.append((scenario, "B", sample))
+    return make_long(scores=scores, gate_blocked=blocked)
+
+
+def test_gate_blocked_rerun_excludes_the_refused_generations(
+    blocked_long: pd.DataFrame,
+) -> None:
+    base = run_family(blocked_long, n_boot=200)
+    run = sensitivity_gate_blocked(blocked_long, base, n_boot=200)
+
+    assert "6 generations excluded" in " ".join(run.family.notes)
+    primary = run.family.by_key("primary_nurse_A_vs_B")
+    assert primary is not None
+    # SC-000 loses both arms, so the paired comparison drops from 20 to 19.
+    assert primary.n_scenarios == 19
+
+
+def test_the_gate_blocked_rerun_names_the_affected_scenarios(
+    blocked_long: pd.DataFrame,
+) -> None:
+    """A concentrated exclusion has to be visible as concentrated."""
+    base = run_family(blocked_long, n_boot=200)
+    run = sensitivity_gate_blocked(blocked_long, base, n_boot=200)
+    assert "SC-000" in run.specification
+
+
+def test_the_gate_blocked_rerun_is_labelled_not_planned_in_advance(
+    blocked_long: pd.DataFrame,
+) -> None:
+    """D12 postdates the plan; the rerun must not borrow the plan's standing."""
+    base = run_family(blocked_long, n_boot=200)
+    run = sensitivity_gate_blocked(blocked_long, base, n_boot=200)
+    assert not run.prespecified
+    text = run.render()
+    assert "NOT PLANNED IN ADVANCE" in text
+    assert "PREFERRED READING" in run.name
+    assert any("category error" in caveat for caveat in run.caveats)
+
+
+def test_the_gate_blocked_rerun_survives_a_frame_without_the_column(
+    base_long: pd.DataFrame,
+) -> None:
+    base = run_family(base_long, n_boot=200)
+    run = sensitivity_gate_blocked(base_long.drop(columns=["gate_blocked"]), base, n_boot=200)
+    assert "0 generations excluded" in " ".join(run.family.notes)
+    assert run.conclusions_hold
+
+
+# ---------------------------------------------------------------------------
+# Retrieval, asked two ways
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def retrieval_long(nurse_dimensions: tuple[str, ...]) -> pd.DataFrame:
+    """B and C over 20 scenarios, where C only beats B on the cells that retrieved.
+
+    Constructed so the two readings must differ and the direction of the
+    difference is known in advance: on the 10 scenarios where CRAG fired, C
+    scores 4 against B's 3; on the 10 where it fell back, C scores 3, exactly
+    matching B. Pooling therefore halves the effect, which is the attenuation
+    the two-way report exists to expose.
+    """
+    scores: dict[tuple[str, str, int], dict[str, int]] = {}
+    fell_back: list[tuple[str, str, int]] = []
+    for i in range(20):
+        scenario = f"SC-{i:03d}"
+        retrieved = i < 10
+        for sample in range(3):
+            scores[(scenario, "B", sample)] = constant_scores(nurse_dimensions, 3)
+            scores[(scenario, "C", sample)] = constant_scores(
+                nurse_dimensions, 4 if retrieved else 3
+            )
+            if not retrieved:
+                fell_back.append((scenario, "C", sample))
+    return make_long(scores=scores, fell_back=fell_back)
+
+
+def test_the_two_readings_answer_different_questions(
+    retrieval_long: pd.DataFrame,
+) -> None:
+    """Pooling fallback cells attenuates the effect; the split shows by how much."""
+    contrast = retrieval_contrast(retrieval_long, n_boot=200)
+
+    assert contrast.n_offered_cells == 60
+    assert contrast.n_fallback_cells == 30
+    assert contrast.n_retrieved_cells == 30
+
+    assert contrast.offered is not None and contrast.retrieved is not None
+    # Pooled: 10 scenarios tie exactly, so only half the pairs carry any signal.
+    assert contrast.offered.test.n_nonzero == 10
+    assert contrast.offered.n_scenarios == 20
+    # Retrieval-only: the tied scenarios lose their C cell and leave the pairing.
+    assert contrast.retrieved.n_scenarios == 10
+    assert contrast.retrieved.test.n_nonzero == 10
+    # The hypothesis is B vs C, so the effect is B - C and C scoring higher makes
+    # it negative. Both readings agree on direction; the retrieval-only one is the
+    # undiluted magnitude, and the pooled one is attenuated by the tied fallbacks —
+    # here to exactly half, since exactly half the scenarios fell back.
+    offered_shift = contrast.offered.effects.hodges_lehmann.point
+    retrieved_shift = contrast.retrieved.effects.hodges_lehmann.point
+    assert offered_shift < 0 and retrieved_shift < 0
+    assert retrieved_shift == pytest.approx(-1.0)
+    assert offered_shift == pytest.approx(-0.5)
+    assert abs(retrieved_shift) > abs(offered_shift)
+
+
+def test_the_retrieval_only_reading_is_labelled_a_selected_subgroup(
+    retrieval_long: pd.DataFrame,
+) -> None:
+    """CRAG chose the subset. That confound cannot be removed, only declared."""
+    contrast = retrieval_contrast(retrieval_long, n_boot=200)
+    assert contrast.retrieved is not None
+    assert "not a randomised subgroup" in contrast.retrieved.label.tag()
+    text = contrast.render()
+    assert "not randomised" in contrast.selection_caveat
+    assert "UNCORRECTED" in text
+    assert "does offering retrieval help" in text.lower()
+    assert "does retrieval help" in text.lower()
+
+
+def test_the_retrieval_p_values_are_uncorrected_not_nan(
+    retrieval_long: pd.DataFrame,
+) -> None:
+    """A family of zero renders `nan`, which reads as a broken number rather than a choice."""
+    contrast = retrieval_contrast(retrieval_long, n_boot=200)
+    assert contrast.offered is not None
+    assert contrast.offered.family_size == 1
+    assert contrast.offered.p_holm == contrast.offered.test.p_value

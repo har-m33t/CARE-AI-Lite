@@ -1,6 +1,12 @@
 """The primary test sequence: Friedman omnibus, Wilcoxon post-hoc, Holm-Bonferroni.
 
-Pre-registration §8.1, quoted because the exact wording is what this module
+**D10: every result below is descriptive.** The plan is kept (docs/preregistration.md)
+and still governs the analysis; it was never registered, so nothing here is
+confirmatory. `CONFIRMATORY_FAMILY` keeps its name because `carelite/viz` imports
+it; `PLANNED_FAMILY` is the alias new code should use, and no rendered string in
+this module uses the word.
+
+Analysis plan §8.1, quoted because the exact wording is what this module
 implements:
 
     Friedman omnibus test across conditions {A, B, C} for each of the 11 rubric
@@ -16,8 +22,7 @@ THE CORRECTION FAMILY, STATED EXPLICITLY
 Getting this wrong is the most common way a result of this shape falls apart
 under review, so the reading is written down rather than left in the code.
 
-**The confirmatory family is the eight hypothesis tests the pre-registration
-enumerates** -- the primary outcome (§3) plus the seven directional secondary
+**The Holm family is the eight comparisons the analysis plan enumerates** -- the primary outcome (§3) plus the seven directional secondary
 outcomes (§4) -- corrected together, in one Holm-Bonferroni step, as
 `CONFIRMATORY_FAMILY`. Each of those eight names its own outcome measure: five
 are on the NURSE composite, one on the Four Habits composite, one on
@@ -26,12 +31,12 @@ are on the NURSE composite, one on the Four Habits composite, one on
 step as the NURSE-composite tests. That is what "not per dimension separately"
 forbids, and it is what this module does.
 
-**What is deliberately NOT in the confirmatory family.** §8.1 says "every
+**What is deliberately NOT in the Holm family.** §8.1 says "every
 pairwise comparison listed in §4", and §4 lists eight comparisons each with a
 named measure. It does not list A vs C, and it does not list, say, `de` for
 A vs B. Testing all five condition pairs on all eleven dimensions would be 55
-tests, of which 47 are hypotheses nobody registered; folding them into the
-confirmatory family would multiply the correction on the registered eight by
+tests, of which 47 are hypotheses nobody planned; folding them into the
+Holm family would multiply the correction on the planned eight by
 about seven for the sake of tests that are exploratory by §1's own definition.
 Those tests are still available and still worth looking at -- `dimension_expansion`
 builds them, they are corrected within their own separate family, and every one
@@ -40,16 +45,15 @@ of them is labelled EXPLORATORY in the result object itself.
 **The wording admits a second reading** -- "pairwise-comparison-by-dimension
 family" could be read as that 55-cell cross product. If the project prefers it,
 it is a one-line change (`CONFIRMATORY_FAMILY = (*PRESPECIFIED_HYPOTHESES,
-*dimension_expansion())`) and it is a pre-registration amendment, to be made
-before registration rather than after seeing which reading is kinder to the
-numbers.
+*dimension_expansion())`). D9.2 settled it as the eight, before the holdout data
+existed, rather than after seeing which reading is kinder to the numbers.
 
 **The eleven Friedman omnibus tests are not in the Holm family.** §8.1 puts the
 correction on the pairwise family; an omnibus test is the gate in front of it,
 in the standard omnibus-then-post-hoc shape. Their raw p-values are reported,
 and a Holm correction *within the eleven omnibus tests* is reported beside them
 so a reader who wants that adjustment does not have to compute it -- clearly
-labelled, and not the basis of any confirmatory claim.
+labelled, and not the basis of any claim.
 
 ==========================================================================
 TWO-SIDED TESTS FOR DIRECTIONAL HYPOTHESES
@@ -60,7 +64,7 @@ conservative choice: a one-sided test at alpha = 0.05 would be easier to pass in
 the hypothesised direction and would have no power at all against the opposite
 one -- and secondary outcome 4 (naturalness, A > B) is precisely a hypothesis
 the study expects to come out against the system, so an analysis that could not
-detect the opposite direction would defeat the purpose of registering it. The
+detect the opposite direction would defeat the purpose of stating it in advance. The
 hypothesised direction is recorded on every result and compared against the
 observed one, so "significant, in the predicted direction" and "significant, in
 the opposite direction" are distinguishable without a one-sided test.
@@ -84,12 +88,18 @@ from carelite.stats.effects import (
     paired_effects,
 )
 from carelite.stats.evidence import Label, RaterScope, label_for
+from carelite.stats.instrument import (
+    Discrimination,
+    MeasureTestability,
+    measure_testability,
+)
 from carelite.stats.measures import Measure, cell_means, measure, paired_matrix
 from carelite.types import RUBRIC_DIMENSIONS, Condition
 
 __all__ = [
     "CONFIRMATORY_FAMILY",
     "FRIEDMAN_CONDITIONS",
+    "PLANNED_FAMILY",
     "PRESPECIFIED_HYPOTHESES",
     "FamilyResult",
     "FriedmanResult",
@@ -105,23 +115,23 @@ __all__ = [
     "wilcoxon_paired",
 ]
 
-#: Pre-registration §8.1. The omnibus runs across these three only.
+#: Analysis plan §8.1. The omnibus runs across these three only.
 FRIEDMAN_CONDITIONS: tuple[Condition, ...] = (Condition.A, Condition.B, Condition.C)
 
 
 # ---------------------------------------------------------------------------
-# The pre-specified hypotheses
+# The hypotheses planned in advance
 # ---------------------------------------------------------------------------
 
 
 @dataclass(frozen=True, slots=True)
 class Hypothesis:
-    """One pre-specified (or exploratory) pairwise comparison.
+    """One planned (or exploratory) pairwise comparison.
 
-    `left` and `right` are in the order the pre-registration states the
+    `left` and `right` are in the order the analysis plan states the
     comparison, and every effect size is computed as left-relative-to-right, so
     a positive effect always means "left scored higher". `expected_higher` is
-    the registered direction, or `None` for outcome 6, whose registered
+    the direction predicted in the plan, or `None` for outcome 6, whose
     prediction is that there is no difference.
     """
 
@@ -133,6 +143,16 @@ class Hypothesis:
     description: str
     role: str = "secondary"
     prespecified: bool = True
+    #: Non-empty when this comparison is not runnable **by decision** rather than
+    #: for want of data. The two look identical in a table of missing rows and
+    #: are completely different claims: "the run did not produce this" versus
+    #: "the run produced too little of this to analyse, and analysing it anyway
+    #: would be worse than not". D11 is the live case — see `retired_by_decision`.
+    not_computable_reason: str = ""
+
+    @property
+    def retired_by_decision(self) -> bool:
+        return bool(self.not_computable_reason)
 
     @property
     def measure(self) -> Measure:
@@ -144,13 +164,13 @@ class Hypothesis:
 
     @property
     def expected_direction(self) -> str:
-        """`>`, `<` or `=` for `left` relative to `right`, as registered."""
+        """`>`, `<` or `=` for `left` relative to `right`, as predicted in the plan."""
         if self.expected_higher is None:
             return "="
         return ">" if self.expected_higher == self.left else "<"
 
 
-#: Pre-registration §3 (primary) and §4 (secondary outcomes 1-7), in that order.
+#: Analysis plan §3 (primary) and §4 (secondary outcomes 1-7), in that order.
 PRESPECIFIED_HYPOTHESES: tuple[Hypothesis, ...] = (
     Hypothesis(
         key="primary_nurse_A_vs_B",
@@ -192,8 +212,17 @@ PRESPECIFIED_HYPOTHESES: tuple[Hypothesis, ...] = (
         expected_higher=Condition.C,
         description=(
             "§4.3 Composite NURSE adherence, C vs LC. Curated retrieval outperforms or matches "
-            "naive long-context stuffing. Registered as C >= LC; tested two-sided, so a null "
-            "result is consistent with the registered hypothesis rather than a failure of it."
+            "naive long-context stuffing. RETIRED BY D11 — see `not_computable_reason`."
+        ),
+        not_computable_reason=(
+            "DECISIONS.md D11 stopped LC generation at 39 of 180 cells, covering 13 of 60 "
+            "scenarios. Those cells are the scenarios LC happened to reach before it was "
+            "stopped and were never randomised for partial analysis, so they are not a sample "
+            "of anything. This comparison is therefore NOT COMPUTED — not computed and "
+            "reported as non-significant, and not computed on 13 scenarios with a caveat. "
+            "Secondary outcome 3 cannot be answered by this run. It keeps its slot in the Holm "
+            "family so the seven comparisons that did run are not made easier to pass by its "
+            "absence."
         ),
     ),
     Hypothesis(
@@ -204,7 +233,7 @@ PRESPECIFIED_HYPOTHESES: tuple[Hypothesis, ...] = (
         expected_higher=Condition.A,
         description=(
             "§4.4 naturalness, A vs B, hypothesised A > B. The against-the-system finding this "
-            "pre-registration exists to protect."
+            "analysis plan exists to protect. Under D10 it is descriptive, not registered."
         ),
     ),
     Hypothesis(
@@ -215,7 +244,7 @@ PRESPECIFIED_HYPOTHESES: tuple[Hypothesis, ...] = (
         expected_higher=Condition.A,
         description=(
             "§4.5 ritualistic, A vs B. REVERSE-CODED: analysed on to_quality(), on which the "
-            "registered prediction 'B has a higher raw ritualistic score' becomes 'A scores "
+            "prediction 'B has a higher raw ritualistic score' becomes 'A scores "
             "higher quality than B', consistent with outcome 4's direction."
         ),
     ),
@@ -226,7 +255,7 @@ PRESPECIFIED_HYPOTHESES: tuple[Hypothesis, ...] = (
         right=Condition.A2,
         expected_higher=None,
         description=(
-            "§4.6 Composite NURSE adherence, A vs A2. Cross-model baseline; registered "
+            "§4.6 Composite NURSE adherence, A vs A2. Cross-model baseline; the "
             "prediction is NO significant difference. A significant result here is evidence "
             "about model family, not about the framework."
         ),
@@ -246,14 +275,19 @@ PRESPECIFIED_HYPOTHESES: tuple[Hypothesis, ...] = (
 )
 
 #: The Holm family. See the module docstring for what is in it and what is not.
+#: The name is retained because `carelite/viz` imports it; under D10 read it as
+#: "the family planned in advance", never as a claim of confirmatory status.
 CONFIRMATORY_FAMILY: tuple[Hypothesis, ...] = PRESPECIFIED_HYPOTHESES
+
+#: The name new code should use for the same tuple.
+PLANNED_FAMILY: tuple[Hypothesis, ...] = CONFIRMATORY_FAMILY
 
 
 def dimension_expansion(
     hypotheses: Sequence[Hypothesis] = PRESPECIFIED_HYPOTHESES,
     dimensions: Sequence[str] = RUBRIC_DIMENSIONS,
 ) -> tuple[Hypothesis, ...]:
-    """Every registered condition pair crossed with every rubric dimension.
+    """Every planned condition pair crossed with every rubric dimension.
 
     EXPLORATORY by construction: `prespecified=False` on every one, so the label
     machinery in `carelite.stats.evidence` demotes them whatever the judge
@@ -265,11 +299,11 @@ def dimension_expansion(
         if (h.left, h.right) not in pairs:
             pairs.append((h.left, h.right))
 
-    registered = {(h.left, h.right, h.measure_key) for h in hypotheses}
+    planned = {(h.left, h.right, h.measure_key) for h in hypotheses}
     out: list[Hypothesis] = []
     for left, right in pairs:
         for dim in dimensions:
-            if (left, right, dim) in registered:
+            if (left, right, dim) in planned:
                 continue
             out.append(
                 Hypothesis(
@@ -280,7 +314,7 @@ def dimension_expansion(
                     expected_higher=None,
                     description=(
                         f"EXPLORATORY. {dim}, {left} vs {right}. Not named in the "
-                        "pre-registration; no registered direction."
+                        "analysis plan; no predicted direction."
                     ),
                     role="exploratory",
                     prespecified=False,
@@ -307,8 +341,11 @@ class FriedmanResult:
     label: Label
     #: Holm-corrected within the set of omnibus tests only. See the module
     #: docstring: this is reported for the reader's convenience and is not the
-    #: pre-specified correction, which applies to the pairwise family.
+    #: planned correction, which applies to the pairwise family.
     p_holm_within_omnibus: float = math.nan
+    #: The judge did not resolve this dimension. Its p-value is uninterpretable
+    #: as a statement about the conditions. See `carelite.stats.instrument`.
+    degenerate: bool = False
 
 
 def friedman_omnibus(matrix: pd.DataFrame) -> tuple[float, float, int, int]:
@@ -393,7 +430,7 @@ def holm_bonferroni(p_values: Sequence[float], *, family_size: int | None = None
     list, and cap at 1.
 
     `family_size` defaults to `len(p_values)` and exists for the case where a
-    pre-specified test could not be computed. The family is fixed in advance by
+    planned test could not be computed. The family is fixed in advance by
     the analysis plan, so an undefined test still consumes its share of the
     correction rather than making the surviving tests easier to pass. `nan`
     inputs are returned as `nan` and are excluded from the ordering.
@@ -423,7 +460,7 @@ def holm_bonferroni(p_values: Sequence[float], *, family_size: int | None = None
 class PairwiseResult:
     """One pairwise comparison. Effect size first, deliberately.
 
-    The field order is the reporting order the pre-registration fixes in §8.2,
+    The field order is the reporting order the analysis plan fixes in §8.2,
     and `render()` follows it. There is no constructor path that produces a
     p-value without the effect size and its interval beside it.
     """
@@ -436,6 +473,16 @@ class PairwiseResult:
     n_dropped: int
     p_holm: float = math.nan
     family_size: int = 0
+    #: Whether the judge resolved this comparison's measure at all
+    #: (`carelite.stats.instrument`). `None` when the diagnostic was not run.
+    #: When it says the measure is untestable, `render()` says so ABOVE the
+    #: p-value, because a reader who sees the p-value first has already
+    #: misunderstood the result.
+    testability: MeasureTestability | None = None
+
+    @property
+    def not_testable(self) -> bool:
+        return self.testability is not None and not self.testability.testable
 
     @property
     def observed_direction(self) -> str:
@@ -443,9 +490,9 @@ class PairwiseResult:
 
     @property
     def direction_as_registered(self) -> bool | None:
-        """True/False when a direction was registered, `None` when none was.
+        """True/False when a direction was predicted, `None` when none was.
 
-        Outcome 6 registers "no significant difference", which has no direction
+        Outcome 6 predicts "no significant difference", which has no direction
         to agree or disagree with, so it returns `None` rather than a misleading
         boolean.
         """
@@ -455,7 +502,12 @@ class PairwiseResult:
         return self.observed_direction == expected
 
     def significant(self, alpha: float = 0.05) -> bool:
-        """Holm-corrected significance. Never the raw p-value."""
+        """Holm-corrected significance. Never the raw p-value.
+
+        Note that this stays `False` for an untestable comparison, which is
+        correct as arithmetic and misleading as English — `not_testable` is the
+        field to check before turning this into a sentence, and `render()` does.
+        """
         return (not math.isnan(self.p_holm)) and self.p_holm < alpha
 
     def render(self, alpha: float = 0.05) -> str:
@@ -463,6 +515,28 @@ class PairwiseResult:
         head = (
             f"{self.hypothesis.pair_label} on {self.hypothesis.measure.label} [{self.label.tag()}]"
         )
+        instrument_lines: list[str] = []
+        if self.testability is not None and self.testability.note:
+            prefix = "    !!! " if self.not_testable else "    "
+            instrument_lines.append(f"{prefix}{self.testability.note}")
+        if self.not_testable:
+            # How thin the evidence actually is, in the two numbers that say it.
+            # A degenerate dimension is not necessarily *flat* -- naturalness on
+            # this run left 36 of 60 pairs non-tied while ritualistic left 4 --
+            # and collapsing that difference into one verdict would overstate one
+            # case and understate the other.
+            tied = self.n_scenarios - self.test.n_nonzero
+            hl = self.effects.hodges_lehmann
+            instrument_lines.append(
+                f"        the test rests on {self.test.n_nonzero} of {self.n_scenarios} "
+                f"scenarios ({tied} tied exactly); shift = {hl.point:+.3f} rubric points "
+                f"[{hl.ci.low:+.3f}, {hl.ci.high:+.3f}]"
+                + (
+                    " — interval includes zero"
+                    if not hl.ci.excludes_zero
+                    else " — interval excludes zero"
+                )
+            )
         effect_line = (
             f"    effect (rank-biserial) {e.rank_biserial.render()}"
             f"  |  dz {e.cohens_dz.point:+.3f} "
@@ -470,27 +544,32 @@ class PairwiseResult:
             f"  |  Hodges-Lehmann {e.hodges_lehmann.point:+.3f} points "
             f"[{e.hodges_lehmann.ci.low:+.3f}, {e.hodges_lehmann.ci.high:+.3f}]"
         )
+        if self.not_testable:
+            verdict = "NOT TESTABLE — the p-value below describes the judge, not the conditions"
+        elif self.significant(alpha):
+            verdict = f"significant at alpha = {alpha}"
+        else:
+            verdict = f"not significant at alpha = {alpha}"
         p_line = (
             f"    then p: Wilcoxon W = {self.test.statistic:.1f}, "
             f"p = {self.test.p_value:.4g}, Holm-adjusted p = {self.p_holm:.4g} "
-            f"(family of {self.family_size}), {'' if self.significant(alpha) else 'not '}"
-            f"significant at alpha = {alpha}"
+            f"(family of {self.family_size}), {verdict}"
         )
         direction = self.direction_as_registered
         if direction is None:
-            dir_line = "    registered prediction: no difference"
+            dir_line = "    predicted before the run: no difference"
         else:
             dir_line = (
-                f"    registered direction {self.hypothesis.expected_direction}, observed "
+                f"    predicted direction {self.hypothesis.expected_direction}, observed "
                 f"{self.observed_direction} — "
-                f"{'as registered' if direction else 'AGAINST the registered direction'}"
+                f"{'as predicted' if direction else 'AGAINST the predicted direction'}"
             )
         counts = (
             f"    n = {self.n_scenarios} paired scenarios"
             f"{f' ({self.n_dropped} dropped for an incomplete pair)' if self.n_dropped else ''}"
             f", {self.test.n_nonzero} with a nonzero difference"
         )
-        return "\n".join([head, effect_line, p_line, dir_line, counts])
+        return "\n".join([head, *instrument_lines, effect_line, p_line, dir_line, counts])
 
 
 def run_pairwise(
@@ -502,6 +581,7 @@ def run_pairwise(
     n_boot: int = DEFAULT_N_BOOT,
     seed: int = DEFAULT_SEED,
     extra_reasons: Iterable[str] = (),
+    discrimination: Mapping[str, Discrimination] | None = None,
 ) -> PairwiseResult | None:
     """Effect sizes then the test, for one hypothesis. `None` if no pairs survive.
 
@@ -509,7 +589,19 @@ def run_pairwise(
     are recomputed here rather than passed in, so the `to_quality` transform is
     applied on this call's own data and cannot be inherited from somewhere it
     was skipped.
+
+    A hypothesis retired by decision (`not_computable_reason`) returns `None`
+    without touching the data. It is not tested even if rows for it happen to be
+    present, because the decision to retire it was taken on the sample's
+    provenance rather than on its size, and quietly analysing it because the
+    rows exist would defeat the decision.
+
+    `discrimination` is `carelite.stats.instrument`'s per-dimension verdict. When
+    supplied, the result carries whether its measure was resolvable at all, so
+    the untestable case can never be rendered as a plain non-significant one.
     """
+    if hypothesis.retired_by_decision:
+        return None
     cells = cell_means(long, hypothesis.measure)
     scope = _scope_for(long, rater_type)
     matrix = paired_matrix(cells, (hypothesis.left, hypothesis.right), rater_type=rater_type)
@@ -520,6 +612,19 @@ def run_pairwise(
     left = matrix[str(hypothesis.left)].to_numpy(dtype=float)
     right = matrix[str(hypothesis.right)].to_numpy(dtype=float)
 
+    testability = (
+        measure_testability(hypothesis.measure, discrimination)
+        if discrimination is not None
+        else None
+    )
+    reasons = list(extra_reasons)
+    if testability is not None and not testability.testable:
+        reasons.append(
+            "the judge did not resolve "
+            + ", ".join(testability.degenerate_dimensions)
+            + " on this run, so this comparison is untestable rather than null"
+        )
+
     return PairwiseResult(
         hypothesis=hypothesis,
         effects=paired_effects(left, right, n_boot=n_boot, seed=seed),
@@ -529,10 +634,11 @@ def run_pairwise(
             prespecified=hypothesis.prespecified,
             rater_scope=scope,
             statuses=statuses,
-            extra_reasons=extra_reasons,
+            extra_reasons=reasons,
         ),
         n_scenarios=int(matrix.shape[0]),
         n_dropped=max(0, int(available) - int(matrix.shape[0])),
+        testability=testability,
     )
 
 
@@ -551,8 +657,15 @@ def friedman_across_conditions(
     conditions: Sequence[Condition] = FRIEDMAN_CONDITIONS,
     rater_type: str | None = None,
     statuses: Mapping[str, EvidenceStatus] | None = None,
+    discrimination: Mapping[str, Discrimination] | None = None,
 ) -> tuple[FriedmanResult, ...]:
-    """The eleven pre-specified omnibus tests (§8.1), on `to_quality()` scores."""
+    """The eleven planned omnibus tests (§8.1), on `to_quality()` scores.
+
+    A dimension the judge did not resolve produces a large omnibus p-value for
+    the same reason it produces a large pairwise one, so `degenerate` is carried
+    on the row and the rendered table marks it. An omnibus test on a constant
+    dimension is not a finding of no difference across conditions.
+    """
     scope = _scope_for(long, rater_type)
     results: list[FriedmanResult] = []
     for key in dimensions:
@@ -568,6 +681,10 @@ def friedman_across_conditions(
                 df=df,
                 n_blocks=n_blocks,
                 label=label_for(m, prespecified=True, rater_scope=scope, statuses=statuses),
+                degenerate=(
+                    discrimination is not None
+                    and discrimination.get(key) is Discrimination.DEGENERATE
+                ),
             )
         )
     adjusted = holm_bonferroni([r.p_value for r in results])
@@ -589,7 +706,7 @@ class FamilyResult:
     alpha: float
     results: tuple[PairwiseResult, ...]
     #: The size of the correction family, which is fixed by the analysis plan
-    #: before the data exist. NOT `len(results)`: a pre-specified test that could
+    #: before the data exist. NOT `len(results)`: a planned test that could
     #: not be computed still consumes its share of the correction, so the two
     #: numbers differ whenever a condition is missing from the data and the
     #: rendered `m` has to be this one.
@@ -597,7 +714,7 @@ class FamilyResult:
     friedman: tuple[FriedmanResult, ...] = ()
     correction: str = "Holm-Bonferroni"
     correction_family: str = (
-        "the whole set of pre-specified pairwise comparisons, across measures and dimensions "
+        "the whole set of pairwise comparisons planned in advance, across measures and dimensions "
         "together, not per dimension"
     )
     notes: tuple[str, ...] = ()
@@ -623,7 +740,7 @@ class FamilyResult:
             f"  family size m = {self.family_size or len(self.results)} "
             f"({len(self.results)} computed), alpha = {self.alpha}",
             "  effect sizes and 95% bootstrap CIs are reported BEFORE p-values "
-            "(pre-registration §8.2)",
+            "(analysis plan §8.2)",
         ]
         for note in self.notes:
             lines.append(f"  note: {note}")
@@ -636,12 +753,13 @@ class FamilyResult:
             )
             lines.append(
                 f"    {'dimension':<14}{'chi2':>9}{'df':>4}{'n':>5}{'p':>10}"
-                f"{'p(omnibus Holm)':>18}  status"
+                f"{'p(omnibus Holm)':>18}  instrument"
             )
             for f in self.friedman:
+                marker = "DEGENERATE — p uninterpretable" if f.degenerate else "resolved"
                 lines.append(
                     f"    {f.measure_key:<14}{f.statistic:>9.3f}{f.df:>4}{f.n_blocks:>5}"
-                    f"{f.p_value:>10.4g}{f.p_holm_within_omnibus:>18.4g}  {f.label.tag()}"
+                    f"{f.p_value:>10.4g}{f.p_holm_within_omnibus:>18.4g}  {marker}"
                 )
         lines.append("")
         for r in self.results:
@@ -654,7 +772,7 @@ def run_family(
     long: pd.DataFrame,
     hypotheses: Sequence[Hypothesis] = CONFIRMATORY_FAMILY,
     *,
-    name: str = "primary analysis (pre-registration §8.1)",
+    name: str = "primary analysis (analysis plan §8.1)",
     alpha: float = 0.05,
     rater_type: str | None = None,
     statuses: Mapping[str, EvidenceStatus] | None = None,
@@ -664,6 +782,7 @@ def run_family(
     seed: int = DEFAULT_SEED,
     extra_reasons: Iterable[str] = (),
     notes: Sequence[str] = (),
+    discrimination: Mapping[str, Discrimination] | None = None,
 ) -> FamilyResult:
     """Run a whole family and Holm-correct across all of it in one step.
 
@@ -672,6 +791,12 @@ def run_family(
     test came out undefined -- the family is fixed by the analysis plan before
     the data exist, so a test that could not run does not make its neighbours
     easier to pass.
+
+    That rule is doing real work on this run rather than sitting decorative:
+    secondary outcome 3 (C vs LC) was retired by D11 and cannot be computed, and
+    it keeps its slot. Dropping to m = 7 after seeing which test could not run
+    would lower every other comparison's adjusted p-value, which is the shape of
+    a correction chosen to suit the data.
     """
     computed: list[tuple[Hypothesis, PairwiseResult | None]] = []
     for h in hypotheses:
@@ -686,6 +811,7 @@ def run_family(
                     n_boot=n_boot,
                     seed=seed,
                     extra_reasons=extra_reasons,
+                    discrimination=discrimination,
                 ),
             )
         )
@@ -696,13 +822,19 @@ def run_family(
 
     results: list[PairwiseResult] = []
     missing: list[str] = []
+    retired: list[Hypothesis] = []
     for (h, r), p_adj in zip(computed, adjusted, strict=True):
         if r is None:
-            missing.append(h.key)
+            if h.retired_by_decision:
+                retired.append(h)
+            else:
+                missing.append(h.key)
             continue
         results.append(replace(r, p_holm=p_adj, family_size=family_size))
 
     all_notes = list(notes)
+    for h in retired:
+        all_notes.append(f"{h.key} NOT COMPUTED. {h.not_computable_reason}")
     if missing:
         all_notes.append(
             "no paired data for "
@@ -716,6 +848,7 @@ def run_family(
             conditions=friedman_conditions,
             rater_type=rater_type,
             statuses=statuses,
+            discrimination=discrimination,
         )
         if include_friedman
         else ()

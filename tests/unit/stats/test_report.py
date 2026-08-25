@@ -33,8 +33,12 @@ def full_long(nurse_dimensions: tuple[str, ...]) -> pd.DataFrame:
 
 def test_the_report_runs_every_pre_specified_analysis(full_long: pd.DataFrame) -> None:
     report = run_analysis(long=full_long, n_boot=200)
-    assert len(report.primary.results) == 8  # all eight registered comparisons computed
+    # Seven computed, not eight: C vs LC is retired by D11 and is never run.
+    # It keeps its slot in the family, which is the point of the next assertion.
+    assert len(report.primary.results) == 7
+    assert report.primary.by_key("secondary3_nurse_C_vs_LC") is None
     assert report.primary.family_size == 8
+    assert any("D11" in note for note in report.primary.notes)
     assert len(report.primary.friedman) == len(RUBRIC_DIMENSIONS)
     assert len(report.mixed) == 2  # NURSE and Four Habits composites
     assert report.equity is not None
@@ -45,7 +49,7 @@ def test_the_report_runs_every_pre_specified_analysis(full_long: pd.DataFrame) -
 def test_the_report_counts_its_own_units(full_long: pd.DataFrame) -> None:
     report = run_analysis(long=full_long, n_boot=200)
     assert report.n_scenarios == 15
-    assert report.n_generations == 15 * 6 * 3
+    assert report.n_generations == 15 * 5 * 3  # six conditions generated, LC dropped by D11
     assert report.rater_types == ("llm_judge",)
 
 
@@ -137,7 +141,7 @@ def test_an_empty_database_renders_the_structure_and_says_it_is_empty() -> None:
     assert report.n_generations == 0
     text = report.render()
     assert "NO RESULTS DATA" in text
-    assert "Held-out generation is gated behind OSF registration" in text
+    assert "carelite.eval.judge.load" in text
     # The power analysis does not need data and must still be there.
     assert "POWER ANALYSIS" in text
 
@@ -183,4 +187,4 @@ def test_a_real_validation_failure_names_the_dimension_that_failed(
     report = run_analysis(long=full_long, validity=validity, n_boot=200)
     primary = report.primary.by_key("primary_nurse_A_vs_B")
     assert primary is not None
-    assert "below the pre-specified threshold on explore" in primary.label.tag()
+    assert "below the fixed threshold on explore" in primary.label.tag()

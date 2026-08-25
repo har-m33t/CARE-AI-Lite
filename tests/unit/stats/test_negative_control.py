@@ -140,4 +140,4 @@ def test_the_render_states_that_d_is_not_degraded_on_safety() -> None:
     assert result is not None
     text = result.render()
     assert "not on safety" in text
-    assert "§10" in text
+    assert "gate-refused" in text

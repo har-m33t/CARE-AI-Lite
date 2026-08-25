@@ -14,7 +14,7 @@ aggregation functions below all call `attach_quality` themselves rather than
 trusting a caller to have done it, so there is no ordering in which the
 transform can be skipped.
 
-**2. What "the outcome" means.** The pre-registration (§3, §4) states outcomes
+**2. What "the outcome" means.** The analysis plan (§3, §4) states outcomes
 in three shapes: the composite over the five NURSE dimensions, the composite
 over the four Four Habits dimensions, and two single dimensions
 (`naturalness`, `ritualistic`). `Measure` is all three shapes in one type, so a
@@ -27,7 +27,7 @@ dimensions, then one value per scenario x condition by averaging across the
 three samples in that cell, per rater type.
 
 A missing dimension is dropped from its generation's composite rather than
-dropping the generation, following pre-registration §10: an ungrounded judge
+dropping the generation, following analysis plan §10: an ungrounded judge
 score "is treated as missing for that dimension only; it is not imputed and it
 is not treated as a 1". `n_dimensions` on the returned frame records how many
 constituents actually contributed, so a composite computed from three of five
@@ -63,10 +63,10 @@ __all__ = [
     "quality_lookup",
 ]
 
-#: The five NURSE dimensions, in `RUBRIC_DIMENSIONS` order (pre-registration §3).
+#: The five NURSE dimensions, in `RUBRIC_DIMENSIONS` order (analysis plan §3).
 NURSE_DIMENSIONS: tuple[str, ...] = ("name", "understand", "respect", "support", "explore")
 
-#: The four Four Habits dimensions (pre-registration §4.1).
+#: The four Four Habits dimensions (analysis plan §4.1).
 FOUR_HABITS_DIMENSIONS: tuple[str, ...] = ("ib", "epp", "de", "ie")
 
 
@@ -217,7 +217,7 @@ def measure_by_generation(long: pd.DataFrame, m: Measure) -> pd.DataFrame:
 
 
 def cell_means(long: pd.DataFrame, m: Measure) -> pd.DataFrame:
-    """Scenario x condition cell means, per rater type (pre-registration §3).
+    """Scenario x condition cell means, per rater type (analysis plan §3).
 
     The three samples in a cell are averaged here — which is the aggregation the
     primary analysis is defined on, and is *not* a claim that the three samples

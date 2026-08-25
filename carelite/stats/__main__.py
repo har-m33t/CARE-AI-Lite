@@ -1,8 +1,12 @@
-"""`python -m carelite.stats` — run the pre-specified analysis and print it.
+"""`python -m carelite.stats` — run the analysis and print it.
 
-Reads the held-out split from Postgres and renders every §8 analysis. With an
-empty results table it prints the structure with no numbers in it, which is what
-the pre-registration gate is supposed to produce before OSF registration.
+Reads the held-out split from Postgres and renders every §8 analysis. **D10: every
+result is descriptive**; the plan in `docs/preregistration.md` still governs the
+analysis but was never registered.
+
+With an empty results table it prints the structure with no numbers in it. If the
+holdout run has completed and this still happens, the judge scores have not been
+loaded — run `python -m carelite.eval.judge.load`.
 """
 
 from __future__ import annotations
@@ -20,7 +24,7 @@ def main(argv: list[str] | None = None) -> int:
         "--split",
         default=str(Split.HOLDOUT),
         choices=[str(Split.HOLDOUT), str(Split.TRAIN)],
-        help="which split to analyse; confirmatory analyses are holdout-only (§6)",
+        help="which split to analyse; the planned analyses are holdout-only (§6)",
     )
     parser.add_argument(
         "--n-boot",

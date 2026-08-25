@@ -96,7 +96,7 @@ def test_the_equity_result_carries_both_pre_specified_coverage_gaps(
     text = result.render()
     assert "emotion_intensity = 1" in text
     assert "adherence_barrier" in text
-    assert "PRE-SPECIFIED COVERAGE GAPS" in text
+    assert "COVERAGE GAPS" in text
 
 
 def test_the_equity_render_corrects_the_thirty_five_scenario_figure(
@@ -148,7 +148,7 @@ def test_an_exploratory_subgroup_stays_exploratory_even_with_a_perfect_judge(
     )
     for pairwise in result.family.results:
         assert not pairwise.label.is_confirmatory
-        assert "not pre-specified" in pairwise.label.tag()
+        assert "not planned in advance" in pairwise.label.tag()
 
 
 def test_the_exploratory_render_says_so_before_the_numbers(
@@ -157,7 +157,7 @@ def test_the_exploratory_render_says_so_before_the_numbers(
     result = exploratory_subgroup(stratified_long, "challenge_type", "emotional_cue", n_boot=200)
     text = result.render()
     assert text.startswith("EXPLORATORY SUBGROUP")
-    assert text.index("NOT pre-specified") < text.index("effect (rank-biserial)")
+    assert text.index("NOT planned in advance") < text.index("effect (rank-biserial)")
 
 
 def test_an_exploratory_subgroup_accepts_an_arbitrary_predicate(

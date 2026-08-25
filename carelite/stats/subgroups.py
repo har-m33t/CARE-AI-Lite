@@ -1,6 +1,6 @@
-"""Subgroup analyses. One is pre-specified; every other one says so in its output.
+"""Subgroup analyses. One was planned in advance; every other one says so in its output.
 
-Pre-registration §8.4 names exactly one: **the equity stratum**
+Analysis plan §8.4 names exactly one: **the equity stratum**
 (`equity_stratum = true`), run as a secondary analysis with the same test family
 as §8.1, restricted to held-out scenarios in the stratum. "All other subgroup
 analyses (by `challenge_type`, `literacy_signal`, `encounter_phase`, or any
@@ -22,7 +22,7 @@ result object so they cannot be dropped in transcription.**
    `false_comprehension` scenario, and every one of its scenarios presents an
    already-guarded patient.
 
-Both gaps are pre-specified limitations rather than defects to repair (D5: "A
+Both gaps are limitations named in advance rather than defects to repair (D5: "A
 limitation named in advance is a limitation; the same sentence written after
 seeing the results is an excuse"), so they are constants here and are printed
 whether or not anyone asks.
@@ -30,8 +30,8 @@ whether or not anyone asks.
 **The n this subgroup actually has.** §8.4 introduces the stratum as "35
 scenarios" and then restricts the analysis to held-out scenarios in it. Those
 are different numbers: 35 is the whole bank, and the held-out portion is 20
-(10 `ses`, 4 `lep`, 6 `racial_ethnic`). Confirmatory analyses run on the holdout
-only (§6), so the equity subgroup is an n = 20 paired analysis, which at 80%
+(10 `ses`, 4 `lep`, 6 `racial_ethnic`). The analysis runs on the holdout only
+(§6), so the equity subgroup is an n = 20 paired analysis, which at 80%
 power resolves only a large effect (dz ~ 0.68 by
 `carelite.stats.power.detectable_effect`). `EquitySubgroupResult` computes and
 prints its own detectable effect from the n it actually had, so the figure in
@@ -48,6 +48,7 @@ import pandas as pd
 
 from carelite.eval.judge.validation import EvidenceStatus
 from carelite.stats.effects import DEFAULT_N_BOOT, DEFAULT_SEED
+from carelite.stats.instrument import Discrimination
 from carelite.stats.power import detectable_effect
 from carelite.stats.primary import CONFIRMATORY_FAMILY, FamilyResult, Hypothesis, run_family
 
@@ -69,7 +70,7 @@ RACIAL_ETHNIC_DESCRIPTION = (
     "the frozen split; the description is not."
 )
 
-#: Pre-registration §8.4, declared before any evaluation data existed.
+#: Analysis plan §8.4 and DECISIONS.md D5, declared before any evaluation data existed.
 EQUITY_COVERAGE_GAPS: tuple[str, ...] = (
     "The equity stratum contains no `emotion_intensity = 1` scenario, so it cannot say whether "
     "the disparity behaves differently on an emotionally flat turn — the turn where a system "
@@ -84,7 +85,7 @@ EQUITY_COVERAGE_GAPS: tuple[str, ...] = (
 
 @dataclass(frozen=True, slots=True)
 class EquitySubgroupResult:
-    """The one pre-specified subgroup (§8.4), with its own n and its own limits."""
+    """The one subgroup planned in advance (§8.4), with its own n and its own limits."""
 
     family: FamilyResult
     n_scenarios: int
@@ -96,17 +97,34 @@ class EquitySubgroupResult:
 
     def render(self) -> str:
         kinds = ", ".join(f"{k} {v}" for k, v in sorted(self.n_by_equity_kind.items())) or "-"
+        racial_ethnic_n = self.n_by_equity_kind.get("racial_ethnic", 0)
         lines = [
-            "PRE-SPECIFIED SUBGROUP: THE EQUITY STRATUM (pre-registration §8.4)",
+            "THE EQUITY STRATUM — the one subgroup planned in advance (analysis plan §8.4)",
+            "  DESCRIPTIVE ONLY. This is not a powered test of an equity effect and must not be "
+            "written up as one (D9.1).",
             f"  {self.n_scenarios} held-out scenarios in the stratum ({kinds}).",
             f"  At n = {self.n_scenarios}, 80% power, alpha = 0.05 two-sided, the smallest "
-            f"detectable paired effect is dz = {self.detectable_effect_dz:.3f}. A null result "
-            "below that is this subgroup's resolution, not an absence of effect.",
-            "",
-            f"  {self.racial_ethnic_description}",
-            "",
-            "  PRE-SPECIFIED COVERAGE GAPS (declared before data existed, §8.4):",
+            f"detectable paired effect is dz = {self.detectable_effect_dz:.3f} — large effects "
+            "only. A null result below that threshold is this subgroup's resolution, not an "
+            "absence of effect.",
         ]
+        if racial_ethnic_n and racial_ethnic_n < 10:
+            lines.append(
+                f"  `racial_ethnic` holds {racial_ethnic_n} scenarios. At that n nothing is "
+                "supportable in either direction; the breakdown is printed as a description of "
+                "the data, not as a comparison."
+            )
+        lines.extend(
+            [
+                "  The §8.4 parenthetical says 35 scenarios. That counts the whole bank; §6 "
+                "restricts the analysis to the holdout, and 15 of the 35 are in train. 20 is "
+                "the number this analysis ran on (D9.1).",
+                "",
+                f"  {self.racial_ethnic_description}",
+                "",
+                "  COVERAGE GAPS, declared before any holdout data existed (§8.4, D5):",
+            ]
+        )
         for gap in self.coverage_gaps:
             lines.append(f"    - {gap}")
         lines.append("")
@@ -123,12 +141,13 @@ def equity_subgroup(
     alpha: float = 0.05,
     n_boot: int = DEFAULT_N_BOOT,
     seed: int = DEFAULT_SEED,
+    discrimination: Mapping[str, Discrimination] | None = None,
 ) -> EquitySubgroupResult:
     """Run the §8.1 family restricted to `equity_stratum = true` scenarios.
 
-    Pre-specified, so the results are labelled confirmatory-eligible; the judge
-    gate still applies per dimension, and the subgroup's own n is carried on the
-    result rather than assumed to be 60.
+    Planned in advance, so the results are eligible for the DESCRIPTIVE label;
+    the judge gate still applies per dimension, and the subgroup's own n is
+    carried on the result rather than assumed to be 60.
     """
     if "equity_stratum" not in long.columns:
         raise KeyError(
@@ -150,12 +169,13 @@ def equity_subgroup(
     family = run_family(
         stratum,
         hypotheses,
-        name="pre-specified secondary analysis: equity stratum (pre-registration §8.4)",
+        name="secondary analysis planned in advance: equity stratum (analysis plan §8.4)",
         alpha=alpha,
         rater_type=rater_type,
         statuses=statuses,
         n_boot=n_boot,
         seed=seed,
+        discrimination=discrimination,
         notes=(
             f"restricted to the {n_scenarios} held-out scenarios with equity_stratum = true; "
             "the 35-scenario figure in §8.4 counts the whole bank, train split included",
@@ -185,7 +205,7 @@ class ExploratorySubgroupResult:
         return "\n".join(
             [
                 f"EXPLORATORY SUBGROUP: {self.column} = {self.value}",
-                "  NOT pre-specified (pre-registration §8.4 names the equity stratum and no "
+                "  NOT planned in advance (§8.4 names the equity stratum and no "
                 "other). Every result below is exploratory whatever its p-value.",
                 f"  {self.n_scenarios} held-out scenarios; smallest detectable paired effect "
                 f"dz = {self.detectable_effect_dz:.3f}.",
@@ -206,6 +226,7 @@ def exploratory_subgroup(
     alpha: float = 0.05,
     n_boot: int = DEFAULT_N_BOOT,
     seed: int = DEFAULT_SEED,
+    discrimination: Mapping[str, Discrimination] | None = None,
     predicate: Callable[[pd.DataFrame], pd.Series] | None = None,
 ) -> ExploratorySubgroupResult:
     """Any other stratification. Exploratory by construction, not by choice.
@@ -245,8 +266,9 @@ def exploratory_subgroup(
         statuses=statuses,
         n_boot=n_boot,
         seed=seed,
+        discrimination=discrimination,
         notes=(
-            "not a pre-specified subgroup; Holm correction here is within this exploratory "
+            "not a subgroup planned in advance; Holm correction here is within this exploratory "
             "family only and does not account for the other subgroups anyone might run",
         ),
     )

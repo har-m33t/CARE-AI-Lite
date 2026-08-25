@@ -1,6 +1,6 @@
 """Effect sizes with 95% bootstrap confidence intervals. Reported before p-values.
 
-Pre-registration §8.2: "Effect sizes with 95% bootstrap confidence intervals are
+Analysis plan §8.2: "Effect sizes with 95% bootstrap confidence intervals are
 computed and reported for every comparison, and are reported before the
 corresponding p-value in every table and figure. At n = 60 the effect size and
 its interval carry more information than the p-value; the ordering in the
@@ -12,7 +12,7 @@ in `carelite.stats.primary` cannot be constructed without its effect estimates,
 in this package that returns a p-value on its own.
 
 **Three estimators, because they answer three different questions and the
-pre-registration names none of them specifically.** It fixes the *test*
+analysis plan names none of them specifically.** It fixes the *test*
 (Wilcoxon signed-rank) and the *interval method* (bootstrap, 95%) but not the
 point estimate, so all three are computed and reported together rather than one
 being chosen after the fact:

@@ -11,16 +11,23 @@ something, but not the thing it says it is measuring, and no amount of Holm
 correction repairs that. `NegativeControlResult.render()` therefore leads with
 the verdict in the first line, and the failure text is not a footnote.
 
-**What Condition D is, and what it is not.** Pre-registration §2: D is
+**What Condition D is, and what it is not.** Analysis plan §2: D is
 instructed to be brief, avoid dwelling on feeling, avoid open questions and
 close topics quickly -- degraded on the communication dimensions the rubric
 scores, and **not** on safety. The same output-safety gate applies to D as to
 every other condition, so a D response the gate blocks is a real failure rather
-than the control working as designed, and §10 excludes it from rubric analysis
-and logs it as a safety event. Nothing in this module treats a safety block as
-evidence that the control worked; those rows never reach it.
+than the control working as designed.
 
-**The verdict rule, stated before the data exist.** The rubric separates B from
+**Whether blocked rows are in the frame is a fact about the caller, so this
+module reports it rather than asserting it.** The plan's §10 says such rows are
+excluded; D12, which postdates it, keeps them in the table with a
+`gate_blocked` flag and leaves the exclusion to the analysis. The base family
+this result usually comes from INCLUDES them, and sensitivity (d) is the run
+that excludes them. `n_gate_blocked` is counted from the frame actually passed
+in and printed with the verdict, so the rendered text can never claim an
+exclusion that did not happen.
+
+**The verdict rule, fixed before the data existed.** The rubric separates B from
 D when all three hold:
 
 1. the observed direction is B > D -- a rubric that ranks the degraded prompt
@@ -31,17 +38,17 @@ D when all three hold:
 3. the Holm-corrected p-value from the §8.1 family is below alpha.
 
 All three, not any of them. Requiring the interval and the corrected p to agree
-is stricter than the pre-registration's own wording, which asks only whether the
+is stricter than the plan's own wording, which asks only whether the
 rubric "can separate" them; a control that passes on a p-value while its
 interval spans zero has not demonstrated separation, and this is the one place
 where a generous reading buys nothing.
 
-**Reading a pass.** §4.7 registers B > D "by a large margin". A separation that
+**Reading a pass.** §4.7 predicts B > D "by a large margin". A separation that
 is statistically detectable but small is a pass on the letter of the rule and is
 worth stating plainly, so the effect size is reported next to the verdict and
 `margin_is_large` records whether it cleared the conventional large-effect
-threshold. That flag is descriptive: the pre-registration fixes no numeric
-margin, and one is not invented here.
+threshold. That flag is descriptive: the plan fixes no numeric margin, and one
+is not invented here.
 """
 
 from __future__ import annotations
@@ -88,11 +95,23 @@ class NegativeControlResult:
     not.
     """
 
-    __slots__ = ("_alpha", "_comparison")
+    __slots__ = ("_alpha", "_comparison", "_n_gate_blocked")
 
-    def __init__(self, comparison: PairwiseResult, *, alpha: float = 0.05) -> None:
+    def __init__(
+        self,
+        comparison: PairwiseResult,
+        *,
+        alpha: float = 0.05,
+        n_gate_blocked: int = 0,
+    ) -> None:
         self._comparison = comparison
         self._alpha = alpha
+        self._n_gate_blocked = n_gate_blocked
+
+    @property
+    def n_gate_blocked(self) -> int:
+        """Gate-refused generations present in the frame this verdict was computed on."""
+        return self._n_gate_blocked
 
     @property
     def comparison(self) -> PairwiseResult:
@@ -154,7 +173,7 @@ class NegativeControlResult:
             )
 
         lines = [
-            "NEGATIVE CONTROL (pre-registration §4.7, §8.6; build plan v3 §14)",
+            "NEGATIVE CONTROL (analysis plan §4.7, §8.6; build plan v3 §14)",
             f"  {verdict}",
         ]
         if not self.rubric_separates:
@@ -175,9 +194,16 @@ class NegativeControlResult:
                 self._comparison.render(self._alpha),
                 "",
                 "  Condition D is degraded on the communication dimensions the rubric scores, "
-                "not on safety (pre-registration §2). A D response blocked by the output-safety "
-                "gate is a real failure, is excluded from rubric analysis under §10, and does "
-                "not appear above.",
+                "not on safety (analysis plan §2).",
+                (
+                    f"  {self._n_gate_blocked} output-gate-refused generations ARE INCLUDED in "
+                    "the frame this verdict was computed on (D12 keeps them, flagged). "
+                    "Sensitivity (d) is the rerun that excludes them; compare the two before "
+                    "quoting this margin."
+                    if self._n_gate_blocked
+                    else "  No output-gate-refused generations are in the frame this verdict "
+                    "was computed on."
+                ),
             ]
         )
         return "\n".join(lines)
@@ -196,15 +222,20 @@ def negative_control(
     """Verify the rubric distinguishes Condition D from Condition B.
 
     Pass `family` -- the already-run §8.1 family -- so the Holm-corrected p-value
-    is the one from the pre-specified family rather than a fresh uncorrected
+    is the one from the planned family rather than a fresh uncorrected
     test. Without it the comparison is recomputed and its `p_holm` is the raw
     p-value corrected in a family of one, which is stated on the result and is
     weaker evidence than the family version.
     """
+    n_blocked = 0
+    if "gate_blocked" in long.columns and not long.empty:
+        flag = long["gate_blocked"].astype("boolean").fillna(False)
+        n_blocked = int(long.loc[flag, "generation_id"].nunique())
+
     if family is not None:
         found = family.by_key(NEGATIVE_CONTROL_HYPOTHESIS.key)
         if found is not None:
-            return NegativeControlResult(found, alpha=family.alpha)
+            return NegativeControlResult(found, alpha=family.alpha, n_gate_blocked=n_blocked)
 
     computed = run_pairwise(
         long,
@@ -219,5 +250,7 @@ def negative_control(
     from dataclasses import replace
 
     return NegativeControlResult(
-        replace(computed, p_holm=computed.test.p_value, family_size=1), alpha=alpha
+        replace(computed, p_holm=computed.test.p_value, family_size=1),
+        alpha=alpha,
+        n_gate_blocked=n_blocked,
     )

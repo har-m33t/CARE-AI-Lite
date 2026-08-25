@@ -17,6 +17,7 @@ import pytest
 from scipy import stats
 
 from carelite.stats.evidence import EvidenceStatus
+from carelite.stats.instrument import instrument_report
 from carelite.stats.primary import (
     CONFIRMATORY_FAMILY,
     PRESPECIFIED_HYPOTHESES,
@@ -29,6 +30,7 @@ from carelite.stats.primary import (
     wilcoxon_paired,
 )
 from carelite.types import RUBRIC_DIMENSIONS, Condition
+from tests.unit.stats.conftest import constant_scores, make_long
 
 # ---------------------------------------------------------------------------
 # Friedman
@@ -396,3 +398,129 @@ def test_a_scenario_missing_one_condition_is_dropped_and_counted(
     assert result is not None
     assert result.n_scenarios == 4
     assert result.n_dropped == 2
+
+
+# ---------------------------------------------------------------------------
+# D11: a comparison retired by decision, not by absent data
+# ---------------------------------------------------------------------------
+
+
+class TestRetiredByDecision:
+    """C vs LC keeps its slot in the family and is never computed.
+
+    The distinction being pinned: a comparison the analysis *declines* to run
+    must behave differently from one it *cannot* run. If the 39 LC cells were
+    simply absent these tests would pass trivially — so the fixtures deliberately
+    supply LC rows, and the assertion is that the analysis still refuses.
+    """
+
+    @pytest.fixture
+    def with_lc(self, nurse_dimensions: tuple[str, ...]) -> pd.DataFrame:
+        scores: dict[tuple[str, str, int], dict[str, int]] = {}
+        for i in range(20):
+            scenario = f"SC-{i:03d}"
+            for sample in range(3):
+                scores[(scenario, "C", sample)] = constant_scores(nurse_dimensions, 4)
+                # LC present for a third of scenarios, as in the real partial run.
+                if i < 7:
+                    scores[(scenario, "LC", sample)] = constant_scores(nurse_dimensions, 2)
+        return make_long(scores=scores)
+
+    def test_the_hypothesis_declares_itself_retired(self) -> None:
+        hypothesis = next(h for h in PRESPECIFIED_HYPOTHESES if h.key == "secondary3_nurse_C_vs_LC")
+        assert hypothesis.retired_by_decision
+        assert "D11" in hypothesis.not_computable_reason
+
+    def test_it_is_not_computed_even_when_rows_exist(self, with_lc: pd.DataFrame) -> None:
+        """The refusal is on provenance, so the presence of data must not defeat it."""
+        assert (with_lc["condition"] == "LC").any(), "fixture must supply LC rows"
+        hypothesis = next(h for h in PRESPECIFIED_HYPOTHESES if h.key == "secondary3_nurse_C_vs_LC")
+        assert run_pairwise(with_lc, hypothesis, n_boot=200) is None
+
+    def test_it_keeps_its_slot_in_the_correction_family(self, with_lc: pd.DataFrame) -> None:
+        """Dropping to m = 7 would make every surviving comparison easier to pass."""
+        family = run_family(with_lc, n_boot=200)
+        assert family.family_size == len(PRESPECIFIED_HYPOTHESES) == 8
+        assert family.by_key("secondary3_nurse_C_vs_LC") is None
+
+    def test_the_reason_is_reported_not_silently_dropped(self, with_lc: pd.DataFrame) -> None:
+        family = run_family(with_lc, n_boot=200)
+        notes = " ".join(family.notes)
+        assert "NOT COMPUTED" in notes
+        assert "D11" in notes
+        assert "never randomised" in notes
+
+    def test_a_missing_comparison_reads_differently_from_a_retired_one(
+        self, nurse_dimensions: tuple[str, ...]
+    ) -> None:
+        """ "No data" and "declined" must not produce the same note."""
+        scores = {
+            (f"SC-{i:03d}", "A", s): constant_scores(nurse_dimensions, 3)
+            for i in range(10)
+            for s in range(3)
+        }
+        family = run_family(make_long(scores=scores), n_boot=200)
+        notes = " ".join(family.notes)
+        assert "no paired data for" in notes
+        assert "NOT COMPUTED" in notes  # the retired one, separately worded
+
+
+# ---------------------------------------------------------------------------
+# An untestable comparison must not render as a null one
+# ---------------------------------------------------------------------------
+
+
+class TestInstrumentLimitedRendering:
+    @pytest.fixture
+    def flat_naturalness(self, nurse_dimensions: tuple[str, ...]) -> pd.DataFrame:
+        """A and B over 20 scenarios where `naturalness` is the same value throughout."""
+        scores: dict[tuple[str, str, int], dict[str, int]] = {}
+        for i in range(20):
+            scenario = f"SC-{i:03d}"
+            for condition in ("A", "B"):
+                for sample in range(3):
+                    scores[(scenario, condition, sample)] = {"naturalness": 3}
+        return make_long(scores=scores)
+
+    def test_the_verdict_precedes_the_p_value(self, flat_naturalness: pd.DataFrame) -> None:
+        """Ordering is the mechanism. A reader who meets the p-value first has misread it."""
+        report = instrument_report(flat_naturalness)
+        hypothesis = next(
+            h for h in PRESPECIFIED_HYPOTHESES if h.key == "secondary4_naturalness_A_vs_B"
+        )
+        result = run_pairwise(
+            flat_naturalness, hypothesis, n_boot=200, discrimination=report.statuses
+        )
+        assert result is not None
+        assert result.not_testable
+
+        text = result.render()
+        assert text.index("INSTRUMENT-LIMITED") < text.index("then p:")
+        assert "NOT TESTABLE" in text
+        assert "no significant difference" not in text.lower().replace(
+            "as 'no significant difference'", ""
+        )
+
+    def test_the_pair_count_the_test_rests_on_is_shown(
+        self, flat_naturalness: pd.DataFrame
+    ) -> None:
+        """Degenerate is not the same as flat, so the evidence is quantified."""
+        report = instrument_report(flat_naturalness)
+        hypothesis = next(
+            h for h in PRESPECIFIED_HYPOTHESES if h.key == "secondary4_naturalness_A_vs_B"
+        )
+        result = run_pairwise(
+            flat_naturalness, hypothesis, n_boot=200, discrimination=report.statuses
+        )
+        assert result is not None
+        assert "the test rests on 0 of 20 scenarios (20 tied exactly)" in result.render()
+
+    def test_without_the_diagnostic_no_claim_is_made(self, flat_naturalness: pd.DataFrame) -> None:
+        """`discrimination=None` must leave the result unlabelled, not silently clean."""
+        hypothesis = next(
+            h for h in PRESPECIFIED_HYPOTHESES if h.key == "secondary4_naturalness_A_vs_B"
+        )
+        result = run_pairwise(flat_naturalness, hypothesis, n_boot=200)
+        assert result is not None
+        assert result.testability is None
+        assert not result.not_testable

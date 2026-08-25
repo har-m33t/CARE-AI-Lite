@@ -1,14 +1,14 @@
 """The power analysis that justifies n = 60, and what n = 60 can actually detect.
 
-Build plan v3 §11 and pre-registration §6 fix the design: paired, Wilcoxon
-signed-rank, alpha = 0.05 two-sided, power = 0.80. The pre-registered table is
+Build plan v3 §11 and analysis plan §6 fix the design: paired, Wilcoxon
+signed-rank, alpha = 0.05 two-sided, power = 0.80. The planned table is
 
     large  (d ~ 0.8)  ->  ~15-20 scenarios
     medium (d ~ 0.5)  ->  ~35-45
     small  (d ~ 0.3)  ->  ~90+
 
 and `required_n` reproduces it, which is the point of testing this module: the
-n that got registered has to come out of a function someone can re-run, not out
+n the plan rests on has to come out of a function someone can re-run, not out
 of a remembered rule of thumb.
 
 **Method.** There is no closed form for Wilcoxon signed-rank power without
@@ -19,7 +19,7 @@ normally-distributed differences that ARE is 3/pi ~ 0.955, which is the
 conservative choice — the signed-rank test is *more* efficient than the t test
 for every heavier-tailed distribution, with no upper bound, so a plan powered
 under the normal assumption is not under-powered if the differences turn out
-non-normal. That is also the assumption under which the pre-registered table
+non-normal. That is also the assumption under which the planned table
 was produced, and it reproduces it.
 
     n_t  = ((z_{1-alpha/2} + z_{1-beta}) / d)^2 + z_{1-alpha/2}^2 / 2
@@ -40,10 +40,10 @@ retrieval. `PowerReport.render()` says so every time it prints.
 
 **One caveat this module reports and does not silently apply.** These numbers
 are per-test at alpha = 0.05. The analysis plan (§8.1) corrects a family of
-pre-specified tests with Holm-Bonferroni, so the effective alpha for the
+planned tests with Holm-Bonferroni, so the effective alpha for the
 smallest p-value in the family is alpha/m. `detectable_effect` takes an alpha,
 so the family-corrected figure is available and is printed alongside the
-nominal one — the pre-registered n stands on the nominal figure, and this is
+nominal one — the planned n stands on the nominal figure, and this is
 reported as context rather than as a revision to it.
 """
 
@@ -136,7 +136,7 @@ def detectable_effect(
 
 @dataclass(frozen=True, slots=True)
 class PowerRow:
-    """One row of the pre-registered table, recomputed."""
+    """One row of the planned table, recomputed."""
 
     label: str
     effect_size: float
@@ -145,7 +145,7 @@ class PowerRow:
 
 @dataclass(frozen=True, slots=True)
 class PowerReport:
-    """The §6 justification, recomputed from the constants that got registered."""
+    """The §6 justification, recomputed from the constants the plan fixed."""
 
     alpha: float
     power: float
@@ -156,15 +156,15 @@ class PowerReport:
     rows: tuple[PowerRow, ...]
     detectable_at_n: float
     #: Detectable effect if the whole pre-specified family's Holm correction is
-    #: charged against a single test (alpha / m). Context, not the registered n.
+    #: charged against a single test (alpha / m). Context, not the planned n.
     family_size: int | None
     detectable_at_n_family_corrected: float | None
-    #: The comparison that set n, per v3 §11 and pre-registration §6.
+    #: The comparison that set n, per v3 §11 and analysis plan §6.
     sizing_comparison: str = "secondary outcome 2, Condition B vs Condition C"
 
     def render(self) -> str:
         lines = [
-            "POWER ANALYSIS (build plan v3 §11, pre-registration §6)",
+            "POWER ANALYSIS (build plan v3 §11, analysis plan §6)",
             f"  paired design, Wilcoxon signed-rank, alpha = {self.alpha} "
             f"({'two' if self.two_sided else 'one'}-sided), power = {self.power}",
             f"  ARE(Wilcoxon vs paired t, normal differences) = {self.are:.4f}",
@@ -185,7 +185,7 @@ class PowerReport:
             lines.append(
                 f"  Charging the whole Holm family (m = {self.family_size}) against one test "
                 f"(alpha = {self.alpha}/{self.family_size}) it is "
-                f"dz = {self.detectable_at_n_family_corrected:.3f}. The registered n stands on "
+                f"dz = {self.detectable_at_n_family_corrected:.3f}. The planned n stands on "
                 "the nominal figure above; this is context for reading a null result, not a "
                 "revision of the plan."
             )
@@ -200,8 +200,8 @@ class PowerReport:
         return "\n".join(lines)
 
 
-#: The three brackets the pre-registration tabulates, as (label, dz).
-_REGISTERED_BRACKETS: tuple[tuple[str, float], ...] = (
+#: The three brackets the analysis plan tabulates, as (label, dz).
+_PLANNED_BRACKETS: tuple[tuple[str, float], ...] = (
     ("large", 0.8),
     ("medium", 0.5),
     ("small", 0.3),
@@ -217,9 +217,9 @@ def build_power_report(
     n_holdout: int | None = None,
     samples_per_cell: int | None = None,
     family_size: int | None = None,
-    brackets: Sequence[tuple[str, float]] = _REGISTERED_BRACKETS,
+    brackets: Sequence[tuple[str, float]] = _PLANNED_BRACKETS,
 ) -> PowerReport:
-    """Recompute the registered table and the detectable effect at the frozen n.
+    """Recompute the planned table and the detectable effect at the frozen n.
 
     `n_holdout` and `samples_per_cell` default to `carelite.config`, so the
     report tracks the frozen contract rather than a number copied out of it.

@@ -173,7 +173,7 @@ def test_not_pre_specified_demotes_regardless_of_the_judge() -> None:
         statuses=statuses,
     )
     assert not label.is_confirmatory
-    assert "not pre-specified" in label.tag()
+    assert "not planned in advance" in label.tag()
 
 
 def test_both_reasons_are_recorded_when_both_apply() -> None:
@@ -185,8 +185,8 @@ def test_both_reasons_are_recorded_when_both_apply() -> None:
         statuses=statuses,
     )
     assert len(label.reasons) == 2
-    assert "not pre-specified" in label.tag()
-    assert "below the pre-specified threshold" in label.tag()
+    assert "not planned in advance" in label.tag()
+    assert "below the fixed threshold" in label.tag()
 
 
 def test_an_extra_reason_demotes_a_result_that_would_otherwise_pass() -> None:
@@ -204,7 +204,9 @@ def test_an_extra_reason_demotes_a_result_that_would_otherwise_pass() -> None:
 
 def test_the_tag_is_the_sentence_the_write_up_uses() -> None:
     confirmatory = Label(EvidenceStatus.CONFIRMATORY, True, RaterScope.HUMAN)
-    assert confirmatory.tag() == "CONFIRMATORY"
+    # D10: the word "confirmatory" must never reach a rendered string.
+    assert confirmatory.tag() == "DESCRIPTIVE (planned in advance; judge gate cleared)"
+    assert "confirmatory" not in confirmatory.tag().lower()
     exploratory = Label(EvidenceStatus.EXPLORATORY, False, RaterScope.JUDGE, ("not pre-specified",))
     assert exploratory.tag() == "EXPLORATORY (not pre-specified)"
 

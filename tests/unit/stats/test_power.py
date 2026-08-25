@@ -119,7 +119,7 @@ def test_the_family_corrected_figure_is_reported_as_context_not_as_the_plan() ->
     assert report.detectable_at_n_family_corrected is not None
     assert report.detectable_at_n_family_corrected > report.detectable_at_n
     text = report.render()
-    assert "The registered n stands on the nominal figure" in text
+    assert "The planned n stands on the nominal figure" in text
 
 
 def test_omitting_the_family_size_omits_the_corrected_figure() -> None:
