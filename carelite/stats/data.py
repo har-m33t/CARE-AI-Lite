@@ -14,8 +14,8 @@ columns sitting next to each other inviting a `.mean(axis=1)`.
 
 **Three joins that are not optional.**
 
-*`scenario`*, because the confirmatory analyses run on the held-out split only
-(pre-registration §6: "All confirmatory analyses below run on the 60-scenario
+*`scenario`*, because the analysis runs on the held-out split only
+(analysis plan §6: "All confirmatory analyses below run on the 60-scenario
 held-out split only; the 40 train scenarios are for prompt and retrieval
 development and are never scored as evaluation data"). `split` is a filter with
 a default of `holdout`, not an optional convenience.
@@ -47,6 +47,7 @@ from __future__ import annotations
 
 import warnings
 from collections.abc import Sequence
+from dataclasses import dataclass, field
 from typing import Any
 
 import pandas as pd
@@ -55,9 +56,13 @@ from carelite.eval.judge.store import MEDIAN_RATER_SUFFIX
 from carelite.types import RUBRIC_DIMENSIONS, RaterType, Split
 
 __all__ = [
+    "DROPPED_CONDITIONS",
     "JUDGE_SAMPLES_SQL",
     "SCORES_SQL",
+    "DataInventory",
     "attach_equity_kind",
+    "drop_dropped_conditions",
+    "inventory",
     "load_judge_samples",
     "load_scores",
     "to_long",
@@ -87,8 +92,10 @@ SELECT
     sc.encounter_phase,
     sc.literacy_signal,
     sc.equity_stratum,
+    g.gate_blocked,
     COALESCE(rt.fell_back_to_b, FALSE) AS fell_back_to_b,
-    rt.crag_grade
+    rt.crag_grade,
+    COALESCE(array_length(rt.retrieved_ids, 1), 0) AS n_retrieved
 FROM rubric_score rs
 JOIN generation g       ON g.generation_id = rs.generation_id
 JOIN scenario   sc      ON sc.scenario_id  = g.scenario_id
@@ -128,7 +135,7 @@ def to_long(wide: pd.DataFrame) -> pd.DataFrame:
     tests exercise, so the shape the analysis depends on is verified without a
     live Postgres.
 
-    Rows whose score is NULL are kept, with `raw` as NaN. Pre-registration §10
+    Rows whose score is NULL are kept, with `raw` as NaN. Analysis plan §10
     makes an ungrounded judge score missing *for that dimension only*, and
     dropping the row here would erase the distinction between "not scored" and
     "not attempted".
@@ -153,15 +160,39 @@ def to_long(wide: pd.DataFrame) -> pd.DataFrame:
     return long.reset_index(drop=True)
 
 
-def _read(sql: str, params: dict[str, Any], conn: Any | None) -> pd.DataFrame:
-    """`pandas.read_sql` over a psycopg connection.
+def _frame_from_cursor(cur: Any) -> pd.DataFrame:
+    """Build a frame from an executed cursor, whatever row factory it carries.
 
-    pandas warns that it only *tests* SQLAlchemy connectables; psycopg3 satisfies
-    the DBAPI2 interface `read_sql` uses and is what the rest of the project
-    connects with (`carelite.db.connect` registers the pgvector adapters), so the
-    warning is suppressed narrowly here rather than by adding a second connection
-    stack for this package alone.
+    **This is not the obvious `pandas.read_sql` call, and the reason is a bug
+    that was live in this module until the results table had rows in it.**
+    `carelite.db.connect` sets psycopg's `dict_row` factory, so each row is a
+    `dict`. `read_sql` iterates whatever the cursor yields and builds columns
+    from it -- and iterating a `dict` yields its *keys*. Every cell came back as
+    the name of its own column: 10,329 rows, `generation_id.nunique() == 1`,
+    `raw` entirely NaN.
+
+    The failure was invisible for as long as `rubric_score` was empty, because an
+    empty result set is empty under either reading. It would have been invisible
+    afterwards too -- a frame of the right shape, full of strings, that every
+    downstream `to_numeric(errors="coerce")` turns quietly into NaN. Nothing
+    would have raised; the analysis would simply have found no data anywhere and
+    said so in a way that looked like a finding about the study.
+
+    So the rows are fetched explicitly and the column names come from
+    `cur.description`, which is authoritative regardless of row factory. Both
+    row shapes are handled, because a caller may pass a tuple-row connection.
     """
+    rows = cur.fetchall()
+    columns = [d.name for d in cur.description] if cur.description else []
+    if not rows:
+        return pd.DataFrame(columns=columns)
+    if isinstance(rows[0], dict):
+        return pd.DataFrame(rows, columns=columns)
+    return pd.DataFrame(rows, columns=columns)
+
+
+def _read(sql: str, params: dict[str, Any], conn: Any | None) -> pd.DataFrame:
+    """Run one query and return it as a frame. See `_frame_from_cursor`."""
     with warnings.catch_warnings():
         warnings.filterwarnings(
             "ignore",
@@ -169,11 +200,14 @@ def _read(sql: str, params: dict[str, Any], conn: Any | None) -> pd.DataFrame:
             category=UserWarning,
         )
         if conn is not None:
-            return pd.read_sql(sql, conn, params=params)
+            with conn.cursor() as cur:
+                cur.execute(sql, params)
+                return _frame_from_cursor(cur)
         from carelite.db import connect
 
-        with connect() as opened:
-            return pd.read_sql(sql, opened, params=params)
+        with connect() as opened, opened.cursor() as cur:
+            cur.execute(sql, params)
+            return _frame_from_cursor(cur)
 
 
 def load_scores(
@@ -214,8 +248,10 @@ def load_scores(
             "encounter_phase",
             "literacy_signal",
             "equity_stratum",
+            "gate_blocked",
             "fell_back_to_b",
             "crag_grade",
+            "n_retrieved",
             "dimension",
             "raw",
         ]
@@ -266,3 +302,167 @@ def attach_equity_kind(long: pd.DataFrame, *, bank_path: str | None = None) -> p
     out = long.copy()
     out["equity_kind"] = out["scenario_id"].map(mapping)
     return out
+
+
+# ---------------------------------------------------------------------------
+# D11: conditions dropped from the run, and what that costs
+# ---------------------------------------------------------------------------
+
+#: `DECISIONS.md` D11. LC generation was stopped at 39 of 180 cells, covering 13
+#: of 60 scenarios, and those cells were never randomised for partial analysis --
+#: they are the scenarios LC happened to reach before it was stopped. So LC is
+#: not a small arm, it is a non-arm, and the honest treatment is to exclude it
+#: from every comparison rather than to compute a C-vs-LC test on 13 scenarios
+#: and caveat it. The rows stay in the database as a record of what ran.
+DROPPED_CONDITIONS: tuple[str, ...] = ("LC",)
+
+
+def drop_dropped_conditions(
+    long: pd.DataFrame,
+    *,
+    conditions: Sequence[str] = DROPPED_CONDITIONS,
+) -> tuple[pd.DataFrame, dict[str, int]]:
+    """Remove D11-dropped conditions. Returns the frame and what was removed.
+
+    The counts come back rather than being logged, because "39 LC cells over 13
+    scenarios were excluded" is a sentence the results document has to contain
+    and a number nobody should have to re-derive to write it.
+    """
+    if long.empty or "condition" not in long.columns:
+        return long, {}
+    wanted = {str(c) for c in conditions}
+    mask = long["condition"].astype(str).isin(wanted)
+    removed: dict[str, int] = {}
+    if mask.any():
+        counts = long.loc[mask].groupby(long.loc[mask, "condition"].astype(str))["generation_id"]
+        removed = {str(k): int(v) for k, v in counts.nunique().items()}
+    return long[~mask], removed
+
+
+# ---------------------------------------------------------------------------
+# What the analysis actually had to work with
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class DataInventory:
+    """What came out of the database, before any analysis decision was applied.
+
+    Every exclusion this package makes is a decision someone could disagree
+    with, so the inventory is computed once from the unfiltered read and
+    rendered at the top of the report. A reader who wants a different set of
+    exclusions can see exactly how many rows each one costs.
+    """
+
+    n_rows: int
+    n_generations: int
+    n_scenarios: int
+    by_condition: dict[str, int] = field(default_factory=dict)
+    n_gate_blocked: int = 0
+    gate_blocked_by_scenario: dict[str, int] = field(default_factory=dict)
+    gate_blocked_by_condition: dict[str, int] = field(default_factory=dict)
+    n_fell_back: int = 0
+    n_retrieved_cells: int = 0
+    n_incomplete_generations: int = 0
+    missing_by_dimension: dict[str, int] = field(default_factory=dict)
+    dropped_conditions: dict[str, int] = field(default_factory=dict)
+    rater_types: tuple[str, ...] = ()
+
+    def render(self) -> str:
+        conditions = ", ".join(f"{k} {v}" for k, v in sorted(self.by_condition.items())) or "-"
+        missing = (
+            ", ".join(f"{k} {v}" for k, v in sorted(self.missing_by_dimension.items()) if v) or "-"
+        )
+        blocked_scen = (
+            ", ".join(
+                f"{k} {v}"
+                for k, v in sorted(
+                    self.gate_blocked_by_scenario.items(), key=lambda kv: (-kv[1], kv[0])
+                )
+            )
+            or "-"
+        )
+        blocked_cond = (
+            ", ".join(f"{k} {v}" for k, v in sorted(self.gate_blocked_by_condition.items())) or "-"
+        )
+        lines = [
+            "DATA INVENTORY — what was read, before any exclusion",
+            f"  {self.n_generations} scored generations over {self.n_scenarios} scenarios; "
+            f"raters: {', '.join(self.rater_types) or '(none)'}",
+            f"  by condition: {conditions}",
+            "",
+            f"  gate-blocked (D12):      {self.n_gate_blocked} generations "
+            f"[by scenario: {blocked_scen}] [by condition: {blocked_cond}]",
+            f"  CRAG fell back to B:     {self.n_fell_back} generations "
+            f"({self.n_retrieved_cells} actually retrieved)",
+            f"  incomplete on >= 1 dim:  {self.n_incomplete_generations} generations "
+            f"[missing per dimension: {missing}]",
+        ]
+        if self.dropped_conditions:
+            dropped = ", ".join(
+                f"{k} {v} cells" for k, v in sorted(self.dropped_conditions.items())
+            )
+            lines.append(f"  dropped by D11:          {dropped}")
+        return "\n".join(lines)
+
+
+def inventory(long: pd.DataFrame, *, dropped: dict[str, int] | None = None) -> DataInventory:
+    """Count everything the report has to declare, from one unfiltered frame.
+
+    Computed on the long frame, so `missing_by_dimension` counts (generation,
+    dimension) cells the judge did not score rather than whole rows -- which is
+    the resolution the missing-data policy operates at.
+    """
+    if long.empty:
+        return DataInventory(n_rows=0, n_generations=0, n_scenarios=0)
+
+    def _unique_flag(column: str) -> int:
+        if column not in long.columns:
+            return 0
+        flag = long[column].astype("boolean").fillna(False)
+        return int(long.loc[flag, "generation_id"].nunique())
+
+    per_generation = long.groupby("generation_id", observed=True)["raw"]
+    n_incomplete = int((per_generation.apply(lambda s: s.isna().any())).sum())
+
+    missing = {
+        str(dim): int(group["raw"].isna().sum())
+        for dim, group in long.groupby("dimension", observed=True)
+    }
+
+    blocked_scenario: dict[str, int] = {}
+    blocked_condition: dict[str, int] = {}
+    if "gate_blocked" in long.columns:
+        flag = long["gate_blocked"].astype("boolean").fillna(False)
+        blocked = long.loc[flag].drop_duplicates(subset=["generation_id"])
+        blocked_scenario = {
+            str(k): int(v) for k, v in blocked.groupby("scenario_id", observed=True).size().items()
+        }
+        blocked_condition = {
+            str(k): int(v) for k, v in blocked.groupby("condition", observed=True).size().items()
+        }
+
+    n_fell_back = _unique_flag("fell_back_to_b")
+    retrieval_cells = 0
+    if "fell_back_to_b" in long.columns and "crag_grade" in long.columns:
+        traced = long[long["crag_grade"].notna()]
+        retrieval_cells = int(traced["generation_id"].nunique()) - n_fell_back
+
+    return DataInventory(
+        n_rows=int(long.shape[0]),
+        n_generations=int(long["generation_id"].nunique()),
+        n_scenarios=int(long["scenario_id"].nunique()),
+        by_condition={
+            str(k): int(v)
+            for k, v in long.groupby("condition", observed=True)["generation_id"].nunique().items()
+        },
+        n_gate_blocked=_unique_flag("gate_blocked"),
+        gate_blocked_by_scenario=blocked_scenario,
+        gate_blocked_by_condition=blocked_condition,
+        n_fell_back=n_fell_back,
+        n_retrieved_cells=max(0, retrieval_cells),
+        n_incomplete_generations=n_incomplete,
+        missing_by_dimension=missing,
+        dropped_conditions=dict(dropped or {}),
+        rater_types=tuple(sorted({str(r) for r in long["rater_type"].dropna()})),
+    )

@@ -158,11 +158,120 @@ def test_the_judge_sample_query_runs_against_the_real_schema() -> None:
 
 
 @pytest.mark.db
-def test_the_empty_database_produces_an_empty_analysis_not_an_error() -> None:
-    """The current state of the project: registration gates the holdout run."""
+def test_the_loaded_holdout_reads_back_as_one_row_per_generation_and_dimension() -> None:
+    """The shape the analysis depends on, asserted against the real table.
+
+    939 judged generations x 11 dimensions = 10,329 long rows, and every judge
+    row is an aggregate `-median` row so no generation appears twice. This is
+    the assertion that would have caught the `dict_row` bug in `_read`: under it
+    the frame had the right number of rows and one distinct generation id.
+    """
     from carelite.stats.report import run_analysis
 
+    frame = load_scores()
+    assert not frame.empty, "rubric_score is empty; run `python -m carelite.eval.judge.load`"
+    assert frame["generation_id"].nunique() > 1, "every cell is its own column name — see _read"
+    assert frame.shape[0] == frame["generation_id"].nunique() * len(RUBRIC_DIMENSIONS)
+    assert frame["raw"].notna().any()
+
+    per_generation = frame.groupby(["generation_id", "dimension"]).size()
+    assert per_generation.max() == 1, "a generation is scored twice; the median filter is leaking"
+
     report = run_analysis(n_boot=50)
-    assert report.n_generations == 0
-    assert report.empty
-    assert "NO RESULTS DATA" in report.render()
+    assert not report.empty
+    assert report.n_generations == frame["generation_id"].nunique() - 39  # D11 drops LC
+
+
+# ---------------------------------------------------------------------------
+# The dict_row regression
+# ---------------------------------------------------------------------------
+
+
+class _FakeCursor:
+    """A psycopg-shaped cursor whose rows are dicts, like `carelite.db.connect`'s.
+
+    This is the exact shape that broke `_read`. `carelite.db.connect` sets
+    psycopg's `dict_row` factory, and `pandas.read_sql` iterates each row to
+    build a column -- iterating a dict yields its KEYS. Every cell came back as
+    the name of its own column: a frame of the right size, full of strings,
+    which every downstream `to_numeric(errors="coerce")` turns silently into
+    NaN. Nothing raises. The analysis simply finds no data and reports that as
+    though it were a fact about the study.
+
+    It was invisible for as long as `rubric_score` was empty, which is why it
+    survived to the run. This double is how it stays fixed without Postgres.
+    """
+
+    class _Column:
+        def __init__(self, name: str) -> None:
+            self.name = name
+
+    def __init__(self, columns: list[str], rows: list[tuple[object, ...]]) -> None:
+        self._columns = columns
+        self._rows = rows
+        self.executed: tuple[str, object] | None = None
+
+    def __enter__(self) -> _FakeCursor:
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        return None
+
+    @property
+    def description(self) -> list[_FakeCursor._Column]:
+        return [self._Column(c) for c in self._columns]
+
+    def execute(self, sql: str, params: object = None) -> None:
+        self.executed = (sql, params)
+
+    def fetchall(self) -> list[dict[str, object]]:
+        return [dict(zip(self._columns, row, strict=True)) for row in self._rows]
+
+
+class _FakeConnection:
+    def __init__(self, cursor: _FakeCursor) -> None:
+        self._cursor = cursor
+
+    def cursor(self) -> _FakeCursor:
+        return self._cursor
+
+
+def test_a_dict_row_connection_yields_values_not_column_names() -> None:
+    """The regression test for the bug described on `_FakeCursor`."""
+    from carelite.stats.data import _read
+
+    cursor = _FakeCursor(
+        ["generation_id", "condition", "name", "understand"],
+        [("gen-1", "A", 4, 5), ("gen-2", "B", 2, 1)],
+    )
+    frame = _read("SELECT 1", {}, _FakeConnection(cursor))
+
+    assert list(frame.columns) == ["generation_id", "condition", "name", "understand"]
+    assert frame["generation_id"].tolist() == ["gen-1", "gen-2"]
+    assert frame["name"].tolist() == [4, 2]
+    # The precise symptom the bug produced, asserted directly.
+    assert frame["condition"].tolist() != ["condition", "condition"]
+
+
+def test_a_tuple_row_connection_still_works() -> None:
+    """A caller may pass a connection without the dict factory; both shapes are handled."""
+    from carelite.stats.data import _frame_from_cursor
+
+    class _TupleCursor(_FakeCursor):
+        def fetchall(self) -> list[tuple[object, ...]]:  # type: ignore[override]
+            return self._rows
+
+    cursor = _TupleCursor(["generation_id", "name"], [("gen-1", 4)])
+    cursor.execute("SELECT 1")
+    frame = _frame_from_cursor(cursor)
+    assert frame["generation_id"].tolist() == ["gen-1"]
+    assert frame["name"].tolist() == [4]
+
+
+def test_an_empty_result_keeps_its_columns() -> None:
+    """An empty read must be shaped, so the empty-frame path is not a special case."""
+    from carelite.stats.data import _read
+
+    frame = _read("SELECT 1", {}, _FakeConnection(_FakeCursor(["generation_id", "name"], [])))
+    assert frame.empty
+    assert list(frame.columns) == ["generation_id", "name"]

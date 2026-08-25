@@ -29,6 +29,7 @@ def make_long(
     rater_id: str = "gpt-oss:20b-median",
     equity_scenarios: Sequence[str] = (),
     fell_back: Sequence[tuple[str, str, int]] = (),
+    gate_blocked: Sequence[tuple[str, str, int]] = (),
     split: str = "holdout",
 ) -> pd.DataFrame:
     """Build a long score frame from `{(scenario, condition, sample): {dim: raw}}`.
@@ -38,6 +39,7 @@ def make_long(
     whether the package flips it.
     """
     fallback_set = set(fell_back)
+    blocked_set = set(gate_blocked)
     rows: list[dict[str, object]] = []
     for (scenario, condition, sample), dims in scores.items():
         generation_id = f"{scenario}-{condition}-{sample}"
@@ -59,8 +61,12 @@ def make_long(
                     "encounter_phase": "explanation",
                     "literacy_signal": "unmarked",
                     "equity_stratum": scenario in set(equity_scenarios),
+                    "gate_blocked": (scenario, condition, sample) in blocked_set,
                     "fell_back_to_b": (scenario, condition, sample) in fallback_set,
-                    "crag_grade": None,
+                    "crag_grade": "none"
+                    if (scenario, condition, sample) in fallback_set
+                    else ("relevant" if condition == "C" else None),
+                    "n_retrieved": 0 if (scenario, condition, sample) in fallback_set else 4,
                     "dimension": dimension,
                     "raw": dims[dimension],
                 }
@@ -84,8 +90,10 @@ _LONG_COLUMNS: tuple[str, ...] = (
     "encounter_phase",
     "literacy_signal",
     "equity_stratum",
+    "gate_blocked",
     "fell_back_to_b",
     "crag_grade",
+    "n_retrieved",
     "dimension",
     "raw",
 )
