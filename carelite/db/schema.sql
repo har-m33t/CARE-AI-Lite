@@ -125,6 +125,12 @@ CREATE TABLE IF NOT EXISTS generation (
     sample_idx      INTEGER NOT NULL,
     response        TEXT NOT NULL,
     latency_ms      INTEGER,
+    -- TRUE when carelite.safety's output gate refused this response. The row is
+    -- kept rather than dropped: a refusal is evidence about the system, and a
+    -- silently missing cell is indistinguishable from one that never ran. But
+    -- analysis must be able to exclude it with a plain WHERE, because scoring
+    -- refused text as ordinary output would flatter every condition it appears in.
+    gate_blocked    BOOLEAN NOT NULL DEFAULT FALSE,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
     -- the v3 §16 cache key: re-running a completed cell is a no-op
     UNIQUE (scenario_id, condition, prompt_id, model_digest, seed, sample_idx)
@@ -216,3 +222,21 @@ BEGIN
             UNIQUE (rater_id, calibration_id);
     END IF;
 END $$;
+
+
+-- Idempotent migration for databases created before gate_blocked existed.
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM information_schema.tables
+               WHERE table_name = 'generation')
+       AND NOT EXISTS (SELECT 1 FROM information_schema.columns
+                       WHERE table_name = 'generation'
+                         AND column_name = 'gate_blocked')
+    THEN
+        ALTER TABLE generation
+            ADD COLUMN gate_blocked BOOLEAN NOT NULL DEFAULT FALSE;
+    END IF;
+END $$;
+
+CREATE INDEX IF NOT EXISTS generation_gate_blocked_idx
+    ON generation (gate_blocked) WHERE gate_blocked;

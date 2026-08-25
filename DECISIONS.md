@@ -619,3 +619,49 @@ about the method, not as an apology for a missing column.
 The 39 completed LC cells are retained rather than discarded. They are not a usable
 sample for the C-vs-LC comparison — they cover 13 of 60 scenarios and were never
 randomised for partial analysis — and any use of them must say so.
+
+---
+
+## D12 — `generation.gate_blocked`: a refused response is evidence, not a gap
+
+**Contract amendment (2026-08-25): `generation` gains
+`gate_blocked BOOLEAN NOT NULL DEFAULT FALSE`, with an idempotent migration and a
+partial index. Requested by `carelite-orchestrator`, approved and applied through the
+orchestrating session, which is the route the build plan specifies for a wave-0
+contract change.**
+
+The holdout run produced 939 generations, **17 of which the `carelite.safety` output
+gate refused.** I had assumed those cells were absent from the run; the orchestrator
+lane checked and they are present, flagged only in `extra.output_gate_blocked`.
+
+**The hazard runs the opposite way from a missing cell, and that is why this needed a
+column rather than a note.** A gap in the data is visible — a condition with 178 rows
+where the others have 180 invites a question. Text the safety gate refused, scored as
+though it had passed, is invisible and flatters whichever condition produced it. The
+analysis must be able to exclude it with a plain `WHERE`, and that cannot depend on a
+sidecar file in gitignored `runs/` that nothing in the repo currently reads.
+
+**The rows are kept rather than deleted.** A refusal is evidence about the system —
+it is the safety layer working on real generated text at scale, which is the first
+time that has been observed in this project — and a silently missing row is
+indistinguishable from a cell that never ran.
+
+**What the flags actually are**, measured after backfill rather than taken on report:
+
+| | |
+|---|---|
+| by condition | A 3 · A2 7 · B 2 · C 2 · D 3 |
+| by scenario | SC-029 **13** · SC-092 1 · SC-055 1 · SC-072 1 · SC-057 1 |
+
+The lane reported 16 of 17 on SC-029; the true figure is 13, with four other scenarios
+contributing one each. The correction matters for how this is described: SC-029 is
+still overwhelmingly the driver and still fires across multiple conditions, so it
+remains largely a *scenario* property rather than a condition difference — but it is
+not the clean single-scenario story the first count suggested, and the write-up should
+use the measured numbers.
+
+**Consequence for the analysis.** With 13 of the 17 on one scenario, excluding blocked
+cells removes SC-029 unevenly across conditions rather than symmetrically. Neither
+including nor excluding them is obviously right, so the analysis should report the
+primary comparison both ways and say which it prefers. What is not acceptable is
+scoring refused text silently.
