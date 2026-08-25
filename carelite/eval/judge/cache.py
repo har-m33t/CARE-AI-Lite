@@ -33,6 +33,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import threading
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -133,10 +134,17 @@ class CachedSample:
 class JudgeCache:
     """A JSONL file of `CachedSample`, read once and appended to thereafter.
 
-    Not thread-safe and not multi-process safe. One judging process at a time is
-    the assumption; two writers appending to the same file would interleave
-    partial lines, and the recovery cost is worse than the parallelism is worth
-    at this scale.
+    **Thread-safe within one process; still not multi-process safe.** A lock
+    guards the in-memory dict and the append, and each record is written as one
+    complete line under that lock, so concurrent workers cannot interleave a
+    partial line. Two *processes* on one file still can — the lock does not
+    reach across them — so one judging process at a time remains the rule.
+
+    The original design said no locking, on the grounds that recovery cost beat
+    parallelism "at this scale". The scale changed: the holdout run is 939
+    single-pass judgements, and on rented GPU time billed by the hour the
+    sequential version costs hours of wall clock and real money for nothing.
+    A lock around an append is cheap; the fsync it already does dominates it.
     """
 
     path: Path
@@ -145,6 +153,7 @@ class JudgeCache:
     corrupt_lines: int = field(default=0, init=False)
     _records: dict[str, CachedSample] = field(default_factory=dict, init=False, repr=False)
     _handle: Any = field(default=None, init=False, repr=False)
+    _lock: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
 
     def __post_init__(self) -> None:
         self.path = Path(self.path)
@@ -172,7 +181,8 @@ class JudgeCache:
                 self._records[record.key] = record
 
     def get(self, key: str) -> CachedSample | None:
-        return self._records.get(key)
+        with self._lock:
+            return self._records.get(key)
 
     def put(self, record: CachedSample) -> None:
         """Append one record and flush it to the OS immediately.
@@ -181,13 +191,17 @@ class JudgeCache:
         the last N samples on a kill is a cache that makes an interrupted run
         restart further back than it needs to.
         """
-        self._records[record.key] = record
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        if self._handle is None:
-            self._handle = self.path.open("a", encoding="utf-8")
-        self._handle.write(json.dumps(record.to_json(), ensure_ascii=False) + "\n")
-        self._handle.flush()
-        os.fsync(self._handle.fileno())
+        line = json.dumps(record.to_json(), ensure_ascii=False) + "\n"
+        with self._lock:
+            self._records[record.key] = record
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            if self._handle is None:
+                self._handle = self.path.open("a", encoding="utf-8")
+            # One write of one complete line, under the lock: that is what makes
+            # a concurrent reader of this file see whole records or nothing.
+            self._handle.write(line)
+            self._handle.flush()
+            os.fsync(self._handle.fileno())
 
     def close(self) -> None:
         if self._handle is not None:
@@ -195,10 +209,12 @@ class JudgeCache:
             self._handle = None
 
     def __contains__(self, key: object) -> bool:
-        return key in self._records
+        with self._lock:
+            return key in self._records
 
     def __len__(self) -> int:
-        return len(self._records)
+        with self._lock:
+            return len(self._records)
 
     def __enter__(self) -> JudgeCache:
         return self
