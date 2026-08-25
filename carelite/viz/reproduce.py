@@ -160,7 +160,7 @@ def run_with_report(output_dir: Path) -> list[FigureStatus]:
 
     # --- 6. retrieval quality ---------------------------------------------------
     try:
-        df = retrieval_quality_df(ablation_df)
+        df = retrieval_quality_df(ablation_df, long_judge)
         fig = figures.fig_retrieval_quality(df)
         statuses.append(
             FigureStatus("retrieval_quality", save_figure(fig, "06_retrieval_quality", output_dir))

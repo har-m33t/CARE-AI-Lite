@@ -68,6 +68,16 @@ def test_fig_rubric_scores_handles_undefined_ci_without_raising(
     assert isinstance(fig, Figure)
 
 
+def test_fig_rubric_scores_flags_degenerate_dimensions(rubric_scores_fixture) -> None:
+    # naturalness/ritualistic are marked degenerate in the fixture (as on the
+    # real `ie` holdout run) — their panels must say so, not just show a CI.
+    fig = fig_rubric_scores(rubric_scores_fixture)
+    all_text = " ".join(t.get_text() for ax in fig.axes for t in ax.texts)
+    assert "NOT TESTABLE" in all_text
+    legend_text = " ".join(t.get_text() for t in fig.legends[0].get_texts())
+    assert "NOT TESTABLE" in legend_text
+
+
 # ---------------------------------------------------------------------------
 # Figure 2 — effect size forest plot
 # ---------------------------------------------------------------------------
@@ -103,8 +113,58 @@ def test_fig_effect_sizes_marks_exploratory_rows_distinctly(effect_sizes_fixture
     legend = ax.get_legend()
     assert legend is not None
     legend_text = " ".join(t.get_text() for t in legend.get_texts())
-    assert "confirmatory" in legend_text.lower()
+    # D10: no legend may render the bare word "confirmatory" as a claim.
+    assert "confirmatory" not in legend_text.lower()
+    assert "descriptive" in legend_text.lower()
     assert "exploratory" in legend_text.lower()
+
+
+def test_fig_effect_sizes_marks_not_computed_row_explicitly(effect_sizes_fixture) -> None:
+    # D11: secondary3_nurse_C_vs_LC is retired by decision, not run-and-null.
+    # The row must survive in the figure (same count as the input frame) and
+    # be labelled NOT COMPUTED rather than silently dropped.
+    fig = fig_effect_sizes(effect_sizes_fixture)
+    ax = fig.axes[0]
+    assert len(ax.get_yticklabels()) == len(effect_sizes_fixture)
+    body_text = " ".join(t.get_text() for t in ax.texts)
+    assert "NOT COMPUTED" in body_text
+    legend = ax.get_legend()
+    legend_text = " ".join(t.get_text() for t in legend.get_texts())
+    assert "NOT COMPUTED" in legend_text
+
+
+def test_fig_effect_sizes_marks_not_testable_rows(effect_sizes_fixture) -> None:
+    # naturalness/ritualistic are instrument-limited in the fixture (as on the
+    # real `ie` holdout run) — the p-value must not be presented like an
+    # ordinary null result.
+    fig = fig_effect_sizes(effect_sizes_fixture)
+    ax = fig.axes[0]
+    body_text = " ".join(t.get_text() for t in ax.texts)
+    assert "NOT TESTABLE" in body_text
+    legend = ax.get_legend()
+    legend_text = " ".join(t.get_text() for t in legend.get_texts())
+    assert "NOT TESTABLE" in legend_text
+
+
+def test_fig_effect_sizes_handles_columns_missing_new_fields() -> None:
+    # Older frames (e.g. dimension_expansion()'s exploratory-only output)
+    # need not carry not_computed/not_testable at all.
+    df = pd.DataFrame(
+        [
+            {
+                "dimension": "de",
+                "comparison": "A vs C",
+                "effect": 0.2,
+                "ci_lo": -0.1,
+                "ci_hi": 0.4,
+                "n": 40,
+                "p_value": 0.3,
+                "confirmatory": False,
+            }
+        ]
+    )
+    fig = fig_effect_sizes(df)
+    assert isinstance(fig, Figure)
 
 
 # ---------------------------------------------------------------------------
@@ -171,6 +231,19 @@ def test_fig_judge_agreement_survives_nan_coefficients(judge_agreement_fixture) 
     assert isinstance(fig, Figure)
 
 
+def test_fig_judge_agreement_never_renders_the_word_confirmatory(judge_agreement_fixture) -> None:
+    # D10: nothing in this project may be described as confirmatory. This
+    # figure's own `status` input column carries the judge lane's literal
+    # string "confirmatory" (EvidenceStatus, a cross-lane shared enum) but
+    # every rendered word derived from it must read "GATE CLEARED" instead.
+    fig = fig_judge_agreement(judge_agreement_fixture)
+    ax = fig.axes[0]
+    rendered = " ".join(lbl.get_text() for lbl in ax.get_yticklabels())
+    rendered += " " + ax.get_title()
+    assert "confirmatory" not in rendered.lower()
+    assert "GATE CLEARED" in rendered
+
+
 # ---------------------------------------------------------------------------
 # Figure 5 — judge self-consistency
 # ---------------------------------------------------------------------------
@@ -207,6 +280,23 @@ def test_fig_retrieval_quality_does_not_plot_bare_latency(retrieval_quality_fixt
     assert "ms" not in all_labels.lower()
 
 
+def test_fig_retrieval_quality_adds_fourth_panel_for_retrieval_contrast(
+    retrieval_quality_with_contrast_fixture, tmp_path: Path
+) -> None:
+    # carelite.stats.sensitivity.retrieval_contrast reports B vs C twice
+    # (offered vs. retrieved) and both numbers belong on this figure.
+    fig = fig_retrieval_quality(retrieval_quality_with_contrast_fixture)
+    assert isinstance(fig, Figure)
+    assert len(fig.axes) == 4
+    ax4 = fig.axes[3]
+    xticklabels = " ".join(lbl.get_text() for lbl in ax4.get_xticklabels())
+    assert "offered" in xticklabels
+    assert "retrieved" in xticklabels
+    body_text = " ".join(t.get_text() for t in ax4.texts)
+    assert "NOT TESTABLE" in body_text  # the fixture's "retrieved" row is flagged
+    _assert_saves_cleanly(fig, "retrieval_quality_with_contrast", tmp_path)
+
+
 # ---------------------------------------------------------------------------
 # Figure 7 — equity subgroup
 # ---------------------------------------------------------------------------
@@ -222,6 +312,14 @@ def test_fig_equity_subgroup_renders_one_axis_per_dimension(
     footer = _footer_text(fig)
     assert "PRE-SPECIFIED" in footer
     _assert_saves_cleanly(fig, "equity_subgroup", tmp_path)
+
+
+def test_fig_equity_subgroup_flags_degenerate_dimensions(equity_subgroup_fixture) -> None:
+    # naturalness/ritualistic are degenerate in the fixture, same as the
+    # rubric_scores case — the panel must say so, not just plot means.
+    fig = fig_equity_subgroup(equity_subgroup_fixture)
+    all_text = " ".join(t.get_text() for ax in fig.axes for t in ax.texts)
+    assert "NOT TESTABLE" in all_text
 
 
 # ---------------------------------------------------------------------------
@@ -251,3 +349,16 @@ def test_fig_negative_control_marks_only_composite_as_confirmatory(
         "dimension"
     ].unique()
     assert list(n_confirmatory) == ["nurse_composite"]
+
+
+def test_fig_negative_control_flags_degenerate_dimensions_instead_of_separation(
+    negative_control_fixture,
+) -> None:
+    # naturalness/ritualistic are degenerate AND have non-overlapping B/D CIs
+    # in the fixture — "no separation" would be wrong (the CIs don't
+    # overlap) and "clean separation" would be equally wrong (the instrument
+    # never had room to vary). Only NOT TESTABLE is correct.
+    fig = fig_negative_control(negative_control_fixture)
+    ax = fig.axes[0]
+    texts = [t.get_text() for t in ax.texts]
+    assert any("NOT TESTABLE" in t for t in texts)

@@ -140,6 +140,38 @@ def _plot_point_ci(
     )
 
 
+def _flag_if_degenerate(ax: Axes, degenerate: bool) -> None:
+    """Mark a panel whose dimension the judge did not resolve
+    (`carelite.stats.instrument`) — shaded background plus an explicit label,
+    a second channel independent of the shading so it survives greyscale.
+
+    A CI gap or overlap on a degenerate dimension describes the judge's own
+    floor, not the conditions; leaving the panel looking identical to a
+    resolved one is exactly the misreading this exists to prevent.
+    """
+    if not degenerate:
+        return
+    ax.set_facecolor("#FBE9E7")
+    ax.text(
+        0.5,
+        0.03,
+        "NOT TESTABLE\n(instrument floor)",
+        transform=ax.transAxes,
+        ha="center",
+        va="bottom",
+        fontsize=6,
+        fontweight="bold",
+        color=OKABE_ITO["vermillion"],
+        zorder=5,
+    )
+
+
+def _panel_degenerate(sub: pd.DataFrame) -> bool:
+    if "degenerate" not in sub.columns or sub.empty:
+        return False
+    return bool(sub["degenerate"].iloc[0])
+
+
 # ---------------------------------------------------------------------------
 # Figure 1 — headline: per-condition rubric scores, faceted by dimension
 # ---------------------------------------------------------------------------
@@ -164,6 +196,13 @@ def fig_rubric_scores(df: pd.DataFrame) -> Figure:
                        .friedman_across_conditions`), AND'd with `condition in
                        {A, B, C}`. A2, LC, D sit outside the omnibus entirely and are
                        always `False` here regardless of dimension.
+        degenerate     bool, optional — `carelite.stats.primary.FriedmanResult
+                       .degenerate`: the judge did not resolve this dimension on
+                       this run (`carelite.stats.instrument`). When present and
+                       `True`, every panel for that dimension is shaded and
+                       labelled NOT TESTABLE rather than plotted as if a CI gap
+                       there meant anything. Missing column is read as `False`
+                       everywhere (no diagnostic available).
     """
     fig = new_figure((15.5, 9.5))
     gs = fig.add_gridspec(
@@ -211,6 +250,7 @@ def fig_rubric_scores(df: pd.DataFrame) -> Figure:
             ax.set_ylabel("quality (1-5)", fontsize=7.5)
         ax.set_title(_dim_label(dim), fontsize=7.8)
         ax.tick_params(axis="both", length=2)
+        _flag_if_degenerate(ax, _panel_degenerate(sub))
 
     fig.text(
         0.015,
@@ -245,6 +285,7 @@ def fig_rubric_scores(df: pd.DataFrame) -> Figure:
         ax.set_ylim(0.8, 5.2)
         ax.set_yticks([1, 2, 3, 4, 5])
         ax.set_ylabel("quality (1-5)", fontsize=8.5)
+        _flag_if_degenerate(ax, _panel_degenerate(sub))
 
     ax_nat.set_title("Naturalness", fontsize=10, fontweight="bold")
     ax_rit.set_title(
@@ -295,7 +336,7 @@ def fig_rubric_scores(df: pd.DataFrame) -> Figure:
             linestyle="none",
             markersize=7,
             markerfacecolor="black",
-            label="filled = confirmatory (omnibus + judge-validated)",
+            label="filled = DESCRIPTIVE (planned in advance; judge gate cleared)",
         ),
         Line2D(
             [0],
@@ -308,6 +349,19 @@ def fig_rubric_scores(df: pd.DataFrame) -> Figure:
             label="hollow = exploratory / baseline / control",
         ),
     ]
+    if "degenerate" in df.columns and df["degenerate"].any():
+        legend_handles.append(
+            Line2D(
+                [0],
+                [0],
+                marker="s",
+                color=OKABE_ITO["vermillion"],
+                linestyle="none",
+                markersize=8,
+                markerfacecolor="#FBE9E7",
+                label="shaded panel = NOT TESTABLE (judge did not resolve this dimension)",
+            )
+        )
     fig.legend(
         handles=legend_handles,
         loc="upper right",
@@ -343,27 +397,65 @@ def fig_effect_sizes(df: pd.DataFrame) -> Figure:
         comparison     str, e.g. "B vs A"
         dimension      str, dimension key or composite name
                        (`carelite.stats.measures.MEASURES`)
-        effect         float, matched-pairs rank-biserial correlation
+        effect         float or NaN, matched-pairs rank-biserial correlation
                        (`carelite.stats.effects.rank_biserial`, the headline
-                       estimator of `carelite.stats.effects.PairedEffects`)
-        ci_lo, ci_hi   float, 95% bootstrap CI on `effect`
-        n              int, paired scenarios contributing
+                       estimator of `carelite.stats.effects.PairedEffects`).
+                       NaN on a `not_computed` row.
+        ci_lo, ci_hi   float or NaN, 95% bootstrap CI on `effect`
+        n              int, paired scenarios contributing (0 if not computed)
         p_value        float or NaN — annotation only, per
                        `docs/preregistration.md` §8.2 (CI before p); the
                        Holm-adjusted p (`PairwiseResult.p_holm`) where available
         confirmatory   bool, `carelite.stats.evidence.Label.is_confirmatory`
                        (`PairwiseResult.label.is_confirmatory`)
+        not_computed   bool, optional (default `False`) — the comparison was
+                       retired by decision (e.g. D11: LC generation stopped
+                       before this comparison had a valid sample) and was
+                       never run at all, as distinct from run-and-null. Drawn
+                       as an explicit "NOT COMPUTED" marker, never as a
+                       missing row, so the row count still matches the family
+                       size a reader would expect from the plan.
+        not_computed_reason  str, optional — shown in the marker's tooltip
+                       text on the canvas when `not_computed` is `True`.
+        not_testable   bool, optional (default `False`) —
+                       `carelite.stats.primary.PairwiseResult.not_testable`:
+                       every dimension the measure touches is degenerate on
+                       this run (`carelite.stats.instrument`), so the p-value
+                       describes the judge, not the conditions. Marked in
+                       vermillion with an explicit "NOT TESTABLE" label rather
+                       than rendered like an ordinary null result.
     """
     d = df.copy()
+    if "not_computed" not in d.columns:
+        d["not_computed"] = False
+    if "not_testable" not in d.columns:
+        d["not_testable"] = False
     d["label"] = d["dimension"].map(_dim_label) + "  :  " + d["comparison"]
-    d = d.sort_values("effect", ascending=True).reset_index(drop=True)
+    d = d.sort_values("effect", ascending=True, na_position="last").reset_index(drop=True)
 
     fig = new_figure((10.5, max(4.0, 0.34 * len(d) + 1.6)))
     ax = fig.add_subplot(111)
 
     for y, (_, row) in enumerate(d.iterrows()):
+        not_computed = bool(row["not_computed"])
+        if not_computed:
+            ax.axhspan(y - 0.42, y + 0.42, color=OKABE_ITO["grey"], alpha=0.12, zorder=0)
+            ax.text(
+                0.0,
+                y,
+                "NOT COMPUTED — retired by decision (see caption)",
+                va="center",
+                ha="center",
+                fontsize=6.8,
+                fontstyle="italic",
+                color=OKABE_ITO["grey"],
+                zorder=3,
+            )
+            continue
+
         confirmatory = bool(row["confirmatory"])
-        color = OKABE_ITO["black"]
+        not_testable = bool(row["not_testable"])
+        color = OKABE_ITO["vermillion"] if not_testable else OKABE_ITO["black"]
         linestyle = "solid" if confirmatory else "dashed"
         lo, hi, pt = row["ci_lo"], row["ci_hi"], row["effect"]
         if not (math.isnan(lo) or math.isnan(hi)):
@@ -378,10 +470,22 @@ def fig_effect_sizes(df: pd.DataFrame) -> Figure:
             markeredgewidth=1.4,
             zorder=3,
         )
-        p_value = row.get("p_value")
-        if p_value is not None and not (isinstance(p_value, float) and math.isnan(p_value)):
+        if not_testable:
             text_x = (hi if not math.isnan(hi) else pt) + 0.03
-            ax.text(text_x, y, f"p={p_value:.3f}", va="center", fontsize=6.5, color=color)
+            ax.text(
+                text_x,
+                y,
+                "NOT TESTABLE (instrument)",
+                va="center",
+                fontsize=6.5,
+                fontweight="bold",
+                color=OKABE_ITO["vermillion"],
+            )
+        else:
+            p_value = row.get("p_value")
+            if p_value is not None and not (isinstance(p_value, float) and math.isnan(p_value)):
+                text_x = (hi if not math.isnan(hi) else pt) + 0.03
+                ax.text(text_x, y, f"p={p_value:.3f}", va="center", fontsize=6.5, color=color)
 
     ax.axvline(0.0, color=OKABE_ITO["grey"], linewidth=1.0, linestyle="dotted", zorder=1)
     ax.set_yticks(list(range(len(d))))
@@ -405,7 +509,7 @@ def fig_effect_sizes(df: pd.DataFrame) -> Figure:
             linestyle="solid",
             markersize=7,
             markerfacecolor="black",
-            label="confirmatory (pre-specified & judge-validated)",
+            label="DESCRIPTIVE (planned in advance; judge gate cleared)",
         ),
         Line2D(
             [0],
@@ -418,14 +522,54 @@ def fig_effect_sizes(df: pd.DataFrame) -> Figure:
             label="exploratory",
         ),
     ]
+    if d["not_testable"].any():
+        legend_handles.append(
+            Line2D(
+                [0],
+                [0],
+                marker="o",
+                color=OKABE_ITO["vermillion"],
+                linestyle="solid",
+                markersize=7,
+                markerfacecolor="none",
+                label="NOT TESTABLE (judge did not resolve this dimension)",
+            )
+        )
+    if d["not_computed"].any():
+        legend_handles.append(
+            Line2D(
+                [0],
+                [0],
+                marker="s",
+                color=OKABE_ITO["grey"],
+                linestyle="none",
+                markersize=8,
+                markerfacecolor=OKABE_ITO["grey"],
+                alpha=0.5,
+                label="NOT COMPUTED (retired by decision, e.g. D11)",
+            )
+        )
     ax.legend(handles=legend_handles, loc="lower right", fontsize=7.5, frameon=True)
 
+    computed = d[~d["not_computed"]]
+    n_range = (
+        f"{int(computed['n'].min())}-{int(computed['n'].max())} scenarios paired per comparison"
+        if not computed.empty
+        else "n/a"
+    )
+    n_not_computed = int(d["not_computed"].sum())
+    extra = "p-values, where shown, are Holm-adjusted Wilcoxon signed-rank; reported after the interval per §8.2"
+    if n_not_computed:
+        extra += (
+            f"; {n_not_computed} of {len(d)} planned comparisons NOT COMPUTED (excluded from "
+            "the n range above but still counted in the Holm family size)"
+        )
     add_provenance_footer(
         fig,
-        n=f"{int(d['n'].min())}-{int(d['n'].max())} scenarios paired per comparison",
+        n=n_range,
         test=_TEST_LABEL_EFFECT,
         prespec=None,
-        extra="p-values, where shown, are Holm-adjusted Wilcoxon signed-rank; reported after the interval per §8.2",
+        extra=extra,
     )
     return fig
 
@@ -581,7 +725,7 @@ def fig_ablation_table(df: pd.DataFrame) -> Figure:
         test="LLMContextPrecisionWithoutReference (Ragas-equivalent formula, own implementation), "
         "on-domain turns only; gate = on-domain context precision > 0.7",
         prespec=False,
-        extra="engineering ablation from build-time development; not a confirmatory hypothesis test",
+        extra="engineering ablation from build-time development; not a hypothesis test in the family planned in advance",
     )
     return fig
 
@@ -593,17 +737,21 @@ def fig_ablation_table(df: pd.DataFrame) -> Figure:
 
 def fig_judge_agreement(df: pd.DataFrame) -> Figure:
     """Judge-vs-human agreement (Krippendorff's alpha, Spearman's rho) per
-    dimension, making confirmatory vs. exploratory dimensions visually obvious.
+    dimension, making which dimensions cleared the fixed agreement gate — and
+    which did not — visually obvious.
 
     Required columns:
         dimension   str, one of `carelite.types.RUBRIC_DIMENSIONS`
         alpha       float, Krippendorff's alpha (ordinal), may be NaN
         rho         float, Spearman's rho, may be NaN
         n_units     int, paired judge/human units
-        status      str, "confirmatory" | "exploratory"
-                    (`carelite.eval.judge.validation.classify_dimension`, the
-                    same classifier `carelite.stats.evidence.status_from_agreement`
-                    delegates to)
+        status      str, "confirmatory" | "exploratory" — the judge lane's
+                    `EvidenceStatus` values (`carelite.eval.judge.validation
+                    .classify_dimension`, the same classifier
+                    `carelite.stats.evidence.status_from_agreement` delegates
+                    to). Read `"confirmatory"` here as "cleared the fixed
+                    agreement threshold" (D10); this figure never renders the
+                    word to a viewer, only "GATE CLEARED" / "EXPLORATORY".
     """
     from carelite.eval.judge.validation import MIN_ALPHA_FOR_CONFIRMATORY, MIN_RHO_FOR_CONFIRMATORY
 
@@ -660,7 +808,7 @@ def fig_judge_agreement(df: pd.DataFrame) -> Figure:
     )
 
     labels = [
-        f"{_dim_label(k)}  [{'confirmatory' if s == 'confirmatory' else 'EXPLORATORY'}]"
+        f"{_dim_label(k)}  [{'GATE CLEARED' if s == 'confirmatory' else 'EXPLORATORY'}]"
         for k, s in zip(d["dimension"], d["status"], strict=True)
     ]
     ax.set_yticks(list(range(len(d))))
@@ -669,7 +817,7 @@ def fig_judge_agreement(df: pd.DataFrame) -> Figure:
     ax.set_xlabel("agreement coefficient")
     ax.set_title(
         "Judge-vs-human agreement per dimension "
-        f"(confirmatory: alpha>={MIN_ALPHA_FOR_CONFIRMATORY}, rho>={MIN_RHO_FOR_CONFIRMATORY}, n>=30)",
+        f"(gate clears at alpha>={MIN_ALPHA_FOR_CONFIRMATORY}, rho>={MIN_RHO_FOR_CONFIRMATORY}, n>=30)",
         fontsize=11,
         fontweight="bold",
     )
@@ -786,21 +934,39 @@ def fig_judge_consistency(df: pd.DataFrame) -> Figure:
 
 def fig_retrieval_quality(df: pd.DataFrame) -> Figure:
     """Retrieval quality: on-domain context precision and off-domain rejection
-    rate by ablation row, plus CRAG fallback rate by scenario stratum.
+    rate by ablation row, CRAG fallback rate by scenario stratum, and — when
+    present — the B vs C retrieval contrast asked two ways.
 
     Required columns (tidy, one row per panel item):
-        panel    str, "on_domain_precision" | "off_domain_rejection_rate" | "fallback_rate"
-        label    str, ablation row label (panels 1-2) or stratum name (panel 3)
-        value    float
+        panel    str, "on_domain_precision" | "off_domain_rejection_rate" |
+                 "fallback_rate" | "retrieval_contrast"
+        label    str, ablation row label (panels 1-2), stratum name (panel 3),
+                 or "offered" | "retrieved" (panel 4)
+        value    float — a rate for panels 1-3, the matched-pairs
+                 rank-biserial effect (B vs C, NURSE composite) for panel 4
         n        int
         gate     bool or None — only meaningful for panel "on_domain_precision";
-                  `off_domain_rejection_rate` and `fallback_rate` are diagnostic
-                  and never gated (see `fig_ablation_table`'s module note)
+                  the other panels are diagnostic and never gated (see
+                  `fig_ablation_table`'s module note)
+        ci_lo, ci_hi   float, optional — 95% bootstrap CI on `value`, panel 4 only
+        not_testable   bool, optional — panel 4 only; `PairwiseResult
+                       .not_testable` (`carelite.stats.instrument`): the
+                       composite's dimensions are all degenerate on this run.
+
+    Panel 4, when present, is `carelite.stats.sensitivity.retrieval_contrast`:
+    "offered" is all Condition-C cells (does *offering* retrieval help?),
+    "retrieved" is only the cells where CRAG actually retrieved (does
+    retrieval *itself* help — the architecture's actual claim, on a
+    self-selected, not randomised, subset). Both are shown together
+    deliberately; neither answers the question alone.
     """
-    fig = new_figure((17.0, 5.2))
-    ax1 = fig.add_subplot(1, 3, 1)
-    ax2 = fig.add_subplot(1, 3, 2)
-    ax3 = fig.add_subplot(1, 3, 3)
+    has_contrast = not df[df["panel"] == "retrieval_contrast"].empty
+    n_cols = 4 if has_contrast else 3
+    fig = new_figure((17.0 * n_cols / 3, 5.2))
+    ax1 = fig.add_subplot(1, n_cols, 1)
+    ax2 = fig.add_subplot(1, n_cols, 2)
+    ax3 = fig.add_subplot(1, n_cols, 3)
+    ax4 = fig.add_subplot(1, n_cols, 4) if has_contrast else None
 
     cp = df[df["panel"] == "on_domain_precision"]
     if not cp.empty:
@@ -840,17 +1006,78 @@ def fig_retrieval_quality(df: pd.DataFrame) -> Figure:
         ax3.set_ylabel("CRAG fallback-to-B rate")
     ax3.set_title("CRAG fallback rate by scenario stratum", fontsize=10, fontweight="bold")
 
+    if ax4 is not None:
+        rc = df[df["panel"] == "retrieval_contrast"]
+        order = [lbl for lbl in ("offered", "retrieved") if lbl in set(rc["label"])]
+        for x, lbl in enumerate(order):
+            row = rc[rc["label"] == lbl].iloc[0]
+            not_testable = bool(row.get("not_testable", False))
+            color = OKABE_ITO["vermillion"] if not_testable else OKABE_ITO["bluish_green"]
+            lo = row.get("ci_lo", math.nan)
+            hi = row.get("ci_hi", math.nan)
+            val = row["value"]
+            if not (pd.isna(lo) or pd.isna(hi)):
+                ax4.plot([x, x], [lo, hi], color=color, linewidth=1.6, zorder=2)
+                ax4.plot([x - 0.08, x + 0.08], [lo, lo], color=color, linewidth=1.6, zorder=2)
+                ax4.plot([x - 0.08, x + 0.08], [hi, hi], color=color, linewidth=1.6, zorder=2)
+            ax4.plot(
+                x,
+                val,
+                marker="D",
+                markersize=8,
+                markerfacecolor=color,
+                markeredgecolor=color,
+                zorder=3,
+            )
+            if not_testable:
+                ax4.text(
+                    x,
+                    (hi if not pd.isna(hi) else val) + 0.08,
+                    "NOT TESTABLE",
+                    ha="center",
+                    fontsize=6.5,
+                    color=OKABE_ITO["vermillion"],
+                    fontweight="bold",
+                )
+        ax4.axhline(0.0, color=OKABE_ITO["grey"], linestyle="dotted", linewidth=1.0, zorder=1)
+        ax4.set_xlim(-0.6, max(0, len(order) - 1) + 0.6)
+        ax4.set_xticks(list(range(len(order))))
+        ax4.set_xticklabels(
+            [
+                "offered\n(all Condition-C cells)"
+                if lbl == "offered"
+                else "retrieved\n(CRAG fired)"
+                for lbl in order
+            ],
+            fontsize=8,
+        )
+        ax4.set_ylim(-1.05, 1.05)
+        ax4.set_ylabel("NURSE composite effect (rank-biserial), B vs C")
+        ax4.set_title("Does retrieval help? B vs C asked two ways", fontsize=10, fontweight="bold")
+
     fig.suptitle("Retrieval quality", fontsize=12, fontweight="bold", y=1.03)
 
     n_total = int(df["n"].sum()) if "n" in df.columns and not df.empty else 0
+    extra = "engineering/diagnostic figure; not a hypothesis test in the family planned in advance"
+    if ax4 is not None:
+        extra += (
+            "; panel 4 is a second look at the B vs C comparison planned in advance (§4.2), "
+            "uncorrected (family of 1) — the Holm-adjusted p is on fig_effect_sizes; the "
+            "'retrieved' arm is a CRAG-selected, not randomised, subset (selection caveat)"
+        )
     add_provenance_footer(
         fig,
         n=n_total,
         test="context precision: LLMContextPrecisionWithoutReference, on-domain turns only; "
         "off-domain rejection: share of deliberately off-domain probes retrieving nothing useful; "
-        "fallback rate: share of condition-C generations with retrieval_trace.crag_grade='none'",
+        "fallback rate: share of condition-C generations with retrieval_trace.crag_grade='none'"
+        + (
+            "; panel 4: matched-pairs rank-biserial (carelite.stats.sensitivity.retrieval_contrast)"
+            if ax4 is not None
+            else ""
+        ),
         prespec=False,
-        extra="engineering/diagnostic figure; not a pre-specified statistical hypothesis",
+        extra=extra,
     )
     return fig
 
@@ -871,6 +1098,10 @@ def fig_equity_subgroup(df: pd.DataFrame) -> Figure:
         confirmatory   bool, `carelite.stats.evidence.Label.is_confirmatory` for
                        this dimension's omnibus, restricted to the equity stratum
                        (`docs/preregistration.md` §8.4)
+        degenerate     bool, optional — as in `rubric_scores_df`; `naturalness`
+                       and `ritualistic` are two of the four measures this
+                       figure plots and both are degenerate on the `ie`
+                       holdout run.
     """
     dims = list(dict.fromkeys(df["dimension"]))
     fig = new_figure((3.6 * max(1, len(dims)) + 1.5, 5.2))
@@ -902,6 +1133,7 @@ def fig_equity_subgroup(df: pd.DataFrame) -> Figure:
         ax.set_ylim(0.8, 5.2)
         ax.set_yticks([1, 2, 3, 4, 5])
         ax.set_title(_dim_label(dim), fontsize=9)
+        _flag_if_degenerate(ax, _panel_degenerate(sub))
 
     axes[0].set_ylabel("quality (1-5)")
     fig.suptitle(
@@ -920,7 +1152,7 @@ def fig_equity_subgroup(df: pd.DataFrame) -> Figure:
             linestyle="none",
             markersize=7,
             markerfacecolor="black",
-            label="equity stratum (n=35/100 scenarios), confirmatory",
+            label="equity stratum (n=35/100 scenarios); filled = DESCRIPTIVE (planned in advance; judge gate cleared)",
         ),
         Line2D(
             [0],
@@ -933,6 +1165,19 @@ def fig_equity_subgroup(df: pd.DataFrame) -> Figure:
             label="non-equity / exploratory",
         ),
     ]
+    if "degenerate" in df.columns and df["degenerate"].any():
+        legend_handles.append(
+            Line2D(
+                [0],
+                [0],
+                marker="s",
+                color=OKABE_ITO["vermillion"],
+                linestyle="none",
+                markersize=8,
+                markerfacecolor="#FBE9E7",
+                label="shaded panel = NOT TESTABLE (judge did not resolve this dimension)",
+            )
+        )
     fig.legend(
         handles=legend_handles,
         loc="upper right",
@@ -979,6 +1224,11 @@ def fig_negative_control(df: pd.DataFrame) -> Figure:
         confirmatory   bool — `True` only for `nurse_composite`, the one
                        pre-specified outcome (§4 outcome 7); per-dimension
                        breakdown rows are a descriptive, exploratory view.
+        degenerate     bool, optional — as in `rubric_scores_df`. On a
+                       degenerate dimension, B and D's CIs overlapping is not
+                       evidence the rubric failed to separate them: the judge
+                       never had room to separate anything on that dimension.
+                       Rendered as NOT TESTABLE instead of "no separation".
     """
     order = [
         k
@@ -995,8 +1245,13 @@ def fig_negative_control(df: pd.DataFrame) -> Figure:
         if b.empty or dd.empty:
             continue
         b_row, d_row = b.iloc[0], dd.iloc[0]
+        degenerate_dim = _panel_degenerate(sub)
         overlap = not (b_row["ci_lo"] > d_row["ci_hi"] or d_row["ci_lo"] > b_row["ci_hi"])
-        if overlap:
+        if degenerate_dim:
+            ax.axvspan(
+                x - 0.35, x + 0.35, color=OKABE_ITO["grey"], alpha=0.22, zorder=0, hatch="//"
+            )
+        elif overlap:
             ax.axvspan(x - 0.35, x + 0.35, color=OKABE_ITO["vermillion"], alpha=0.16, zorder=0)
         _plot_point_ci(
             ax,
@@ -1021,7 +1276,17 @@ def fig_negative_control(df: pd.DataFrame) -> Figure:
             linewidth=0.8,
             zorder=1,
         )
-        if overlap:
+        if degenerate_dim:
+            ax.text(
+                x,
+                5.05,
+                "NOT TESTABLE",
+                fontsize=6.3,
+                ha="center",
+                color=OKABE_ITO["grey"],
+                fontweight="bold",
+            )
+        elif overlap:
             ax.text(
                 x,
                 5.05,
@@ -1038,7 +1303,8 @@ def fig_negative_control(df: pd.DataFrame) -> Figure:
     ax.set_yticks([1, 2, 3, 4, 5])
     ax.set_ylabel("quality (1-5)")
     ax.set_title(
-        "Negative control: B vs. D (deliberately degraded)  —  shaded = CIs overlap, rubric did not separate them",
+        "Negative control: B vs. D (deliberately degraded)  —  shaded = CIs overlap, rubric did "
+        "not separate them; hatched = NOT TESTABLE (instrument floor)",
         fontsize=10.5,
         fontweight="bold",
     )

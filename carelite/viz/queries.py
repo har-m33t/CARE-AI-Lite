@@ -42,6 +42,7 @@ from carelite.eval.judge.validation import classify_dimension
 from carelite.eval.rubric.dimensions import to_quality
 from carelite.stats.effects import DEFAULT_N_BOOT, DEFAULT_SEED, BootstrapCI, bootstrap_ci
 from carelite.stats.evidence import EvidenceStatus, RaterScope, label_for
+from carelite.stats.instrument import Discrimination, classify, describe_dimensions
 from carelite.stats.measures import MEASURES, cell_means, measure, paired_matrix
 from carelite.stats.primary import (
     CONFIRMATORY_FAMILY,
@@ -50,6 +51,7 @@ from carelite.stats.primary import (
     friedman_across_conditions,
     run_family,
 )
+from carelite.stats.sensitivity import retrieval_contrast
 from carelite.types import RUBRIC_DIMENSIONS, Condition
 
 __all__ = [
@@ -167,6 +169,29 @@ def _judge_statuses(long: pd.DataFrame) -> dict[str, EvidenceStatus] | None:
     return {row["dimension"]: EvidenceStatus(row["status"]) for _, row in agreement.iterrows()}
 
 
+def _discrimination(long: pd.DataFrame, rater_type: str | None) -> dict[str, Discrimination] | None:
+    """Per-dimension judge-resolution verdict (`carelite.stats.instrument`),
+    scoped to `rater_type` so a mixed frame's human rows cannot mask a
+    degenerate judge dimension, or the reverse. `None` when there is nothing
+    to classify, which callers must treat as "not diagnosed", never as "all
+    discriminating" — `carelite.stats.primary.run_pairwise` already does the
+    right thing with `discrimination=None` (no testability check at all).
+
+    This is what lets `not_testable` and `degenerate` reach `PairwiseResult`
+    and `FriedmanResult`: on the holdout run `ie`, `naturalness`, and
+    `ritualistic` are degenerate (the judge concentrated its scores on one
+    value), and a comparison on them is NOT TESTABLE, not merely
+    non-significant — see `carelite.stats.instrument`'s module docstring.
+    Every figure that renders a p-value or a test result on a rubric
+    dimension must carry this or it can show an effect that looks real and
+    is only the instrument's floor.
+    """
+    frame = long if rater_type is None else long[long["rater_type"] == rater_type]
+    if frame.empty:
+        return None
+    return dict(classify(describe_dimensions(frame)))
+
+
 # ---------------------------------------------------------------------------
 # Figure 1 — per-condition rubric scores
 # ---------------------------------------------------------------------------
@@ -179,9 +204,21 @@ def rubric_scores_df(
     n_boot: int = DEFAULT_N_BOOT,
     seed: int = DEFAULT_SEED,
 ) -> pd.DataFrame:
-    """Build `fig_rubric_scores`'s input: one row per condition x dimension."""
+    """Build `fig_rubric_scores`'s input: one row per condition x dimension.
+
+    `degenerate` (bool, one value per dimension, repeated on every row of
+    that dimension) is `carelite.stats.primary.FriedmanResult.degenerate` —
+    the judge did not resolve this dimension on this run
+    (`carelite.stats.instrument`), so an apparent gap between conditions'
+    means/CIs on that panel is not evidence the conditions differ.
+    `fig_rubric_scores` must mark it rather than plot it identically to a
+    resolved dimension.
+    """
     statuses = _judge_statuses(long)
-    friedman = friedman_across_conditions(long, rater_type=rater_type, statuses=statuses)
+    discrimination = _discrimination(long, rater_type)
+    friedman = friedman_across_conditions(
+        long, rater_type=rater_type, statuses=statuses, discrimination=discrimination
+    )
     friedman_by_dim = {f.measure_key: f for f in friedman}
 
     records: list[dict[str, object]] = []
@@ -190,6 +227,7 @@ def rubric_scores_df(
         cells = cell_means(long, m)
         cells = cells[cells["rater_type"] == rater_type]
         confirmatory_dim = friedman_by_dim[dim].label.is_confirmatory
+        degenerate_dim = friedman_by_dim[dim].degenerate
         for condition, group in cells.groupby("condition", observed=True):
             ci = _mean_ci(group["value"].to_numpy(), n_boot=n_boot, seed=seed)
             records.append(
@@ -203,6 +241,7 @@ def rubric_scores_df(
                     "confirmatory": bool(
                         str(condition) in _FRIEDMAN_CONDITION_STRS and confirmatory_dim
                     ),
+                    "degenerate": bool(degenerate_dim),
                 }
             )
     if not records:
@@ -225,13 +264,36 @@ def effect_sizes_df(
 ) -> pd.DataFrame:
     """Build `fig_effect_sizes`'s input from `carelite.stats.primary.run_family`.
 
-    Defaults to the eight pre-specified hypotheses
-    (`carelite.stats.primary.CONFIRMATORY_FAMILY`) — the registered comparison
-    set the forest plot exists to make legible. Pass
-    `carelite.stats.primary.dimension_expansion()` (or a concatenation) for a
-    broader, mostly-exploratory view.
+    Defaults to the eight hypotheses planned in advance
+    (`carelite.stats.primary.CONFIRMATORY_FAMILY`) — the family the forest
+    plot exists to make legible, corrected together in one Holm-Bonferroni
+    step. Pass `carelite.stats.primary.dimension_expansion()` (or a
+    concatenation) for a broader, mostly-exploratory view.
+
+    **Always one row per hypothesis in `hypotheses`**, including one that did
+    not run. `secondary3_nurse_C_vs_LC` is retired by D11 (LC generation was
+    stopped at 39 of 180 cells, never randomised for partial analysis) —
+    `run_pairwise` returns `None` for it before touching the data, and
+    `run_family` still counts it toward `family_size` so the seven
+    comparisons that did run are not made easier to pass by its absence. If
+    this function simply omitted the row, the resulting frame would have one
+    fewer row than the family, and a forest plot built from it would be
+    indistinguishable from one where that comparison was never planned — the
+    same silently-missing-row hazard D12 flagged for gate-blocked
+    generations. So the row stays: `not_computed=True`, `effect`/`ci_lo`/
+    `ci_hi`/`p_value` are NaN, and `not_computed_reason` carries
+    `Hypothesis.not_computable_reason` verbatim. `fig_effect_sizes` renders it
+    as an explicit "NOT COMPUTED" marker rather than a point.
+
+    `not_testable` (bool) and `testability_note` (str) come from
+    `PairwiseResult.testability`/`.not_testable`
+    (`carelite.stats.instrument.measure_testability`): a comparison whose
+    measure rests entirely on a degenerate dimension is not a null result,
+    it is uninterpretable, and its p-value must not be read as
+    "not significant". Always `False`/`""` for a `not_computed` row.
     """
     statuses = _judge_statuses(long)
+    discrimination = _discrimination(long, rater_type)
     family = run_family(
         long,
         hypotheses=hypotheses,
@@ -240,10 +302,36 @@ def effect_sizes_df(
         include_friedman=False,
         n_boot=n_boot,
         seed=seed,
+        discrimination=discrimination,
     )
+    by_key = {r.hypothesis.key: r for r in family.results}
+
     records: list[dict[str, object]] = []
-    for r in family.results:
-        h = r.hypothesis
+    for h in hypotheses:
+        r = by_key.get(h.key)
+        if r is None:
+            reason = (
+                h.not_computable_reason
+                if h.retired_by_decision
+                else "no paired data available for this comparison on this run"
+            )
+            records.append(
+                {
+                    "comparison": f"{h.left} vs {h.right}",
+                    "dimension": h.measure_key,
+                    "effect": math.nan,
+                    "ci_lo": math.nan,
+                    "ci_hi": math.nan,
+                    "n": 0,
+                    "p_value": math.nan,
+                    "confirmatory": False,
+                    "not_computed": True,
+                    "not_computed_reason": reason,
+                    "not_testable": False,
+                    "testability_note": "",
+                }
+            )
+            continue
         rb = r.effects.rank_biserial
         records.append(
             {
@@ -255,10 +343,14 @@ def effect_sizes_df(
                 "n": r.n_scenarios,
                 "p_value": r.p_holm,
                 "confirmatory": r.label.is_confirmatory,
+                "not_computed": False,
+                "not_computed_reason": "",
+                "not_testable": bool(r.not_testable),
+                "testability_note": r.testability.note if r.testability is not None else "",
             }
         )
     if not records:
-        raise DataUnavailable("no paired scenarios available for any pre-specified comparison")
+        raise DataUnavailable("no comparisons planned in advance were supplied")
     return pd.DataFrame.from_records(records)
 
 
@@ -452,10 +544,29 @@ def judge_self_consistency_df() -> pd.DataFrame:
 # ---------------------------------------------------------------------------
 
 
-def retrieval_quality_df(ablation_df: pd.DataFrame | None) -> pd.DataFrame:
-    """Combine ablation-derived precision panels with a DB-derived CRAG
-    fallback-rate-by-stratum panel. `ablation_df` is `ablation_table_df()`'s
-    output, or `None` to omit the first two panels entirely.
+def retrieval_quality_df(
+    ablation_df: pd.DataFrame | None,
+    long: pd.DataFrame | None = None,
+    *,
+    rater_type: str = "llm_judge",
+) -> pd.DataFrame:
+    """Combine ablation-derived precision panels, a DB-derived CRAG
+    fallback-rate-by-stratum panel, and — when `long` (a score frame from
+    `load_long_scores`) is supplied — the `retrieval_contrast` panel:
+    `carelite.stats.sensitivity.retrieval_contrast` reports B vs C twice, and
+    both numbers belong on a retrieval-quality figure together, not one
+    presented as if it were the whole answer.
+
+    * "offered" — all Condition-C cells: does *offering* retrieval help?
+    * "retrieved" — only the cells where CRAG actually retrieved (fallback
+      cells excluded): does retrieval *itself* help? This is the
+      architecture's actual claim; `RetrievalContrast.selection_caveat`
+      applies (a self-selected, not randomised, subset).
+
+    `ablation_df` is `ablation_table_df()`'s output, or `None` to omit the
+    first two panels; `long` is `None` to omit the retrieval-contrast panel
+    (both are independently optional — a caller with one but not the other
+    still gets a figure).
     """
     panels: list[pd.DataFrame] = []
     if ablation_df is not None and not ablation_df.empty:
@@ -485,7 +596,7 @@ def retrieval_quality_df(ablation_df: pd.DataFrame | None) -> pd.DataFrame:
         )
 
     rows = fetch_all(
-        "SELECT s.equity_stratum, t.fell_back_to_b "
+        "SELECT g.generation_id, s.equity_stratum, t.fell_back_to_b "
         "FROM generation g "
         "JOIN scenario s ON s.scenario_id = g.scenario_id "
         "JOIN retrieval_trace t ON t.generation_id = g.generation_id "
@@ -506,6 +617,37 @@ def retrieval_quality_df(ablation_df: pd.DataFrame | None) -> pd.DataFrame:
                 }
             )
         )
+
+        if long is not None and not long.empty and "generation_id" in long.columns:
+            fallback_flags = dict(zip(df["generation_id"], df["fell_back_to_b"], strict=True))
+            frame = long.copy()
+            frame["fell_back_to_b"] = frame["generation_id"].map(fallback_flags)
+            statuses = _judge_statuses(frame)
+            discrimination = _discrimination(frame, rater_type)
+            contrast = retrieval_contrast(
+                frame, rater_type=rater_type, statuses=statuses, discrimination=discrimination
+            )
+            for arm_label, result in (
+                ("offered", contrast.offered),
+                ("retrieved", contrast.retrieved),
+            ):
+                if result is None:
+                    continue
+                rb = result.effects.rank_biserial
+                panels.append(
+                    pd.DataFrame(
+                        {
+                            "panel": ["retrieval_contrast"],
+                            "label": [arm_label],
+                            "value": [rb.point],
+                            "n": [result.n_scenarios],
+                            "gate": [None],
+                            "ci_lo": [rb.ci.low],
+                            "ci_hi": [rb.ci.high],
+                            "not_testable": [bool(result.not_testable)],
+                        }
+                    )
+                )
 
     if not panels:
         raise DataUnavailable(
@@ -534,13 +676,20 @@ def equity_subgroup_df(
     n_boot: int = DEFAULT_N_BOOT,
     seed: int = DEFAULT_SEED,
 ) -> pd.DataFrame:
-    """Build `fig_equity_subgroup`'s input: pre-specified secondary analysis,
-    the equity stratum vs. everything else, restricted to {A, B, C}
-    (`docs/preregistration.md` §8.4)."""
+    """Build `fig_equity_subgroup`'s input: a secondary analysis planned in
+    advance, the equity stratum vs. everything else, restricted to {A, B, C}
+    (`docs/preregistration.md` §8.4).
+
+    `degenerate` (bool) is carried the same way as in `rubric_scores_df`:
+    `naturalness`/`ritualistic` are two of the four measures here, and both
+    are degenerate on the `ie` holdout run — this flags that before a reader
+    reads a stratum gap on either panel as a finding.
+    """
     if "equity_stratum" not in long.columns:
         raise DataUnavailable("long score frame has no equity_stratum column")
 
     statuses = _judge_statuses(long)
+    discrimination = _discrimination(long, rater_type)
     records: list[dict[str, object]] = []
     for stratum_name, stratum_value in (("equity", True), ("non_equity", False)):
         subset = long[long["equity_stratum"] == stratum_value]
@@ -549,7 +698,11 @@ def equity_subgroup_df(
         friedman = {
             f.measure_key: f
             for f in friedman_across_conditions(
-                subset, dimensions=dims, rater_type=rater_type, statuses=statuses
+                subset,
+                dimensions=dims,
+                rater_type=rater_type,
+                statuses=statuses,
+                discrimination=discrimination,
             )
         }
         for dim in dims:
@@ -571,6 +724,7 @@ def equity_subgroup_df(
                         "ci_hi": ci.high,
                         "n": int(group.shape[0]),
                         "confirmatory": bool(confirmatory_dim),
+                        "degenerate": bool(friedman[dim].degenerate),
                     }
                 )
     if not records:
@@ -591,9 +745,19 @@ def negative_control_df(
     seed: int = DEFAULT_SEED,
 ) -> pd.DataFrame:
     """Build `fig_negative_control`'s input: B vs. D means per dimension, with
-    the pre-specified composite outcome (§4 outcome 7) flagged confirmatory
-    via `carelite.stats.evidence.label_for` and everything else exploratory."""
+    the composite outcome planned in advance (§4 outcome 7) flagged
+    `confirmatory` via `carelite.stats.evidence.label_for` and everything else
+    exploratory.
+
+    `degenerate` (bool) flags a dimension the judge did not resolve
+    (`carelite.stats.instrument`) — on a degenerate dimension, B and D's CIs
+    overlapping or not says nothing about whether the rubric can separate
+    them, because the rubric could not vary in either direction. Reading
+    "no separation" off such a dimension would be exactly backwards: the
+    instrument never got a chance to show separation.
+    """
     statuses = _judge_statuses(long)
+    discrimination = _discrimination(long, rater_type)
     scope = RaterScope.from_rater_types([rater_type])
     dims = (*RUBRIC_DIMENSIONS, "nurse_composite", "four_habits_composite")
 
@@ -608,6 +772,13 @@ def negative_control_df(
             prespecified=(dim == "nurse_composite"),
             rater_scope=scope,
             statuses=statuses,
+        )
+        degenerate_dim = bool(
+            discrimination is not None
+            and all(
+                discrimination.get(d) is Discrimination.DEGENERATE
+                for d in (m.dimensions if m.dimensions else (dim,))
+            )
         )
         for cond_enum, col in ((Condition.B, "B"), (Condition.D, "D")):
             group = cells[cells["condition"] == str(cond_enum)]
@@ -626,6 +797,7 @@ def negative_control_df(
                     "ci_hi": ci.high,
                     "n": int(values.size),
                     "confirmatory": bool(label.is_confirmatory),
+                    "degenerate": degenerate_dim,
                 }
             )
     if not records:

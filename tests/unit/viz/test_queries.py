@@ -79,6 +79,18 @@ def synthetic_long() -> pd.DataFrame:
     return _synthetic_long_df()
 
 
+@pytest.fixture(scope="module")
+def synthetic_long_with_degenerate_dimension() -> pd.DataFrame:
+    """`_synthetic_long_df()` with `naturalness` pinned to a single value —
+    sd 0 on the `to_quality()` scale, below `carelite.stats.instrument
+    .MIN_SD` — so `carelite.stats.instrument.classify` calls it DEGENERATE,
+    mirroring `naturalness`/`ritualistic` on the real `ie` holdout run.
+    """
+    df = _synthetic_long_df().copy()
+    df.loc[df["dimension"] == "naturalness", "raw"] = 3
+    return df
+
+
 # ---------------------------------------------------------------------------
 # _mean_ci
 # ---------------------------------------------------------------------------
@@ -136,6 +148,17 @@ def test_rubric_scores_df_confirmatory_only_within_omnibus_conditions(
     assert not outside_omnibus["confirmatory"].any()
 
 
+def test_rubric_scores_df_flags_a_degenerate_dimension(
+    synthetic_long_with_degenerate_dimension: pd.DataFrame,
+) -> None:
+    df = rubric_scores_df(synthetic_long_with_degenerate_dimension, n_boot=200)
+    assert "degenerate" in df.columns
+    naturalness = df[df["dimension"] == "naturalness"]
+    assert naturalness["degenerate"].all()
+    other = df[df["dimension"] != "naturalness"]
+    assert not other["degenerate"].any()
+
+
 # ---------------------------------------------------------------------------
 # effect_sizes_df
 # ---------------------------------------------------------------------------
@@ -143,7 +166,16 @@ def test_rubric_scores_df_confirmatory_only_within_omnibus_conditions(
 
 def test_effect_sizes_df_covers_the_confirmatory_family(synthetic_long: pd.DataFrame) -> None:
     df = effect_sizes_df(synthetic_long, n_boot=200)
-    assert len(df) == 8  # docs/preregistration.md §3-4: primary + 7 secondary
+    # docs/preregistration.md §3-4: primary + 7 secondary = 8 rows, ALWAYS —
+    # including secondary3_nurse_C_vs_LC, which D11 retired by decision.
+    # run_pairwise returns None for it before touching the data (it is not
+    # "computed on 13 scenarios", it is not computed at all), and run_family
+    # still counts it toward family_size so the seven comparisons that did
+    # run are not made easier to pass by its absence. Dropping the row here
+    # would silently shrink the family a reader sees to 7, which is exactly
+    # the same hazard D12 flagged for gate-blocked generations — so the row
+    # stays, explicitly marked `not_computed`.
+    assert len(df) == 8
     assert {
         "comparison",
         "dimension",
@@ -153,8 +185,43 @@ def test_effect_sizes_df_covers_the_confirmatory_family(synthetic_long: pd.DataF
         "n",
         "p_value",
         "confirmatory",
+        "not_computed",
+        "not_computed_reason",
+        "not_testable",
+        "testability_note",
     } <= set(df.columns)
-    assert df["effect"].between(-1.0, 1.0).all()
+    computed = df[~df["not_computed"]]
+    assert len(computed) == 7
+    assert computed["effect"].between(-1.0, 1.0).all()
+
+
+def test_effect_sizes_df_marks_the_d11_retired_comparison_not_computed(
+    synthetic_long: pd.DataFrame,
+) -> None:
+    df = effect_sizes_df(synthetic_long, n_boot=200)
+    retired = df[df["comparison"] == "C vs LC"]
+    assert len(retired) == 1
+    row = retired.iloc[0]
+    assert bool(row["not_computed"]) is True
+    assert "D11" in row["not_computed_reason"]
+    assert math.isnan(row["effect"])
+    assert math.isnan(row["p_value"])
+    # A retired-by-decision comparison is not additionally "confirmatory".
+    assert bool(row["confirmatory"]) is False
+
+
+def test_effect_sizes_df_marks_a_degenerate_measure_not_testable(
+    synthetic_long_with_degenerate_dimension: pd.DataFrame,
+) -> None:
+    df = effect_sizes_df(synthetic_long_with_degenerate_dimension, n_boot=200)
+    naturalness_row = df[(df["dimension"] == "naturalness") & (df["comparison"] == "A vs B")].iloc[
+        0
+    ]
+    assert bool(naturalness_row["not_testable"]) is True
+    assert naturalness_row["testability_note"]
+    # An unrelated, discriminating measure is unaffected.
+    nurse_row = df[(df["dimension"] == "nurse_composite") & (df["comparison"] == "A vs B")].iloc[0]
+    assert bool(nurse_row["not_testable"]) is False
 
 
 # ---------------------------------------------------------------------------
@@ -174,6 +241,14 @@ def test_equity_subgroup_df_non_equity_never_confirmatory(synthetic_long: pd.Dat
     assert not non_equity["confirmatory"].any()
 
 
+def test_equity_subgroup_df_flags_a_degenerate_dimension(
+    synthetic_long_with_degenerate_dimension: pd.DataFrame,
+) -> None:
+    df = equity_subgroup_df(synthetic_long_with_degenerate_dimension, n_boot=200)
+    assert "degenerate" in df.columns
+    assert df[df["dimension"] == "naturalness"]["degenerate"].all()
+
+
 # ---------------------------------------------------------------------------
 # negative_control_df
 # ---------------------------------------------------------------------------
@@ -184,6 +259,15 @@ def test_negative_control_df_only_composite_confirmatory(synthetic_long: pd.Data
     assert set(df["condition"]) == {"B", "D"}
     confirmatory_dims = set(df[df["confirmatory"]]["dimension"])
     assert confirmatory_dims <= {"nurse_composite"}
+
+
+def test_negative_control_df_flags_a_degenerate_dimension(
+    synthetic_long_with_degenerate_dimension: pd.DataFrame,
+) -> None:
+    df = negative_control_df(synthetic_long_with_degenerate_dimension, n_boot=200)
+    assert "degenerate" in df.columns
+    assert df[df["dimension"] == "naturalness"]["degenerate"].all()
+    assert not df[df["dimension"] == "understand"]["degenerate"].any()
 
 
 # ---------------------------------------------------------------------------
@@ -263,3 +347,39 @@ def test_retrieval_quality_df_builds_fallback_panel_from_db_rows(
     assert set(df["panel"]) == {"fallback_rate"}
     equity_row = df[df["label"] == "equity"].iloc[0]
     assert equity_row["value"] == pytest.approx(0.5)
+
+
+def test_retrieval_quality_df_adds_retrieval_contrast_panel_when_long_supplied(
+    monkeypatch: pytest.MonkeyPatch, synthetic_long: pd.DataFrame
+) -> None:
+    # carelite.stats.sensitivity.retrieval_contrast reports B vs C twice
+    # (offered vs. retrieved); both belong on the figure when a score frame
+    # is available to compute them from, not just the fallback-rate panel.
+    c_generations = synthetic_long.loc[
+        synthetic_long["condition"] == "C", ["generation_id", "equity_stratum"]
+    ].drop_duplicates()
+    fake_rows = [
+        {
+            "generation_id": gid,
+            "equity_stratum": eq,
+            "fell_back_to_b": bool(i % 3 == 0),  # ~1/3 fallback, mirrors the real run's shape
+        }
+        for i, (gid, eq) in enumerate(
+            zip(c_generations["generation_id"], c_generations["equity_stratum"], strict=True)
+        )
+    ]
+    monkeypatch.setattr("carelite.viz.queries.fetch_all", lambda *a, **k: fake_rows)
+    df = retrieval_quality_df(None, synthetic_long, rater_type="llm_judge")
+    assert "retrieval_contrast" in set(df["panel"])
+    contrast = df[df["panel"] == "retrieval_contrast"]
+    assert set(contrast["label"]) <= {"offered", "retrieved"}
+    assert {"ci_lo", "ci_hi", "not_testable"} <= set(contrast.columns)
+
+
+def test_retrieval_quality_df_omits_retrieval_contrast_panel_without_long(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_rows = [{"generation_id": "g1", "equity_stratum": True, "fell_back_to_b": False}]
+    monkeypatch.setattr("carelite.viz.queries.fetch_all", lambda *a, **k: fake_rows)
+    df = retrieval_quality_df(None, None)
+    assert "retrieval_contrast" not in set(df["panel"])
