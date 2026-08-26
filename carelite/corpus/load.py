@@ -54,6 +54,10 @@ ON CONFLICT (chunk_id) DO UPDATE SET
     contextual_prefix = EXCLUDED.contextual_prefix
 """
 
+_UPDATE_CHUNK_PREFIX_SQL = """
+UPDATE chunk SET contextual_prefix = %(prefix)s WHERE chunk_id = %(chunk_id)s
+"""
+
 
 def canonical_paper_id(paper_id: str, doi: str | None) -> str:
     """The paper_id a `Paper` must carry, given its doi.
@@ -128,6 +132,21 @@ def upsert_chunks(chunks: Sequence[Chunk]) -> int:
         for chunk in chunks:
             conn.execute(_UPSERT_CHUNK_SQL, chunk_params(chunk))
     return len(chunks)
+
+
+def update_chunk_prefix(chunk_id: str, prefix: str) -> None:
+    """Persist one chunk's `contextual_prefix` in isolation — no rewrite of
+    `ordinal`/`text`, no upsert-or-insert semantics (the chunk must already
+    exist).
+
+    This is what makes `carelite.corpus.contextualize.run_contextualize_pass`
+    resumable at chunk granularity rather than batch granularity: each
+    prefix lands in Postgres the moment it's generated, so an unattended
+    multi-hour run that crashes or is interrupted loses at most the one
+    in-flight call, not everything generated since the last checkpoint.
+    """
+    with transaction() as conn:
+        conn.execute(_UPDATE_CHUNK_PREFIX_SQL, {"chunk_id": chunk_id, "prefix": prefix})
 
 
 def upsert_corpus(papers: Iterable[Paper], chunks: Sequence[Chunk]) -> tuple[int, int]:

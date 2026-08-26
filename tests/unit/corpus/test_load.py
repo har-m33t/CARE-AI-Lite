@@ -22,6 +22,7 @@ from carelite.corpus.load import (
     paper_params,
     replace_corpus,
     replace_paper_chunks,
+    update_chunk_prefix,
     upsert_corpus,
     upsert_papers,
 )
@@ -224,6 +225,28 @@ def test_replace_corpus_upserts_papers_and_replaces_each_papers_chunks():
     assert n_chunks == len(new_chunks)
     stored = fetch_all("SELECT chunk_id FROM chunk WHERE paper_id = %s", (paper.paper_id,))
     assert {r["chunk_id"] for r in stored} == {c.chunk_id for c in new_chunks}
+
+
+@pytest.mark.db
+def test_update_chunk_prefix_writes_only_the_prefix():
+    from carelite.db import apply_schema, fetch_one
+
+    apply_schema()
+    paper = _paper(doi="10.1/update-prefix-test")
+    chunks = chunk_text(paper.paper_id, "First sentence here. Second sentence here.")
+    upsert_papers([paper])
+    replace_paper_chunks(paper.paper_id, chunks)
+    target = chunks[0]
+
+    update_chunk_prefix(target.chunk_id, "Situates this chunk within the paper's introduction.")
+
+    row = fetch_one(
+        "SELECT ordinal, text, contextual_prefix FROM chunk WHERE chunk_id = %s", (target.chunk_id,)
+    )
+    assert row is not None
+    assert row["contextual_prefix"] == "Situates this chunk within the paper's introduction."
+    assert row["text"] == target.text  # untouched
+    assert row["ordinal"] == 0  # untouched
 
 
 @pytest.mark.db
