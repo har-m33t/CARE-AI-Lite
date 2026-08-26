@@ -15,6 +15,48 @@ the number the study most needs (see `crag.py`). LC is the long-context
 baseline v3 §3 requires be reported: no retrieval at all, whole corpus
 stuffed into the window.
 
+**What the contextual-prefix pass was worth, measured (descriptive, D10).**
+The build plan's named quality lever — Anthropic-style contextual retrieval,
+prepending an LLM-generated situating sentence to each chunk before embedding —
+was run late, after this harness already had a baseline. Both ladders used the
+same 20 train turns plus the same 3 off-domain turns, same flags, same gate:
+
+    row  raw-text index   prefixed index   delta    n_scored
+    R0        0.389           0.436        +0.047    19 -> 20
+    R1        0.875           0.875        +0.000    20 -> 20
+    R2-R4   unchanged       unchanged      +0.000    20 -> 20
+    R5        0.817           0.808        -0.009    20 -> 20
+    R6/R8     0.767           0.767        +0.000    20 -> 20
+    R7/R9     0.856           0.814        -0.042    15 -> 17
+    CRAG on-domain fallback   25% -> 15%   (off-domain rejection 100% both)
+
+Read it as: **a real but narrow gain, concentrated exactly where retrieval was
+weakest, and absent everywhere query expansion already runs.** R0 embeds the
+raw patient utterance and is the only row isolating the embedding change; it
+improved ~12% relative and gained a scoreable turn. Every row with query
+expansion returned bit-identical results, meaning identical retrieved sets —
+a framework query produces a peaked similarity distribution that a 1.5%
+mean-cosine shift does not reorder, while the raw utterance produces a flat one
+that it does.
+
+The R7/R9 precision *fall* is not a regression. CRAG accepted two more turns
+(15 -> 17 scored), and solving for them gives ~0.50 precision each: marginal
+turns entering the denominator. The count-based signal is the trustworthy one,
+and it moved in the right direction on both sides — on-domain fallback fell
+25% -> 15% while off-domain rejection held at 100%, so the gate got more
+permissive about real turns without getting less discriminating about junk.
+
+**Caveat on attributing any of this to the embeddings alone.** `chunk.tsv` is
+`to_tsvector(coalesce(contextual_prefix,'') || ' ' || text)`, a generated
+column, so the prefixes changed the *lexical* index too — chunks are now
+matchable on prefix-only vocabulary. R0 is dense-only and therefore clean; R2
+and above confound a prefixed embedding with a prefixed FTS index.
+
+Retrieval passes raw `chunk.text` to the prompt and the judge, never the
+prefix, so what was scored is identical across both ladders and the two tables
+are directly comparable. That is also the right call on provenance grounds: the
+prefix is model-generated and uncitable.
+
 **Scenarios come from the train split only.** `scenarios/holdout.lock` freezes
 60 of the 100 scenarios for the actual experiment. Measuring retrieval
 configurations against holdout turns and then reporting holdout results would
