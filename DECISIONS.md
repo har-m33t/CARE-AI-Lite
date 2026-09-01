@@ -665,3 +665,63 @@ cells removes SC-029 unevenly across conditions rather than symmetrically. Neith
 including nor excluding them is obviously right, so the analysis should report the
 primary comparison both ways and say which it prefers. What is not acceptable is
 scoring refused text silently.
+
+---
+
+## D13 — D11's cost premise does not survive a runtime with prefix caching
+
+**Decision (2026-09-01, project owner): re-open D11. Condition LC is generated in full,
+180 cells, served by vLLM. The measurement below is the reason.**
+
+D11 stopped LC at 39 of 180 cells for cost, and named the cause exactly: every LC
+prompt shares an identical prefix because `lc_sample()` is query-independent and
+deterministic by design (D7), that prefix should be nearly free after the first prefill
+through KV cache reuse, and the measured per-cell time said Ollama was re-prefilling it
+on every request. D11's closing words were that *the design anticipated the saving; the
+runtime does not deliver it.*
+
+That is a claim about Ollama, not about long-context evaluation. It was tested.
+
+**The measurement.** `google/gemma-4-12B-it` served by vLLM 0.28.0 with
+`--enable-prefix-caching` on one A100 SXM 80GB, driven with the production prompt
+assembly over 10 held-out scenarios:
+
+| | Ollama (D11, L40S) | vLLM, prefix caching (A100) |
+|---|---|---|
+| per cell | 198 s | **3.61 s** (mean of 9 warm calls; min 2.03, max 6.51) |
+| first call | — | 64.31 s, one cold prefill of 110,653 tokens |
+| 180 cells, projected | ~8.5 h, ~$8.50 | **~12 min, ~$0.31** |
+
+**54.9x.** The saving D7's design anticipated is real and a runtime does deliver it.
+D11's inference about the cause was correct; only its conclusion was contingent on the
+serving stack, which D11 could not have known without a second one to compare against.
+
+**What this restores.** Secondary outcome 3 — C vs LC, "does query-dependent selection
+beat a fixed context" — is testable again. It remains the *reduced* form of the question
+under D7, because the corpus still does not fit the window and any selection rule is
+itself a form of retrieval. Nothing here re-opens D7.
+
+**What it does not restore.** Nothing about the instrument. `ie`, `naturalness` and
+`ritualistic` are degenerate on this run and stay degenerate; the judge validation study
+has still not run; every result stays EXPLORATORY. A new comparison is not a stronger
+comparison.
+
+**The 39 Ollama cells are not pooled into the arm, and the reason is now two reasons.**
+They were always a non-randomised 13 of 60 scenarios. They are also served by a
+different stack — a GGUF against HF safetensors, different quantisation, different
+sampling defaults — and they realised a different pack: the production packing rule
+admits 116/116 knowledge base entries and 151/471 chunks at 117,849 real tokens, which
+is not what the Ollama run's window admitted. They are retained, marked
+`served_by = 'ollama'`, and used only as a paired backend-equivalence sample against
+their vLLM counterparts. The LC analysis arm is `served_by = 'vllm'` and nothing else.
+
+**A side finding worth recording.** `estimate_tokens` overcounts this corpus by about
+4.5% — the production pack estimates 123,758 tokens and really is 117,849. The direction
+is safe, but D7's "255% utilisation" is an estimate rather than a measurement and should
+be described as one.
+
+**The general form of this.** Twice now a lane has concluded that long-context evaluation
+is unaffordable, and both times the measurement was of a runtime rather than of the
+method. `docs/limitations.md` should say that under Ollama a shared-prefix long-context
+baseline is not affordable at this scale, and that this is a property of the serving
+stack, not of the design.
