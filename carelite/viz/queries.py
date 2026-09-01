@@ -40,6 +40,7 @@ from carelite.db.connection import fetch_all
 from carelite.eval.judge.agreement import Metric, krippendorff_alpha, paired_series, spearman_rho
 from carelite.eval.judge.validation import classify_dimension
 from carelite.eval.rubric.dimensions import to_quality
+from carelite.stats.arms import restrict_to_analysis_arms
 from carelite.stats.effects import DEFAULT_N_BOOT, DEFAULT_SEED, BootstrapCI, bootstrap_ci
 from carelite.stats.evidence import EvidenceStatus, RaterScope, label_for
 from carelite.stats.instrument import Discrimination, classify, describe_dimensions
@@ -53,6 +54,7 @@ from carelite.stats.primary import (
 )
 from carelite.stats.sensitivity import retrieval_contrast
 from carelite.types import RUBRIC_DIMENSIONS, Condition
+from carelite.viz.figures import CAVEAT_SEPARATOR as FIGURE_CAVEAT_SEPARATOR
 
 __all__ = [
     "DataUnavailable",
@@ -77,6 +79,12 @@ class DataUnavailable(RuntimeError):
 
 _FRIEDMAN_CONDITION_STRS: tuple[str, ...] = tuple(str(c) for c in FRIEDMAN_CONDITIONS)
 
+#: Re-exported, not restated: `carelite.viz.figures` splits on this to recover
+#: the individual caveats, and `carelite.stats.reproduce` writes the `caveats`
+#: column of `effect-sizes.csv` with the same separator, so a reader comparing
+#: the figure against the table is comparing identical strings.
+CAVEAT_SEPARATOR = FIGURE_CAVEAT_SEPARATOR
+
 
 # ---------------------------------------------------------------------------
 # Raw scores, long format
@@ -89,14 +97,25 @@ def load_long_scores(rater_type: str | None = "llm_judge") -> pd.DataFrame:
     `challenge_type` for subgroup queries.
 
     Columns: `generation_id, scenario_id, condition, sample_idx, rater_type,
-    rater_id, equity_stratum, challenge_type, dimension, raw`.
+    rater_id, served_by, equity_stratum, challenge_type, dimension, raw`.
 
     `rater_type=None` pulls every rater type (used only where a caller filters
     itself, e.g. building judge vs. human frames side by side).
+
+    **`served_by` is selected and the frame is narrowed to the analysis arms.**
+    After D13 the condition label alone does not identify an arm: `generation`
+    holds LC rows from two serving stacks — the 180 vLLM cells that are the arm,
+    and D11's 39 Ollama cells, which cover 13 of 60 scenarios and are kept only
+    as the paired backend-equivalence sample. A frame filtered on the condition
+    would pool the two and double-count those 13 scenarios, and nothing in a
+    figure built from it would show that.
+    `carelite.stats.arms.restrict_to_analysis_arms` is that selection, reused
+    rather than restated here, and its `strict` re-check raises rather than
+    quietly producing a number for a comparison nobody specified.
     """
     where = "" if rater_type is None else "WHERE r.rater_type = %(rater_type)s"
     sql = f"""
-        SELECT g.generation_id, g.scenario_id, g.condition, g.sample_idx,
+        SELECT g.generation_id, g.scenario_id, g.condition, g.sample_idx, g.served_by,
                r.rater_type, r.rater_id,
                s.equity_stratum, s.challenge_type,
                r.name, r.understand, r.respect, r.support, r.explore,
@@ -119,6 +138,7 @@ def load_long_scores(rater_type: str | None = "llm_judge") -> pd.DataFrame:
         "scenario_id",
         "condition",
         "sample_idx",
+        "served_by",
         "rater_type",
         "rater_id",
         "equity_stratum",
@@ -127,7 +147,8 @@ def load_long_scores(rater_type: str | None = "llm_judge") -> pd.DataFrame:
     long = wide.melt(
         id_vars=id_vars, value_vars=list(RUBRIC_DIMENSIONS), var_name="dimension", value_name="raw"
     )
-    return long
+    arms, _selection = restrict_to_analysis_arms(long)
+    return arms
 
 
 # ---------------------------------------------------------------------------
@@ -270,20 +291,41 @@ def effect_sizes_df(
     step. Pass `carelite.stats.primary.dimension_expansion()` (or a
     concatenation) for a broader, mostly-exploratory view.
 
-    **Always one row per hypothesis in `hypotheses`**, including one that did
-    not run. `secondary3_nurse_C_vs_LC` is retired by D11 (LC generation was
-    stopped at 39 of 180 cells, never randomised for partial analysis) —
-    `run_pairwise` returns `None` for it before touching the data, and
-    `run_family` still counts it toward `family_size` so the seven
-    comparisons that did run are not made easier to pass by its absence. If
-    this function simply omitted the row, the resulting frame would have one
-    fewer row than the family, and a forest plot built from it would be
-    indistinguishable from one where that comparison was never planned — the
-    same silently-missing-row hazard D12 flagged for gate-blocked
-    generations. So the row stays: `not_computed=True`, `effect`/`ci_lo`/
-    `ci_hi`/`p_value` are NaN, and `not_computed_reason` carries
-    `Hypothesis.not_computable_reason` verbatim. `fig_effect_sizes` renders it
-    as an explicit "NOT COMPUTED" marker rather than a point.
+    **Always one row per hypothesis in `hypotheses`, whether or not it ran.**
+    A comparison that produced no number still occupies its row, marked
+    `not_computed=True` with `effect`/`ci_lo`/`ci_hi`/`p_value` as NaN and a
+    `not_computed_reason` a reader can act on; `fig_effect_sizes` draws it as
+    an explicit "NOT COMPUTED" band rather than a point. Omitting the row
+    instead would leave a frame one row shorter than the family, and a forest
+    plot built from it would be indistinguishable from one where that
+    comparison was never planned — the silently-missing-row hazard D12 flagged
+    for gate-blocked generations. Two distinct causes land here, and the
+    reason string says which:
+
+    * **Retired by decision.** `Hypothesis.not_computable_reason` is set, so
+      `run_pairwise` returns `None` before touching the data while
+      `run_family` still counts the hypothesis toward `family_size` — the
+      comparisons that did run are not made easier to pass by its absence. The
+      reason is carried verbatim. **No hypothesis is in this state right now.**
+      D11 put `secondary3_nurse_C_vs_LC` there when LC generation stopped at 39
+      of 180 cells; D13 measured the same prompt set under vLLM with prefix
+      caching at 3.61s per cell against Ollama's 198s, generated all 180, and
+      restored the comparison. The mechanism stays because the reversal is the
+      argument for keeping it: a comparison can be retired and un-retired, and
+      neither state may be reachable only by editing figure code.
+    * **No paired data.** The hypothesis was planned and not retired, but this
+      run produced no scenario with both conditions scored.
+
+    `caveats` (str) is `" | "`-joined `Hypothesis.caveats` — the
+    qualifications a comparison cannot be read without, which are a different
+    thing from `not_computed_reason`: the comparison ran, and the caveat
+    travels with its number. `secondary3_nurse_C_vs_LC` carries two under D13
+    (its arm was served by vLLM and condition C by Ollama, which no analysis
+    can separate from the architecture; and it is D7's reduced form of the
+    question, since the corpus does not fit the window). `fig_effect_sizes`
+    marks such a row on the canvas. The separator matches
+    `carelite.stats.reproduce`'s `caveats` column in `effect-sizes.csv`, so the
+    figure and the CSV carry the same strings.
 
     `not_testable` (bool) and `testability_note` (str) come from
     `PairwiseResult.testability`/`.not_testable`
@@ -329,6 +371,7 @@ def effect_sizes_df(
                     "not_computed_reason": reason,
                     "not_testable": False,
                     "testability_note": "",
+                    "caveats": CAVEAT_SEPARATOR.join(h.caveats),
                 }
             )
             continue
@@ -347,6 +390,7 @@ def effect_sizes_df(
                 "not_computed_reason": "",
                 "not_testable": bool(r.not_testable),
                 "testability_note": r.testability.note if r.testability is not None else "",
+                "caveats": CAVEAT_SEPARATOR.join(h.caveats),
             }
         )
     if not records:

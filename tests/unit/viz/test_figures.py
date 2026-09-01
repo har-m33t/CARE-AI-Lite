@@ -15,6 +15,7 @@ import pytest
 from matplotlib.figure import Figure
 
 from carelite.viz.figures import (
+    CAVEAT_MARK,
     _dim_label,
     fig_ablation_table,
     fig_effect_sizes,
@@ -30,6 +31,15 @@ from carelite.viz.style import save_figure
 
 def _footer_text(fig: Figure) -> str:
     return "\n".join(t.get_text() for t in fig.texts)
+
+
+def _strip_caveat_mark(label: str) -> str:
+    """Drop the leading caveat marker `fig_effect_sizes` prefixes to a tick label."""
+    return label.removeprefix(f"{CAVEAT_MARK} ")
+
+
+def _axes_text(fig: Figure) -> str:
+    return " ".join(t.get_text() for ax in fig.axes for t in ax.texts)
 
 
 def _assert_saves_cleanly(fig: Figure, name: str, tmp_path: Path) -> None:
@@ -89,7 +99,7 @@ def test_fig_effect_sizes_returns_figure_ordered_by_effect(
     fig = fig_effect_sizes(effect_sizes_fixture)
     assert isinstance(fig, Figure)
     ax = fig.axes[0]
-    ylabels = [lbl.get_text() for lbl in ax.get_yticklabels()]
+    ylabels = [_strip_caveat_mark(lbl.get_text()) for lbl in ax.get_yticklabels()]
     assert len(ylabels) == len(effect_sizes_fixture)
     # ordered ascending by effect (bottom-to-top plotting convention)
     sorted_labels = (
@@ -119,18 +129,112 @@ def test_fig_effect_sizes_marks_exploratory_rows_distinctly(effect_sizes_fixture
     assert "exploratory" in legend_text.lower()
 
 
-def test_fig_effect_sizes_marks_not_computed_row_explicitly(effect_sizes_fixture) -> None:
-    # D11: secondary3_nurse_C_vs_LC is retired by decision, not run-and-null.
-    # The row must survive in the figure (same count as the input frame) and
-    # be labelled NOT COMPUTED rather than silently dropped.
-    fig = fig_effect_sizes(effect_sizes_fixture)
+def test_fig_effect_sizes_marks_not_computed_row_explicitly(
+    effect_sizes_fixture_with_not_computed_row,
+) -> None:
+    # A comparison that was not computed at all must survive in the figure
+    # (same row count as the input frame) and be labelled NOT COMPUTED rather
+    # than silently dropped — D12's rule, applied to comparisons. Driven from a
+    # fixture-only retired row, not from whichever comparison a decision
+    # happens to have retired: D11 retired C vs LC and D13 restored it, and the
+    # mechanism outlived both.
+    df = effect_sizes_fixture_with_not_computed_row
+    fig = fig_effect_sizes(df)
     ax = fig.axes[0]
-    assert len(ax.get_yticklabels()) == len(effect_sizes_fixture)
+    assert len(ax.get_yticklabels()) == len(df)
     body_text = " ".join(t.get_text() for t in ax.texts)
     assert "NOT COMPUTED" in body_text
     legend = ax.get_legend()
     legend_text = " ".join(t.get_text() for t in legend.get_texts())
     assert "NOT COMPUTED" in legend_text
+
+
+def test_fig_effect_sizes_omits_not_computed_apparatus_when_nothing_is_retired(
+    effect_sizes_fixture,
+) -> None:
+    """Under D13 every planned comparison computes; the marker must not appear."""
+    fig = fig_effect_sizes(effect_sizes_fixture)
+    ax = fig.axes[0]
+    legend_text = " ".join(t.get_text() for t in ax.get_legend().get_texts())
+    assert "NOT COMPUTED" not in legend_text
+    assert "NOT COMPUTED" not in " ".join(t.get_text() for t in ax.texts)
+
+
+def test_fig_effect_sizes_marks_a_caveated_row_on_the_canvas(effect_sizes_fixture) -> None:
+    """The C-vs-LC confound must be unmissable in the image itself.
+
+    A forest plot is the artefact most likely to be lifted out of this
+    repository and pasted into a slide with no caption. A confounded comparison
+    drawn like the other seven would be the most misleading thing this project
+    could produce, so the mark is asserted on four independent channels.
+    """
+    fig = fig_effect_sizes(effect_sizes_fixture)
+    ax = fig.axes[0]
+
+    # 1. the tick label — the row's identity carries the mark
+    caveated_ticks = [
+        lbl.get_text() for lbl in ax.get_yticklabels() if lbl.get_text().startswith(CAVEAT_MARK)
+    ]
+    assert len(caveated_ticks) == 1
+    assert "C vs LC" in caveated_ticks[0]
+
+    # 2. an inline tag naming the objection, beside the interval
+    body_text = _axes_text(fig)
+    assert "CONFOUNDED BY SERVING STACK" in body_text
+
+    # 3. a note block carrying every caveat headline for that row
+    assert "REDUCED FORM OF THE QUESTION" in body_text.upper()
+    assert "C vs LC" in body_text
+
+    # 4. a legend entry, so the hatched band is not an unexplained texture
+    legend_text = " ".join(t.get_text() for t in ax.get_legend().get_texts())
+    assert CAVEAT_MARK in legend_text or "CAVEAT" in legend_text.upper()
+
+
+def test_fig_effect_sizes_caveat_apparatus_is_absent_without_caveats(
+    effect_sizes_fixture,
+) -> None:
+    """No caveat column, no caveat furniture — the mark must mean something."""
+    df = effect_sizes_fixture.drop(columns=["caveats"])
+    fig = fig_effect_sizes(df)
+    ax = fig.axes[0]
+    assert not any(lbl.get_text().startswith(CAVEAT_MARK) for lbl in ax.get_yticklabels())
+    assert "CONFOUNDED" not in _axes_text(fig).upper()
+
+
+def test_fig_effect_sizes_marks_a_row_that_is_both_caveated_and_not_computed(
+    effect_sizes_fixture_caveated_and_not_computed, tmp_path: Path
+) -> None:
+    """Both marks on one row, neither swallowing the other.
+
+    This is the live database state while the LC arm is being scored: the
+    comparison is back in the family with its caveats attached and has no
+    number yet. The caveat must not disappear because there is no point to
+    annotate, and the missing number must not be hidden by the caveat.
+    """
+    fig = fig_effect_sizes(effect_sizes_fixture_caveated_and_not_computed)
+    ax = fig.axes[0]
+    body_text = _axes_text(fig)
+    assert "NOT COMPUTED" in body_text
+    assert "CONFOUNDED BY SERVING STACK" in body_text
+    assert any(lbl.get_text().startswith(CAVEAT_MARK) for lbl in ax.get_yticklabels())
+    legend_text = " ".join(t.get_text() for t in ax.get_legend().get_texts())
+    assert "NOT COMPUTED" in legend_text and "CAVEATED" in legend_text
+    _assert_saves_cleanly(fig, "effect_sizes_caveated_not_computed", tmp_path)
+
+
+def test_fig_effect_sizes_renders_the_full_eight_comparison_family(effect_sizes_fixture) -> None:
+    """Nothing assumes seven: D13 put secondary outcome 3 back in the family."""
+    family = effect_sizes_fixture[
+        effect_sizes_fixture["comparison"].isin(
+            ["A vs B", "B vs C", "C vs LC", "A vs A2", "B vs D"]
+        )
+    ]
+    assert len(family) == 8
+    fig = fig_effect_sizes(family)
+    ax = fig.axes[0]
+    assert len(ax.get_yticklabels()) == 8
+    assert "C vs LC" in " ".join(lbl.get_text() for lbl in ax.get_yticklabels())
 
 
 def test_fig_effect_sizes_marks_not_testable_rows(effect_sizes_fixture) -> None:

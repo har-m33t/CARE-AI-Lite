@@ -20,7 +20,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from carelite.types import RUBRIC_DIMENSIONS
+from carelite.stats.primary import CONFIRMATORY_FAMILY, Hypothesis
+from carelite.types import RUBRIC_DIMENSIONS, Condition
 from carelite.viz.queries import (
     DataUnavailable,
     _judge_statuses,
@@ -166,15 +167,12 @@ def test_rubric_scores_df_flags_a_degenerate_dimension(
 
 def test_effect_sizes_df_covers_the_confirmatory_family(synthetic_long: pd.DataFrame) -> None:
     df = effect_sizes_df(synthetic_long, n_boot=200)
-    # docs/preregistration.md §3-4: primary + 7 secondary = 8 rows, ALWAYS —
-    # including secondary3_nurse_C_vs_LC, which D11 retired by decision.
-    # run_pairwise returns None for it before touching the data (it is not
-    # "computed on 13 scenarios", it is not computed at all), and run_family
-    # still counts it toward family_size so the seven comparisons that did
-    # run are not made easier to pass by its absence. Dropping the row here
-    # would silently shrink the family a reader sees to 7, which is exactly
-    # the same hazard D12 flagged for gate-blocked generations — so the row
-    # stays, explicitly marked `not_computed`.
+    # docs/preregistration.md §3-4: primary + 7 secondary = 8 rows, ALWAYS.
+    # All eight are computed under D13, which generated the full 180-cell LC
+    # arm and so restored secondary3_nurse_C_vs_LC to the family. D11 had
+    # retired that comparison and this lane rendered it NOT COMPUTED; the row
+    # count did not change then and does not change now, because the frame is
+    # always one row per planned hypothesis whether or not it ran.
     assert len(df) == 8
     assert {
         "comparison",
@@ -189,25 +187,94 @@ def test_effect_sizes_df_covers_the_confirmatory_family(synthetic_long: pd.DataF
         "not_computed_reason",
         "not_testable",
         "testability_note",
+        "caveats",
     } <= set(df.columns)
     computed = df[~df["not_computed"]]
-    assert len(computed) == 7
+    assert len(computed) == 8
     assert computed["effect"].between(-1.0, 1.0).all()
 
 
-def test_effect_sizes_df_marks_the_d11_retired_comparison_not_computed(
+def test_effect_sizes_df_computes_c_vs_lc_under_d13(synthetic_long: pd.DataFrame) -> None:
+    """D13 restored secondary outcome 3. It is a computed row, not a marker."""
+    df = effect_sizes_df(synthetic_long, n_boot=200)
+    rows = df[df["comparison"] == "C vs LC"]
+    assert len(rows) == 1
+    row = rows.iloc[0]
+    assert bool(row["not_computed"]) is False
+    assert not math.isnan(row["effect"])
+    assert int(row["n"]) > 0
+
+
+def test_effect_sizes_df_carries_the_c_vs_lc_caveats(synthetic_long: pd.DataFrame) -> None:
+    """Both D13 caveats reach the frame, so the figure can mark the row.
+
+    Asserted on substance rather than wording: the serving-stack confound and
+    the D7 reduced-form qualification are the two things a reader of this
+    comparison must not be without, and `carelite.stats.primary.Hypothesis
+    .caveats` is where they are written once.
+    """
+    df = effect_sizes_df(synthetic_long, n_boot=200)
+    caveats = df[df["comparison"] == "C vs LC"].iloc[0]["caveats"]
+    assert caveats
+    lowered = caveats.lower()
+    assert "confounded by serving stack" in lowered
+    assert "vllm" in lowered and "ollama" in lowered
+    assert "d7" in lowered
+    # No other comparison in the family carries one, so the mark means something.
+    others = df[df["comparison"] != "C vs LC"]
+    assert not others["caveats"].astype(bool).any()
+
+
+def test_effect_sizes_df_marks_a_hypothesis_retired_by_decision_not_computed(
     synthetic_long: pd.DataFrame,
 ) -> None:
-    df = effect_sizes_df(synthetic_long, n_boot=200)
-    retired = df[df["comparison"] == "C vs LC"]
-    assert len(retired) == 1
-    row = retired.iloc[0]
+    """The not-computed mechanism itself, independent of which comparison uses it.
+
+    D11 retired `secondary3_nurse_C_vs_LC` and D13 restored it; no hypothesis
+    carries a `not_computable_reason` right now. The machinery must stay tested
+    anyway — the next decision of that shape must not have to rebuild it — so
+    this drives it with a hypothesis constructed here rather than with whichever
+    comparison happens to be retired.
+    """
+    retired = Hypothesis(
+        key="test_only_retired",
+        measure_key="nurse_composite",
+        left=Condition.B,
+        right=Condition.C,
+        expected_higher=Condition.C,
+        description="Fixture-only hypothesis exercising the retired-by-decision path.",
+        not_computable_reason="RETIRED BY DECISION in this test; never computed from the data.",
+    )
+    df = effect_sizes_df(synthetic_long, hypotheses=(retired,), n_boot=200)
+    assert len(df) == 1
+    row = df.iloc[0]
     assert bool(row["not_computed"]) is True
-    assert "D11" in row["not_computed_reason"]
+    assert "RETIRED BY DECISION" in row["not_computed_reason"]
     assert math.isnan(row["effect"])
     assert math.isnan(row["p_value"])
+    assert int(row["n"]) == 0
     # A retired-by-decision comparison is not additionally "confirmatory".
     assert bool(row["confirmatory"]) is False
+
+
+def test_effect_sizes_df_marks_a_comparison_with_no_paired_data_not_computed(
+    synthetic_long: pd.DataFrame,
+) -> None:
+    """The other not-computed branch: planned, not retired, and no pairs exist.
+
+    A comparison the run simply did not produce must still occupy its row, for
+    the reason D12 gave for gate-blocked generations — a silently missing row is
+    indistinguishable from a comparison nobody planned.
+    """
+    without_d = synthetic_long[synthetic_long["condition"] != "D"]
+    b_vs_d = next(h for h in CONFIRMATORY_FAMILY if h.key == "secondary7_nurse_B_vs_D")
+    df = effect_sizes_df(without_d, hypotheses=(b_vs_d,), n_boot=200)
+    assert len(df) == 1
+    row = df.iloc[0]
+    assert bool(row["not_computed"]) is True
+    assert "no paired data" in row["not_computed_reason"]
+    assert "retired" not in row["not_computed_reason"].lower()
+    assert math.isnan(row["effect"])
 
 
 def test_effect_sizes_df_marks_a_degenerate_measure_not_testable(
