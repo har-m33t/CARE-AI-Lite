@@ -35,6 +35,13 @@ simply halve every standard error. `load_scores` takes the median rows and
 nothing else by default; `load_judge_samples` is the separate entry point for
 the per-sample rows that the self-consistency sensitivity analysis needs.
 
+**`served_by` is selected on every score row, and is not decoration.** After
+`DECISIONS.md` D13 the condition label does not identify an arm: `condition =
+'LC'` matches the 180-cell vLLM arm and D11's 39 Ollama cells alike. The column
+is the only thing in the frame that separates them, so it is read here and
+`carelite.stats.arms` is what acts on it. A frame built without it cannot be
+resolved into arms and the guard there refuses rather than guessing.
+
 **`equity_kind` is not in the database.** `carelite/db/schema.sql` stores the
 eight frozen `Scenario` fields; `equity_kind` stays in `scenarios/bank.jsonl`
 (`carelite/scenarios/load.py`: "the schema is not mine to extend").
@@ -84,6 +91,7 @@ SELECT
     g.sample_idx,
     g.model,
     g.model_digest,
+    g.served_by,
     g.prompt_id,
     rs.rater_type,
     rs.rater_id,
@@ -281,6 +289,7 @@ def load_scores(
             "sample_idx",
             "model",
             "model_digest",
+            "served_by",
             "prompt_id",
             "rater_type",
             "rater_id",
@@ -375,16 +384,21 @@ def attach_equity_kind(long: pd.DataFrame, *, bank_path: str | None = None) -> p
 
 
 # ---------------------------------------------------------------------------
-# D11: conditions dropped from the run, and what that costs
+# Conditions dropped wholesale -- of which, after D13, there are none
 # ---------------------------------------------------------------------------
 
-#: `DECISIONS.md` D11. LC generation was stopped at 39 of 180 cells, covering 13
-#: of 60 scenarios, and those cells were never randomised for partial analysis --
-#: they are the scenarios LC happened to reach before it was stopped. So LC is
-#: not a small arm, it is a non-arm, and the honest treatment is to exclude it
-#: from every comparison rather than to compute a C-vs-LC test on 13 scenarios
-#: and caveat it. The rows stay in the database as a record of what ran.
-DROPPED_CONDITIONS: tuple[str, ...] = ("LC",)
+#: **Empty, and that is the decision.** D11 dropped condition LC entirely: it had
+#: been stopped at 39 of 180 cells over 13 of 60 scenarios, never randomised for
+#: partial analysis, so it was not a small arm but a non-arm. D13 re-opened it —
+#: all 180 cells were generated under vLLM — and the exclusion moved from the
+#: condition to the `(condition, served_by)` pair, because a rule that still
+#: dropped `LC` would now discard the arm D13 exists to restore.
+#:
+#: The selection rule now lives in `carelite.stats.arms.EXCLUDED_ARMS`, and
+#: `restrict_to_analysis_arms` is what the report calls. `drop_dropped_conditions`
+#: is kept as the general utility it always was, for a caller that wants to
+#: exclude a condition by name.
+DROPPED_CONDITIONS: tuple[str, ...] = ()
 
 
 def drop_dropped_conditions(
@@ -392,11 +406,15 @@ def drop_dropped_conditions(
     *,
     conditions: Sequence[str] = DROPPED_CONDITIONS,
 ) -> tuple[pd.DataFrame, dict[str, int]]:
-    """Remove D11-dropped conditions. Returns the frame and what was removed.
+    """Remove whole conditions by name. Returns the frame and what was removed.
 
-    The counts come back rather than being logged, because "39 LC cells over 13
+    The counts come back rather than being logged, because "n cells over m
     scenarios were excluded" is a sentence the results document has to contain
     and a number nobody should have to re-derive to write it.
+
+    `conditions` defaults to `DROPPED_CONDITIONS`, which is empty after D13.
+    Excluding a serving stack within a condition is a different operation and is
+    `carelite.stats.arms.restrict_to_analysis_arms`.
     """
     if long.empty or "condition" not in long.columns:
         return long, {}
@@ -472,7 +490,7 @@ class DataInventory:
             dropped = ", ".join(
                 f"{k} {v} cells" for k, v in sorted(self.dropped_conditions.items())
             )
-            lines.append(f"  dropped by D11:          {dropped}")
+            lines.append(f"  excluded selections:     {dropped}")
         return "\n".join(lines)
 
 

@@ -35,18 +35,22 @@ text prints the two together. A consumer can still quote the number alone; it
 just cannot do so without having stepped over the sentence saying not to.
 
 **The serving-stack breakdown is not decoration.** `generation.served_by`
-records which stack produced a row. Every row in the current run is `'ollama'`,
-and condition LC may yet be re-run under vLLM; a count pooled across two
-backends would hide that the arm changed underneath it. The breakdown therefore
-prints a zero for a backend that produced nothing rather than omitting it, and
-names any condition that ended up split across both.
+records which stack produced a row. Under D13 condition LC exists under both —
+180 vLLM cells that are the arm, 39 Ollama cells that are D11's partial record —
+so a count pooled across backends hides that the arm is only part of what the
+label matches. The breakdown therefore prints a zero for a backend that produced
+nothing rather than omitting it, and `split_across_backends` names every
+condition that ended up on both. The census here is deliberately the whole table;
+`carelite.stats.arms` is what narrows it to arms, and `generations_analysed`
+below is that narrower number, printed beside this one so neither can stand in
+for the other.
 
 **What this module deliberately does not do.** It computes no C-vs-LC contrast
-and no backend-equivalence test. Those belong to a later package and to the
-generations it will produce; nothing here assumes those rows exist. The seam
-they need is `GenerationCounts.by_condition_and_backend` and
-`split_across_backends`, which already report the shape such an analysis would
-have to reckon with.
+and no backend-equivalence test. The contrast is the §8.1 family's
+`secondary3_nurse_C_vs_LC` and reaches this block, like every other number here,
+off the `AnalysisReport`; the backend comparison belongs to
+`carelite.eval.judge.backend_equivalence` and is framed as sensitivity (e) in
+`analysis.txt`. Nothing is recomputed here.
 """
 
 from __future__ import annotations
@@ -346,8 +350,10 @@ def _count_rows(counts: GenerationCounts | None) -> list[HeadlineNumber]:
             value=total,
             qualifier=(
                 "Every row the table holds, across all splits and all serving stacks. It "
-                f"includes the partial LC cells D11 kept as a record and {blocked_clause}, so it "
-                "is not the number any comparison ran on — see `generations_analysed` below."
+                "includes D11's 39 partial LC cells, which D13 retains as a paired "
+                f"backend-equivalence sample rather than as part of any arm, and {blocked_clause}"
+                ", so it is not the number any comparison ran on — see `generations_analysed` "
+                "below."
             ),
             display=_count_display(total),
             section=_COUNTS,
@@ -373,9 +379,12 @@ def _count_rows(counts: GenerationCounts | None) -> list[HeadlineNumber]:
             )
         if condition == str(Condition.LC):
             parts.append(
-                "D11 stopped LC at 39 of 180 planned cells, covering 13 of 60 scenarios, never "
-                "randomised for partial analysis. These rows are a record of what ran and are "
-                "excluded from every comparison rather than analysed with a caveat."
+                "D13: the LC ANALYSIS ARM IS `served_by = 'vllm'` AND NOTHING ELSE. The count "
+                "above pools both stacks because it is a census of the table, not of the arm. "
+                "The Ollama rows are D11's partial record — 39 cells over 13 of 60 scenarios, "
+                "never randomised for partial analysis — kept only as a paired "
+                "backend-equivalence sample. Condition C was served by Ollama, so the C-vs-LC "
+                "comparison is confounded by serving stack and says so wherever it is printed."
             )
         rows.append(
             HeadlineNumber(
@@ -444,10 +453,11 @@ def _analysed_rows(report: AnalysisReport) -> list[HeadlineNumber]:
             label="generations the analysis ran on",
             value=int(report.n_generations),
             qualifier=(
-                f"The `{report.split}` split with condition LC removed (D11), which is the frame "
-                "behind every comparison in analysis.txt. Gate-blocked generations are included "
-                "here, as D12 specifies for the base reading. This is a smaller number than the "
-                "census above and the two are not interchangeable."
+                f"The `{report.split}` split narrowed to one serving stack per condition (D13): "
+                "the LC arm is the vLLM cells, and D11's 39 Ollama LC cells are excluded. This "
+                "is the frame behind every comparison in analysis.txt. Gate-blocked generations "
+                "are included here, as D12 specifies for the base reading. This is a smaller "
+                "number than the census above and the two are not interchangeable."
             ),
             display=f"{int(report.n_generations):,}",
             section=_COUNTS,

@@ -364,3 +364,32 @@ class TestNoLongContextArmIsAssumed:
             counts=GenerationCounts.from_frame(counts_frame),
         )
         assert not any("lc" in r.key.split("_") for r in head.rows)
+
+
+class TestTheLcCensusQualifier:
+    """The LC census row pools two stacks; the qualifier beside it must say so."""
+
+    def test_it_names_the_arm_and_the_confound(
+        self, analysed: pd.DataFrame, counts_frame: pd.DataFrame
+    ) -> None:
+        head = headline_numbers(
+            run_analysis(long=analysed, n_boot=200),
+            counts=GenerationCounts.from_frame(counts_frame),
+        )
+        row = head.by_key("generations_by_condition.LC")
+        assert row is not None
+        assert "served_by = 'vllm'" in row.qualifier
+        assert "confounded by serving stack" in row.qualifier
+        assert "13 of 60 scenarios" in row.qualifier
+
+    def test_the_analysed_count_says_which_lc_cells_it_kept(
+        self, analysed: pd.DataFrame, counts_frame: pd.DataFrame
+    ) -> None:
+        head = headline_numbers(
+            run_analysis(long=analysed, n_boot=200),
+            counts=GenerationCounts.from_frame(counts_frame),
+        )
+        row = head.by_key("generations_analysed")
+        assert row is not None
+        assert "D13" in row.qualifier
+        assert "Ollama LC cells are excluded" in row.qualifier

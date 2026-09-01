@@ -147,8 +147,19 @@ class Hypothesis:
     #: for want of data. The two look identical in a table of missing rows and
     #: are completely different claims: "the run did not produce this" versus
     #: "the run produced too little of this to analyse, and analysing it anyway
-    #: would be worse than not". D11 is the live case — see `retired_by_decision`.
+    #: would be worse than not". D11 was the live case until D13 re-opened it;
+    #: no hypothesis carries one now, and the machinery stays because the next
+    #: decision of that shape must not have to rebuild it.
     not_computable_reason: str = ""
+    #: Qualifications this comparison cannot be read without — a confound the
+    #: design cannot remove, a question narrower than the one its name suggests.
+    #: They are **not** the same thing as `not_computable_reason`: the comparison
+    #: runs, and the caveats travel with the number. Every one of them is pushed
+    #: through `label_for` as a demotion reason, so it reaches the `label` column
+    #: of `effect-sizes.csv` and the rendered result alike, and printed above the
+    #: effect size in `PairwiseResult.render()`. A caveat that lived only in a
+    #: docstring would be absent from every artefact anyone actually reads.
+    caveats: tuple[str, ...] = ()
 
     @property
     def retired_by_decision(self) -> bool:
@@ -211,18 +222,23 @@ PRESPECIFIED_HYPOTHESES: tuple[Hypothesis, ...] = (
         right=Condition.LC,
         expected_higher=Condition.C,
         description=(
-            "§4.3 Composite NURSE adherence, C vs LC. Curated retrieval outperforms or matches "
-            "naive long-context stuffing. RETIRED BY D11 — see `not_computable_reason`."
+            "§4.3 Composite NURSE adherence, C vs LC. Query-dependent retrieval against a "
+            "fixed context. Retired by D11 when LC stopped at 39 of 180 cells; restored by "
+            "D13, which generated all 180 under vLLM. The arm is `served_by = 'vllm'` and "
+            "nothing else — see `carelite.stats.arms`."
         ),
-        not_computable_reason=(
-            "DECISIONS.md D11 stopped LC generation at 39 of 180 cells, covering 13 of 60 "
-            "scenarios. Those cells are the scenarios LC happened to reach before it was "
-            "stopped and were never randomised for partial analysis, so they are not a sample "
-            "of anything. This comparison is therefore NOT COMPUTED — not computed and "
-            "reported as non-significant, and not computed on 13 scenarios with a caveat. "
-            "Secondary outcome 3 cannot be answered by this run. It keeps its slot in the Holm "
-            "family so the seven comparisons that did run are not made easier to pass by its "
-            "absence."
+        caveats=(
+            "CONFOUNDED BY SERVING STACK. The LC arm was served by vLLM and condition C by "
+            "Ollama: a GGUF against HF safetensors, different quantisation, different sampling "
+            "defaults, different hardware, and per D13 a different realised context pack. No "
+            "analysis can separate the architecture from the stack that served it, so a "
+            "difference here is not attributable to long context versus retrieval.",
+            "THE REDUCED FORM OF THE QUESTION (D7). The corpus does not fit the window: the "
+            "production pack admits 116/116 knowledge base entries but only 151/471 chunks. LC "
+            "is a fixed, query-independent sample, not the whole corpus, and any selection rule "
+            "is itself a form of retrieval. This asks whether query-dependent selection beats a "
+            "fixed context — not whether curated retrieval beats stuffing everything in, which "
+            "is the question build plan v3 §3 posed and this run cannot answer.",
         ),
     ),
     Hypothesis(
@@ -516,6 +532,12 @@ class PairwiseResult:
             f"{self.hypothesis.pair_label} on {self.hypothesis.measure.label} [{self.label.tag()}]"
         )
         instrument_lines: list[str] = []
+        # Above the effect size, not below the p-value. A reader who has already
+        # read the number has already formed the impression the caveat exists to
+        # prevent, which is the same ordering argument the instrument diagnostic
+        # rests on.
+        for caveat in self.hypothesis.caveats:
+            instrument_lines.append(f"    !!! {caveat}")
         if self.testability is not None and self.testability.note:
             prefix = "    !!! " if self.not_testable else "    "
             instrument_lines.append(f"{prefix}{self.testability.note}")
@@ -599,9 +621,16 @@ def run_pairwise(
     `discrimination` is `carelite.stats.instrument`'s per-dimension verdict. When
     supplied, the result carries whether its measure was resolvable at all, so
     the untestable case can never be rendered as a plain non-significant one.
+
+    Raises:
+        carelite.stats.arms.MixedBackendError: when one of the two conditions in
+            `long` carries rows from two serving stacks. See `_backend_reasons`:
+            after D13 that is not an arm, and computing an effect over it would
+            produce a number for a comparison nobody specified.
     """
     if hypothesis.retired_by_decision:
         return None
+    backend_reasons = _backend_reasons(long, hypothesis)
     cells = cell_means(long, hypothesis.measure)
     scope = _scope_for(long, rater_type)
     matrix = paired_matrix(cells, (hypothesis.left, hypothesis.right), rater_type=rater_type)
@@ -617,7 +646,11 @@ def run_pairwise(
         if discrimination is not None
         else None
     )
-    reasons = list(extra_reasons)
+    reasons = [
+        *extra_reasons,
+        *(_caveat_headline(c) for c in hypothesis.caveats),
+        *backend_reasons,
+    ]
     if testability is not None and not testability.testable:
         reasons.append(
             "the judge did not resolve "
@@ -640,6 +673,58 @@ def run_pairwise(
         n_dropped=max(0, int(available) - int(matrix.shape[0])),
         testability=testability,
     )
+
+
+def _caveat_headline(caveat: str) -> str:
+    """The first sentence of a caveat, for the label tag.
+
+    The tag is read inline — in a table cell, a figure caption, a CSV column — and
+    a paragraph pasted into it stops being read at all. The caveats are written
+    with their claim in the opening sentence for exactly this reason, so the tag
+    names the objection and `render()` and `effect-sizes.csv` carry it in full.
+    Both come from one string; there is no second wording to drift.
+    """
+    head = caveat.split(". ", 1)[0].strip()
+    return head.rstrip(".") if head else caveat
+
+
+def _backend_reasons(long: pd.DataFrame, hypothesis: Hypothesis) -> list[str]:
+    """Check the arms this comparison rests on came from one serving stack each.
+
+    Only comparisons touching a condition that exists under two stacks are
+    checked; for the five conditions this study served one way, there is nothing
+    to confuse. D13 makes `LC` the one such condition.
+
+    Two outcomes, deliberately different in severity:
+
+    * **A frame that pools two stacks within one of the two conditions raises.**
+      The frame carries `served_by` and it says the arm is two arms. There is no
+      reading of that comparison that means anything, so it does not get computed
+      and quietly labelled — `carelite.stats.arms.restrict_to_analysis_arms` is
+      the selection that makes it well-defined.
+    * **A frame with no `served_by` column at all is demoted, not refused.** It
+      may be a legacy read or a hand-built fixture, and the LC rows in it cannot
+      be confirmed as the vLLM arm. That uncertainty is recorded on the label so
+      it travels into the rendered result and the CSV, rather than being decided
+      by a guess in either direction.
+    """
+    from carelite.stats.arms import (
+        AMBIGUOUS_WITHOUT_BACKEND,
+        assert_single_backend_per_condition,
+    )
+
+    touched = {str(hypothesis.left), str(hypothesis.right)} & AMBIGUOUS_WITHOUT_BACKEND
+    if not touched or long.empty or "condition" not in long.columns:
+        return []
+    if "served_by" not in long.columns:
+        return [
+            "this frame carries no `served_by` column, so the "
+            + ", ".join(sorted(touched))
+            + " rows could not be confirmed as the single-stack analysis arm D13 defines"
+        ]
+    pair = long[long["condition"].astype(str).isin({str(hypothesis.left), str(hypothesis.right)})]
+    assert_single_backend_per_condition(pair, what=f"the {hypothesis.pair_label} comparison")
+    return []
 
 
 def _scope_for(long: pd.DataFrame, rater_type: str | None) -> RaterScope:
@@ -792,11 +877,13 @@ def run_family(
     the data exist, so a test that could not run does not make its neighbours
     easier to pass.
 
-    That rule is doing real work on this run rather than sitting decorative:
-    secondary outcome 3 (C vs LC) was retired by D11 and cannot be computed, and
-    it keeps its slot. Dropping to m = 7 after seeing which test could not run
-    would lower every other comparison's adjusted p-value, which is the shape of
-    a correction chosen to suit the data.
+    That rule did real work while D11 stood: secondary outcome 3 (C vs LC) could
+    not be computed and kept its slot, so m stayed at 8. D13 restored the
+    comparison and all eight are now computable, which changes nothing about the
+    rule — dropping to m = 7 after seeing which test could not run would lower
+    every other comparison's adjusted p-value, and a correction whose size
+    depends on what the data turned out to contain is a correction chosen to suit
+    the data.
     """
     computed: list[tuple[Hypothesis, PairwiseResult | None]] = []
     for h in hypotheses:

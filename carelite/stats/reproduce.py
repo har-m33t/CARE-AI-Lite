@@ -26,7 +26,7 @@ carried forward from memory rather than read from the database, and happened to
 be right. `carelite.stats.headline` documents the rest of that reasoning. They
 are a second spelling of numbers `analysis.txt` already contains, plus a census
 of `generation` that the analysis frame deliberately does not answer, since the
-frame is what survives the holdout restriction and D11's exclusion.
+frame is what survives the holdout restriction and D13's single-stack arm rule.
 
 `analysis.txt` is the full rendered report, which is the artefact that carries
 the reasoning: the exclusions, the instrument table, the ordering that keeps a
@@ -97,6 +97,11 @@ EFFECT_SIZE_COLUMNS: tuple[str, ...] = (
     "observed_direction",
     "planned_in_advance",
     "label",
+    # The qualifications the comparison cannot be read without, verbatim from
+    # `Hypothesis.caveats`. C vs LC is confounded by serving stack and is the
+    # reduced form of the question D7 describes; a CSV that carried the effect
+    # without those sentences would be the artefact someone plots.
+    "caveats",
 )
 
 #: Column order for `instrument-resolution.csv`.
@@ -156,6 +161,7 @@ def _effect_rows(results: Sequence[PairwiseResult], role: str) -> list[dict[str,
                 "observed_direction": r.observed_direction,
                 "planned_in_advance": r.hypothesis.prespecified,
                 "label": r.label.tag(),
+                "caveats": " | ".join(r.hypothesis.caveats),
             }
         )
     return rows
@@ -217,9 +223,12 @@ def _tables(report: AnalysisReport) -> list[_Table]:
             },
             *[
                 {
-                    "item": f"dropped_condition_{name}",
+                    "item": f"excluded_arm_{name.replace('/', '_')}",
                     "count": count,
-                    "detail": "DECISIONS.md D11",
+                    "detail": (
+                        "DECISIONS.md D13: excluded by (condition, served_by), not by "
+                        "condition — the LC analysis arm is served_by = 'vllm'"
+                    ),
                 }
                 for name, count in sorted(inv.dropped_conditions.items())
             ],
