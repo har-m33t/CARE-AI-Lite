@@ -25,6 +25,27 @@ dependencies = [
 
 [project.optional-dependencies]
 rerank = ["sentence-transformers>=3.3", "torch>=2.5"]
+# The orchestration layer. `carelite/generate/graph.py` declares its topology once
+# and compiles it two ways: `to_langgraph()` when the library is present, a built-in
+# executor when it is not. Extra rather than core so a machine without langgraph
+# still runs the system -- which is how all 939 existing generations were produced.
+orchestration = [
+    "langgraph>=0.2",
+    "langgraph-checkpoint-postgres>=2.0",
+]
+# The LangChain retrieval adapter measured against the native pipeline in
+# `carelite/retrieval/langchain_adapter.py`. Never the default: the native stack
+# produced the study's rows and continues to.
+langchain = [
+    "langchain>=0.3",
+    "langchain-community>=0.3",
+    "langchain-ollama>=0.2",
+    "langchain-postgres>=0.0.12",
+    "rank-bm25>=0.2.2",
+]
+# vLLM served on a remote GPU speaks an OpenAI-compatible API; only the client
+# moves, not the graph. vLLM itself is never installed here -- it runs on the pod.
+vllm = ["openai>=1.55"]
 dev = [
     "pytest>=8.3",
     "pytest-cov>=6.0",

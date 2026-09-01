@@ -31,18 +31,35 @@ def make_long(
     fell_back: Sequence[tuple[str, str, int]] = (),
     gate_blocked: Sequence[tuple[str, str, int]] = (),
     split: str = "holdout",
+    served_by: Mapping[tuple[str, str, int], str] | str | None = None,
+    generation_id_suffix: str = "",
 ) -> pd.DataFrame:
     """Build a long score frame from `{(scenario, condition, sample): {dim: raw}}`.
 
     Raw scale throughout, exactly as the database stores it: `ritualistic` is
     higher-is-worse here, and every test that cares about polarity is testing
     whether the package flips it.
+
+    `served_by` mirrors `generation.served_by`. The default reproduces the state
+    D13 left the database in — condition LC served by vLLM, every other condition
+    by Ollama — so a fixture that says nothing about backends still has the
+    shape the arm guard reads. Pass a mapping to place a cell on a specific
+    stack, or a string to put the whole frame on one.
+
+    `generation_id_suffix` distinguishes two rows for the same cell, which is what
+    the same scenario and sample produced by two serving stacks looks like.
     """
     fallback_set = set(fell_back)
     blocked_set = set(gate_blocked)
     rows: list[dict[str, object]] = []
     for (scenario, condition, sample), dims in scores.items():
-        generation_id = f"{scenario}-{condition}-{sample}"
+        generation_id = f"{scenario}-{condition}-{sample}{generation_id_suffix}"
+        if isinstance(served_by, str):
+            backend = served_by
+        elif served_by is None:
+            backend = "vllm" if condition == str(Condition.LC) else "ollama"
+        else:
+            backend = served_by[(scenario, condition, sample)]
         for dimension in RUBRIC_DIMENSIONS:
             if dimension not in dims:
                 continue
@@ -52,6 +69,7 @@ def make_long(
                     "scenario_id": scenario,
                     "condition": condition,
                     "sample_idx": sample,
+                    "served_by": backend,
                     "rater_type": rater_type,
                     "rater_id": rater_id,
                     "rater_sample_idx": 0,
@@ -81,6 +99,7 @@ _LONG_COLUMNS: tuple[str, ...] = (
     "scenario_id",
     "condition",
     "sample_idx",
+    "served_by",
     "rater_type",
     "rater_id",
     "rater_sample_idx",

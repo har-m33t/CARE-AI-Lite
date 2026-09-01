@@ -13,8 +13,10 @@ import pytest
 from carelite.stats.primary import run_family
 from carelite.stats.sensitivity import (
     DEFAULT_MAX_PCT_RANGE_GE_2,
+    backend_equivalence_check,
     compare_conclusions,
     conclusions,
+    read_backend_equivalence,
     retrieval_contrast,
     run_all_sensitivity,
     scenario_judge_consistency,
@@ -515,3 +517,80 @@ def test_the_retrieval_p_values_are_uncorrected_not_nan(
     assert contrast.offered is not None
     assert contrast.offered.family_size == 1
     assert contrast.offered.p_holm == contrast.offered.test.p_value
+
+
+# ---------------------------------------------------------------------------
+# (e) backend equivalence — D13, consumed rather than recomputed
+# ---------------------------------------------------------------------------
+
+
+class _FakeEquivalence:
+    """Stands in for `carelite.eval.judge.backend_equivalence.BackendEquivalence`.
+
+    The stats lane must not recompute this measurement, so the test asserts on
+    what it does with a result rather than on a number of its own. A stub with
+    the two attributes this package reads is the whole contract.
+    """
+
+    poolable = False
+
+    def render(self) -> str:
+        return "Backend equivalence, condition LC: ollama vs vllm\n  39 paired cells"
+
+
+class TestBackendEquivalenceFraming:
+    def test_it_reports_the_judge_lane_result_verbatim(self) -> None:
+        check = backend_equivalence_check(_FakeEquivalence())
+        text = check.render()
+        assert "39 paired cells" in text
+        assert check.available
+        assert check.poolable is False
+
+    def test_every_limit_is_printed_with_the_number(self) -> None:
+        text = backend_equivalence_check(_FakeEquivalence()).render()
+        assert "13 of the 60 held-out scenarios" in text
+        assert "never randomised" in text
+        assert "does NOT license" in text
+        assert "does NOT isolate" in text
+        assert "not a rerun of the §8.1 family" in text
+        assert "EXPLORATORY" in text
+
+    def test_agreement_does_not_authorise_pooling(self) -> None:
+        """Even a poolable verdict does not reverse D13's decision about the arm."""
+
+        class _Poolable(_FakeEquivalence):
+            poolable = True
+
+        text = backend_equivalence_check(_Poolable()).render()
+        assert "does not reverse it" in text
+        assert "served_by = 'vllm'" in text
+
+    def test_an_absent_check_is_absence_not_agreement(self) -> None:
+        check = backend_equivalence_check(None)
+        assert not check.available
+        assert check.poolable is None
+        assert "not evidence that they agree" in check.render()
+
+    def test_it_is_not_a_run_and_cannot_flip_a_conclusion(self, separated_ab: pd.DataFrame) -> None:
+        base = run_family(separated_ab, n_boot=100)
+        report = run_all_sensitivity(
+            separated_ab,
+            base,
+            n_boot=100,
+            backend_equivalence=backend_equivalence_check(_FakeEquivalence()),
+        )
+        assert report.backend_equivalence is not None
+        assert all("backend" not in run.name for run in report.runs)
+        assert report.flips == ()
+        assert "(e) backend equivalence" in report.render()
+
+    def test_a_database_failure_is_reported_not_raised(self, monkeypatch) -> None:
+        import carelite.eval.judge.backend_equivalence as be
+
+        def _boom(**_: object) -> None:
+            raise RuntimeError("no database configured")
+
+        monkeypatch.setattr(be, "run_backend_equivalence", _boom)
+        check = read_backend_equivalence()
+        assert not check.available
+        assert "no database configured" in check.unavailable_reason

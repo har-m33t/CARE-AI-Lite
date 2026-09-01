@@ -9,6 +9,13 @@
 Importing it pulls sentence-transformers and torch into the process, and the
 lane contract is that an ablation row with reranking switched off never pays
 that cost. `pipeline.py` imports it lazily, inside the branch that needs it.
+
+`carelite.retrieval.langchain_adapter` is not re-exported for the same reason
+— it pulls langchain — and for a second one. It is a *second implementation*
+of hybrid retrieval, kept so the LangChain claim can be measured against the
+native pipeline rather than asserted. It is not the system's retrieval path,
+it is off unless `RetrievalFlags.langchain_adapter` is set, and it must stay
+off for the study.
 """
 
 from __future__ import annotations

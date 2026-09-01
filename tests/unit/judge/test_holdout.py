@@ -27,6 +27,7 @@ def _row(
     split: str = "holdout",
     fell_back: bool | None = None,
     crag: str | None = None,
+    served_by: str | None = None,
 ) -> dict[str, Any]:
     trace = None
     if fell_back is not None:
@@ -36,7 +37,7 @@ def _row(
             "retrieved_ids": [] if fell_back else ["kb-x", "kb-y"],
             "route_taken": "informational",
         }
-    return {
+    row: dict[str, Any] = {
         "key": [scenario, condition, "p.v1", "sha256:gen", 42, sample_idx],
         "model": "gemma4:12b",
         "temperature": 0.7,
@@ -45,6 +46,9 @@ def _row(
         "trace": trace,
         "extra": {"split": split, "condition": condition, "sample_idx": sample_idx},
     }
+    if served_by is not None:
+        row["served_by"] = served_by
+    return row
 
 
 def _journal(tmp_path: Path, rows: list[dict[str, Any]]) -> Path:
@@ -284,12 +288,34 @@ def test_scores_are_emitted_on_the_raw_scale(tmp_path: Path) -> None:
 
 
 def test_lc_rows_are_stamped_partial(tmp_path: Path) -> None:
+    """A journal with no `served_by` predates the column: those cells are Ollama."""
     journal = _journal(tmp_path, [_row("SC-001", "LC"), _row("SC-002", "A")])
     gens, texts, meta = load_holdout([journal])
     run = judge_holdout(gens, texts, cache_path=tmp_path / "c.jsonl", client=_Client())
     rows = {r["condition"]: r for r in rows_for(run.results, meta)}
     assert rows["LC"]["partial_condition"] is True
+    assert rows["LC"]["served_by"] == "ollama"
     assert rows["A"]["partial_condition"] is False
+
+
+def test_partiality_follows_the_backend_not_the_condition_label(tmp_path: Path) -> None:
+    """D13: the vLLM LC arm is complete; the Ollama LC cells are D11's partial record.
+
+    Both carry `condition = 'LC'`, so stamping partiality off the label alone
+    would mark 180 complete cells as an unusable fragment.
+    """
+    journal = _journal(
+        tmp_path,
+        [
+            _row("SC-001", "LC", served_by="ollama"),
+            _row("SC-001", "LC", sample_idx=1, served_by="vllm"),
+        ],
+    )
+    gens, texts, meta = load_holdout([journal])
+    run = judge_holdout(gens, texts, cache_path=tmp_path / "c.jsonl", client=_Client())
+    rows = {r["served_by"]: r for r in rows_for(run.results, meta)}
+    assert rows["ollama"]["partial_condition"] is True
+    assert rows["vllm"]["partial_condition"] is False
 
 
 def test_the_manifest_records_the_fallback_share_and_the_lc_caveat(tmp_path: Path) -> None:
@@ -307,14 +333,37 @@ def test_the_manifest_records_the_fallback_share_and_the_lc_caveat(tmp_path: Pat
 
     assert manifest["condition_c_fallback"]["n_fell_back_to_b"] == 1
     assert manifest["condition_c_fallback"]["share"] == 0.5
-    assert manifest["condition_lc"]["partial"] is True
-    assert manifest["condition_lc"]["planned_cells"] == 180
+    assert manifest["condition_lc"]["by_backend"]["ollama"]["partial_record"] is True
+    assert manifest["condition_lc"]["planned_cells_per_arm"] == 180
     assert manifest["reporting"]["descriptive_only"] is True
     assert manifest["regime"]["temperature"] == 0.0
     assert manifest["regime"]["samples"] == 1
     # The validation study's limits must reach whoever reads these scores.
     assert "ritualistic" in manifest["judge_caveats"]["degenerate_on_validation"]
     assert "naturalness" in manifest["judge_caveats"]["low_discrimination_on_validation"]
+
+
+def test_the_manifest_splits_lc_by_backend_rather_than_summing_it(tmp_path: Path) -> None:
+    """219 LC rows in one `n_cells` field is a number a reader takes for the arm."""
+    journal = _journal(
+        tmp_path,
+        [
+            _row("SC-001", "LC", served_by="ollama"),
+            _row("SC-001", "LC", sample_idx=1, served_by="vllm"),
+            _row("SC-002", "LC", served_by="vllm"),
+        ],
+    )
+    gens, texts, meta = load_holdout([journal])
+    run = judge_holdout(gens, texts, cache_path=tmp_path / "c.jsonl", client=_Client())
+    manifest = build_manifest(run, rows_for(run.results, meta), meta)
+
+    lc = manifest["condition_lc"]
+    assert lc["n_rows_all_backends"] == 3
+    assert lc["by_backend"]["ollama"]["n_cells"] == 1
+    assert lc["by_backend"]["vllm"]["n_cells"] == 2
+    assert lc["by_backend"]["vllm"]["n_scenarios"] == 2
+    assert "equivalence sample" in lc["by_backend"]["ollama"]["role"]
+    assert manifest["served_by"] == {"ollama": 1, "vllm": 2}
 
 
 def test_skip_lc_is_available_but_not_the_default(tmp_path: Path) -> None:

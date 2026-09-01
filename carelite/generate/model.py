@@ -36,7 +36,7 @@ import os
 import sys
 import time
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, ClassVar, Protocol, runtime_checkable
 
 from carelite.config import get_settings
 from carelite.safety.fencing import FencedPrompt
@@ -47,6 +47,7 @@ __all__ = [
     "GenerationClient",
     "GenerationError",
     "GenerationOutput",
+    "ModelClient",
     "context_size",
     "estimate_tokens",
 ]
@@ -107,6 +108,12 @@ class GenerationOutput:
     latency_ms: int
     num_ctx: int
     prompt_chars: int
+    served_by: str = "ollama"
+    """Which serving stack produced this text, carried through to the
+    `generation.served_by` column. Defaults to Ollama because that is what
+    produced every row in the database before a second backend existed, and
+    because a default that has to be remembered is a default that gets it
+    wrong."""
 
 
 def estimate_tokens(text: str) -> int:
@@ -133,6 +140,46 @@ def context_size(prompt_chars: int, *, num_predict: int, window: int) -> int:
     return min(max(size, MIN_CONTEXT), window)
 
 
+@runtime_checkable
+class ModelClient(Protocol):
+    """What the graph needs from a serving stack, and nothing more.
+
+    Two implementations satisfy it: `GenerationClient` against Ollama and
+    `carelite.generate.backend.VLLMClient` against an OpenAI-compatible vLLM
+    server. They are selected by `CARELITE_BACKEND` and swapped at the client,
+    which is the whole of the change — the graph, the nodes, the six conditions
+    and the runner are identical under both, so a backend comparison is a
+    comparison of serving stacks rather than of two pipelines.
+
+    `served_by` is the value that lands in `generation.served_by`. It is a
+    property of the client rather than an argument the caller passes, because a
+    caller that has to remember to label a row correctly eventually does not.
+    """
+
+    @property
+    def served_by(self) -> str:
+        """The `generation.served_by` value: `'ollama'` or `'vllm'`.
+
+        Declared read-only so an implementation can satisfy it with a
+        `ClassVar` — which is what both do, because the serving stack is a
+        property of the client class and not of an instance's configuration.
+        """
+
+    def resolve_digest(self, model_tag: str) -> str: ...
+
+    def generate(
+        self,
+        prompt: FencedPrompt,
+        *,
+        model_tag: str,
+        seed: int,
+        temperature: float,
+        num_predict: int = 512,
+        window: int = 8192,
+        json_format: bool = False,
+    ) -> GenerationOutput: ...
+
+
 @dataclass
 class GenerationClient:
     """A pinned, fenced, loud Ollama chat client for the generator models.
@@ -140,6 +187,8 @@ class GenerationClient:
     `client` is injectable so the whole graph can be driven in a unit test with
     no daemon running.
     """
+
+    served_by: ClassVar[str] = "ollama"
 
     host: str = ""
     client: Any | None = None
@@ -276,6 +325,7 @@ class GenerationClient:
             latency_ms=latency_ms,
             num_ctx=num_ctx,
             prompt_chars=prompt_chars,
+            served_by=self.served_by,
         )
 
 

@@ -33,12 +33,12 @@ def full_long(nurse_dimensions: tuple[str, ...]) -> pd.DataFrame:
 
 def test_the_report_runs_every_pre_specified_analysis(full_long: pd.DataFrame) -> None:
     report = run_analysis(long=full_long, n_boot=200)
-    # Seven computed, not eight: C vs LC is retired by D11 and is never run.
-    # It keeps its slot in the family, which is the point of the next assertion.
-    assert len(report.primary.results) == 7
-    assert report.primary.by_key("secondary3_nurse_C_vs_LC") is None
+    # Eight computed: D13 restored secondary outcome 3 (C vs LC), which D11 had
+    # retired. The family size does not move, because it never depended on how
+    # many of the eight the data happened to support.
+    assert len(report.primary.results) == 8
+    assert report.primary.by_key("secondary3_nurse_C_vs_LC") is not None
     assert report.primary.family_size == 8
-    assert any("D11" in note for note in report.primary.notes)
     assert len(report.primary.friedman) == len(RUBRIC_DIMENSIONS)
     assert len(report.mixed) == 2  # NURSE and Four Habits composites
     assert report.equity is not None
@@ -49,7 +49,9 @@ def test_the_report_runs_every_pre_specified_analysis(full_long: pd.DataFrame) -
 def test_the_report_counts_its_own_units(full_long: pd.DataFrame) -> None:
     report = run_analysis(long=full_long, n_boot=200)
     assert report.n_scenarios == 15
-    assert report.n_generations == 15 * 5 * 3  # six conditions generated, LC dropped by D11
+    # Six conditions, all of them analysed: D13 restored LC, and the fixture's
+    # LC cells are the vLLM arm rather than D11's Ollama record.
+    assert report.n_generations == 15 * 6 * 3
     assert report.rater_types == ("llm_judge",)
 
 
@@ -188,3 +190,67 @@ def test_a_real_validation_failure_names_the_dimension_that_failed(
     primary = report.primary.by_key("primary_nurse_A_vs_B")
     assert primary is not None
     assert "below the fixed threshold on explore" in primary.label.tag()
+
+
+# ---------------------------------------------------------------------------
+# D13: single-stack arms, and the backend-equivalence sensitivity analysis
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def full_long_with_ollama_lc(full_long: pd.DataFrame) -> pd.DataFrame:
+    """`full_long` plus D11's partial Ollama LC record on 5 of the 15 scenarios."""
+    scores = {
+        (f"SC-{i:03d}", "LC", sample): dict.fromkeys(RUBRIC_DIMENSIONS, 1)
+        for i in range(5)
+        for sample in range(3)
+    }
+    partial = make_long(scores=scores, served_by="ollama", generation_id_suffix="-ollama")
+    partial["equity_kind"] = "ses"
+    return pd.concat([full_long, partial], ignore_index=True)
+
+
+def test_the_lc_arm_is_the_vllm_cells_and_nothing_else(
+    full_long_with_ollama_lc: pd.DataFrame,
+) -> None:
+    report = run_analysis(long=full_long_with_ollama_lc, n_boot=200)
+    assert report.arms is not None
+    assert report.arms.excluded_counts == {"LC/ollama": 15}
+    assert report.arms.backends["LC"] == {"vllm": 45}
+    # The Ollama cells scored 1 across the board; had they been pooled into the
+    # arm the C-vs-LC effect would be computed on 60 cells rather than 45.
+    result = report.primary.by_key("secondary3_nurse_C_vs_LC")
+    assert result is not None
+    assert result.n_scenarios == 15
+
+
+def test_the_arm_selection_is_rendered_with_the_other_exclusions(
+    full_long_with_ollama_lc: pd.DataFrame,
+) -> None:
+    report = run_analysis(long=full_long_with_ollama_lc, n_boot=200)
+    text = report.render()
+    assert "ANALYSIS ARMS" in text
+    assert "EXCLUDED LC/ollama" in text
+    assert text.index("ANALYSIS ARMS") < text.index("PRIMARY ANALYSIS")
+
+
+def test_the_c_vs_lc_confound_is_printed_where_the_result_is(
+    full_long: pd.DataFrame,
+) -> None:
+    text = run_analysis(long=full_long, n_boot=200).render()
+    assert "CONFOUNDED BY SERVING STACK" in text
+    assert "REDUCED FORM OF THE QUESTION" in text
+
+
+def test_backend_equivalence_is_reported_as_unavailable_not_as_agreement(
+    full_long: pd.DataFrame,
+) -> None:
+    """A frame-only run opens no database, and an absent check must say so."""
+    report = run_analysis(long=full_long, n_boot=200)
+    check = report.sensitivity.backend_equivalence
+    assert check is not None
+    assert not check.available
+    assert check.poolable is None
+    text = check.render()
+    assert "NOT AVAILABLE" in text
+    assert "not evidence that they agree" in text

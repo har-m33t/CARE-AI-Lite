@@ -131,6 +131,16 @@ CREATE TABLE IF NOT EXISTS generation (
     -- analysis must be able to exclude it with a plain WHERE, because scoring
     -- refused text as ordinary output would flatter every condition it appears in.
     gate_blocked    BOOLEAN NOT NULL DEFAULT FALSE,
+    -- Which serving stack produced this row: 'ollama' or 'vllm'. The two serve
+    -- different artifacts of the same model family (a GGUF versus HF safetensors),
+    -- with different quantisation and different sampling defaults, so `model` and
+    -- `model_digest` alone cannot tell them apart across backends. Pooling two
+    -- stacks into one arm without checking they agree is the confound this column
+    -- exists to make visible. Not in the uniqueness key: `model_digest` already
+    -- differs between backends, so a re-run under a second stack is a new cell
+    -- rather than a collision.
+    served_by       TEXT NOT NULL DEFAULT 'ollama'
+                    CHECK (served_by IN ('ollama', 'vllm')),
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
     -- the v3 §16 cache key: re-running a completed cell is a no-op
     UNIQUE (scenario_id, condition, prompt_id, model_digest, seed, sample_idx)
@@ -240,3 +250,12 @@ END $$;
 
 CREATE INDEX IF NOT EXISTS generation_gate_blocked_idx
     ON generation (gate_blocked) WHERE gate_blocked;
+
+-- Backfill for databases created before `served_by` existed. Every row that
+-- predates the column was produced by Ollama, which is what the default records.
+ALTER TABLE generation ADD COLUMN IF NOT EXISTS served_by TEXT NOT NULL DEFAULT 'ollama';
+DO $$ BEGIN
+    ALTER TABLE generation ADD CONSTRAINT generation_served_by_check
+        CHECK (served_by IN ('ollama', 'vllm'));
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;

@@ -43,9 +43,11 @@ from __future__ import annotations
 import math
 
 import pandas as pd
+from matplotlib.artist import Artist
 from matplotlib.axes import Axes
 from matplotlib.figure import Figure
 from matplotlib.lines import Line2D
+from matplotlib.patches import Patch
 
 from carelite.eval.rubric.dimensions import DIMENSIONS
 from carelite.stats.primary import FRIEDMAN_CONDITIONS
@@ -60,6 +62,8 @@ from carelite.viz.style import (
 )
 
 __all__ = [
+    "CAVEAT_MARK",
+    "CAVEAT_SEPARATOR",
     "fig_ablation_table",
     "fig_effect_sizes",
     "fig_equity_subgroup",
@@ -84,6 +88,21 @@ _ADHERENCE_DIMS: tuple[str, ...] = (
 #: Condition set the Friedman omnibus runs across (`docs/preregistration.md` §8.1).
 #: Sourced from `carelite.stats.primary`, not restated, so the two lanes cannot drift.
 _OMNIBUS_CONDITIONS: tuple[str, ...] = tuple(str(c) for c in FRIEDMAN_CONDITIONS)
+
+#: The glyph that marks a caveated row. ASCII on purpose: a figure that has to
+#: survive a PDF embedded in someone else's slide deck cannot rely on a font
+#: carrying U+26A0, and a marker that renders as a hollow box marks nothing.
+CAVEAT_MARK = "(!)"
+
+#: How `carelite.viz.queries.effect_sizes_df` flattens several caveats into one
+#: cell (and how `carelite.stats.reproduce` writes the `caveats` column of
+#: `effect-sizes.csv`). Split on it to recover the individual caveats.
+CAVEAT_SEPARATOR = " | "
+
+#: Longest inline caveat headline drawn beside a point before it is elided. The
+#: full headline is always in the note block below the axes, so the inline tag
+#: only has to be enough to stop a reader taking the point at face value.
+_CAVEAT_TAG_MAX_CHARS = 32
 
 _TEST_LABEL_BOOTSTRAP_CI = (
     "95% bootstrap CI, percentile method (carelite.stats.effects.bootstrap_ci)"
@@ -164,6 +183,29 @@ def _flag_if_degenerate(ax: Axes, degenerate: bool) -> None:
         color=OKABE_ITO["vermillion"],
         zorder=5,
     )
+
+
+def _split_caveats(cell: object) -> list[str]:
+    """The individual caveats in one `caveats` cell, in order. `[]` when empty."""
+    if cell is None or (isinstance(cell, float) and math.isnan(cell)):
+        return []
+    text = str(cell).strip()
+    if not text:
+        return []
+    return [part.strip() for part in text.split(CAVEAT_SEPARATOR) if part.strip()]
+
+
+def _caveat_headline(caveat: str) -> str:
+    """The first sentence of a caveat.
+
+    Mirrors `carelite.stats.primary._caveat_headline`, which is the reason every
+    caveat in that module is written with its claim in the opening sentence:
+    the headline is what fits in a tag, a table cell, or a label beside a point,
+    and the full text is what fits in `effect-sizes.csv`. One string, two
+    lengths, no second wording to drift.
+    """
+    head = caveat.split(". ", 1)[0].strip()
+    return head.rstrip(".") if head else caveat
 
 
 def _panel_degenerate(sub: pd.DataFrame) -> bool:
@@ -408,15 +450,19 @@ def fig_effect_sizes(df: pd.DataFrame) -> Figure:
                        Holm-adjusted p (`PairwiseResult.p_holm`) where available
         confirmatory   bool, `carelite.stats.evidence.Label.is_confirmatory`
                        (`PairwiseResult.label.is_confirmatory`)
-        not_computed   bool, optional (default `False`) — the comparison was
-                       retired by decision (e.g. D11: LC generation stopped
-                       before this comparison had a valid sample) and was
-                       never run at all, as distinct from run-and-null. Drawn
-                       as an explicit "NOT COMPUTED" marker, never as a
-                       missing row, so the row count still matches the family
-                       size a reader would expect from the plan.
-        not_computed_reason  str, optional — shown in the marker's tooltip
-                       text on the canvas when `not_computed` is `True`.
+        not_computed   bool, optional (default `False`) — the comparison
+                       produced no number at all, as distinct from run-and-null:
+                       either it was retired by decision
+                       (`carelite.stats.primary.Hypothesis
+                       .not_computable_reason`) or this run had no paired data
+                       for it. Drawn as an explicit "NOT COMPUTED" band, never
+                       as a missing row, so the row count still matches the
+                       family size a reader would expect from the plan. No
+                       hypothesis is retired by decision under D13; the
+                       rendering stays because a comparison can be retired and
+                       un-retired, and the no-paired-data case is permanent.
+        not_computed_reason  str, optional — the reason, quoted verbatim in the
+                       note block below the axes when `not_computed` is `True`.
         not_testable   bool, optional (default `False`) —
                        `carelite.stats.primary.PairwiseResult.not_testable`:
                        every dimension the measure touches is degenerate on
@@ -424,32 +470,94 @@ def fig_effect_sizes(df: pd.DataFrame) -> Figure:
                        describes the judge, not the conditions. Marked in
                        vermillion with an explicit "NOT TESTABLE" label rather
                        than rendered like an ordinary null result.
+        caveats        str, optional — `" | "`-joined
+                       `carelite.stats.primary.Hypothesis.caveats`: the
+                       qualifications this comparison cannot be read without.
+                       A caveat is not the same as `not_computed_reason`: that
+                       one says no number exists, this one says a number exists
+                       and still does not mean what the row label suggests. The
+                       two are independent, and a row can carry both — which is
+                       exactly the state of C vs LC while its arm is being
+                       scored — so both marks are drawn.
+
+    **Why a caveated row is marked four times over.** Under D13 the C-vs-LC
+    comparison carries two caveats: its arm was served by vLLM and condition C
+    by Ollama, which differ in artifact, quantisation, sampling defaults,
+    hardware and realised context pack and which no analysis can separate from
+    the architecture; and it is D7's reduced form of the question, because the
+    corpus does not fit the window and any selection rule is itself a form of
+    retrieval. A forest plot is the artefact most likely to be lifted out of
+    this repository and pasted into a slide with no caption, and that row drawn
+    like the other seven would be the most misleading object this project could
+    produce. So the mark is redundant on purpose, across channels that fail
+    independently: a hatched band behind the row (texture, so it survives
+    greyscale and every form of colour blindness), the `(!)` prefix on the tick
+    label (the row's own identity), an inline tag naming the objection beside
+    the interval (visible to a reader who only looks at the point), and a note
+    block below the axes carrying every caveat headline against its comparison
+    (visible to a reader who reads nothing else). The full caveat text is in
+    the `caveats` column of `effect-sizes.csv`; the figure carries the
+    headlines, which is what fits.
     """
     d = df.copy()
     if "not_computed" not in d.columns:
         d["not_computed"] = False
     if "not_testable" not in d.columns:
         d["not_testable"] = False
+    if "caveats" not in d.columns:
+        d["caveats"] = ""
     d["label"] = d["dimension"].map(_dim_label) + "  :  " + d["comparison"]
+    d["caveat_list"] = d["caveats"].map(_split_caveats)
     d = d.sort_values("effect", ascending=True, na_position="last").reset_index(drop=True)
 
-    fig = new_figure((10.5, max(4.0, 0.34 * len(d) + 1.6)))
-    ax = fig.add_subplot(111)
+    caveated = d[d["caveat_list"].map(bool)]
+    not_computed_rows = d[d["not_computed"].astype(bool)]
+    note_lines = _effect_size_note_lines(caveated, not_computed_rows)
+    # Only a caveated row that actually plots a point needs the inline tag, and
+    # only the inline tag needs the extra width. A caveated comparison that was
+    # never computed is already a full-width band.
+    inline_tags = bool(len(caveated) and not caveated["not_computed"].astype(bool).all())
+
+    main_height = max(4.0, 0.34 * len(d) + 1.6)
+    width = 12.0 if inline_tags else 10.5
+    if note_lines:
+        note_height = 0.19 * len(note_lines) + 0.45
+        fig = new_figure((width, main_height + note_height))
+        grid = fig.add_gridspec(2, 1, height_ratios=[main_height, note_height], hspace=0.34)
+        ax = fig.add_subplot(grid[0])
+        note_ax = fig.add_subplot(grid[1])
+    else:
+        fig = new_figure((width, main_height))
+        ax = fig.add_subplot(111)
+        note_ax = None
 
     for y, (_, row) in enumerate(d.iterrows()):
-        not_computed = bool(row["not_computed"])
-        if not_computed:
+        row_caveats = list(row["caveat_list"])
+        if row_caveats:
+            # Texture, not colour: the primary channel has to survive greyscale.
+            ax.axhspan(
+                y - 0.42,
+                y + 0.42,
+                facecolor="none",
+                edgecolor=OKABE_ITO["orange"],
+                hatch="///",
+                linewidth=0.0,
+                alpha=0.65,
+                zorder=0,
+            )
+        if bool(row["not_computed"]):
             ax.axhspan(y - 0.42, y + 0.42, color=OKABE_ITO["grey"], alpha=0.12, zorder=0)
             ax.text(
                 0.0,
                 y,
-                "NOT COMPUTED — retired by decision (see caption)",
+                "NOT COMPUTED — no effect estimate exists (see note below)",
                 va="center",
                 ha="center",
                 fontsize=6.8,
                 fontstyle="italic",
                 color=OKABE_ITO["grey"],
-                zorder=3,
+                zorder=4,
+                bbox={"boxstyle": "square,pad=0.2", "facecolor": "white", "edgecolor": "none"},
             )
             continue
 
@@ -470,27 +578,42 @@ def fig_effect_sizes(df: pd.DataFrame) -> Figure:
             markeredgewidth=1.4,
             zorder=3,
         )
-        if not_testable:
+        annotation, annotation_color = _effect_size_annotation(row, row_caveats, color)
+        if annotation:
             text_x = (hi if not math.isnan(hi) else pt) + 0.03
             ax.text(
                 text_x,
                 y,
-                "NOT TESTABLE (instrument)",
+                annotation,
                 va="center",
                 fontsize=6.5,
-                fontweight="bold",
-                color=OKABE_ITO["vermillion"],
+                fontweight="bold" if (not_testable or row_caveats) else "normal",
+                color=annotation_color,
+                zorder=4,
+                # An opaque ground only where the hatch would otherwise run
+                # under the words: the mark exists to be read, and a texture
+                # that makes its own label illegible has defeated itself.
+                bbox=(
+                    {"boxstyle": "square,pad=0.2", "facecolor": "white", "edgecolor": "none"}
+                    if row_caveats
+                    else None
+                ),
             )
-        else:
-            p_value = row.get("p_value")
-            if p_value is not None and not (isinstance(p_value, float) and math.isnan(p_value)):
-                text_x = (hi if not math.isnan(hi) else pt) + 0.03
-                ax.text(text_x, y, f"p={p_value:.3f}", va="center", fontsize=6.5, color=color)
 
     ax.axvline(0.0, color=OKABE_ITO["grey"], linewidth=1.0, linestyle="dotted", zorder=1)
     ax.set_yticks(list(range(len(d))))
-    ax.set_yticklabels(d["label"], fontsize=8)
-    ax.set_xlim(-1.05, 1.35)
+    ax.set_yticklabels(
+        [
+            f"{CAVEAT_MARK} {label}" if cav else label
+            for label, cav in zip(d["label"], d["caveat_list"], strict=True)
+        ],
+        fontsize=8,
+    )
+    for tick, cav in zip(ax.get_yticklabels(), d["caveat_list"], strict=True):
+        if cav:
+            tick.set_color(OKABE_ITO["vermillion"])
+            tick.set_fontweight("bold")
+    ax.set_xlim(-1.05, 2.20 if inline_tags else 1.35)
     ax.set_xlabel(
         "matched-pairs rank-biserial correlation  (favours 2nd condition <— 0 —> favours 1st)"
     )
@@ -500,7 +623,7 @@ def fig_effect_sizes(df: pd.DataFrame) -> Figure:
         fontweight="bold",
     )
 
-    legend_handles = [
+    legend_handles: list[Artist] = [
         Line2D(
             [0],
             [0],
@@ -535,6 +658,15 @@ def fig_effect_sizes(df: pd.DataFrame) -> Figure:
                 label="NOT TESTABLE (judge did not resolve this dimension)",
             )
         )
+    if not caveated.empty:
+        legend_handles.append(
+            Patch(
+                facecolor="none",
+                edgecolor=OKABE_ITO["orange"],
+                hatch="///",
+                label=f"{CAVEAT_MARK} CAVEATED — cannot be read as a plain effect size (see note)",
+            )
+        )
     if d["not_computed"].any():
         legend_handles.append(
             Line2D(
@@ -546,10 +678,31 @@ def fig_effect_sizes(df: pd.DataFrame) -> Figure:
                 markersize=8,
                 markerfacecolor=OKABE_ITO["grey"],
                 alpha=0.5,
-                label="NOT COMPUTED (retired by decision, e.g. D11)",
+                label="NOT COMPUTED (no estimate exists for this comparison)",
             )
         )
     ax.legend(handles=legend_handles, loc="lower right", fontsize=7.5, frameon=True)
+
+    if note_ax is not None:
+        note_ax.set_axis_off()
+        note_ax.text(
+            0.0,
+            1.0,
+            "\n".join(note_lines),
+            transform=note_ax.transAxes,
+            va="top",
+            ha="left",
+            fontsize=6.9,
+            family="monospace",
+            color=OKABE_ITO["black"],
+            linespacing=1.35,
+            bbox={
+                "boxstyle": "round,pad=0.4",
+                "facecolor": "#FFF6E5",
+                "edgecolor": OKABE_ITO["vermillion"],
+                "linewidth": 1.2,
+            },
+        )
 
     computed = d[~d["not_computed"]]
     n_range = (
@@ -559,6 +712,11 @@ def fig_effect_sizes(df: pd.DataFrame) -> Figure:
     )
     n_not_computed = int(d["not_computed"].sum())
     extra = "p-values, where shown, are Holm-adjusted Wilcoxon signed-rank; reported after the interval per §8.2"
+    if not caveated.empty:
+        extra += (
+            f"; {len(caveated)} of {len(d)} comparisons carry a caveat that changes what the "
+            "estimate means — read the note before the point"
+        )
     if n_not_computed:
         extra += (
             f"; {n_not_computed} of {len(d)} planned comparisons NOT COMPUTED (excluded from "
@@ -572,6 +730,64 @@ def fig_effect_sizes(df: pd.DataFrame) -> Figure:
         extra=extra,
     )
     return fig
+
+
+def _effect_size_annotation(row: pd.Series, row_caveats: list[str], color: str) -> tuple[str, str]:
+    """The text drawn beside one interval, and its colour.
+
+    Assembled into a single string rather than several overlapping ones,
+    because the pieces are variable-width and a caveat tag that lands on top of
+    a p-value is a caveat nobody reads.
+    """
+    parts: list[str] = []
+    text_color = color
+    if bool(row["not_testable"]):
+        parts.append("NOT TESTABLE (instrument)")
+    else:
+        p_value = row.get("p_value")
+        if p_value is not None and not (isinstance(p_value, float) and math.isnan(p_value)):
+            parts.append(f"p={p_value:.3f}")
+    if row_caveats:
+        headline = _caveat_headline(row_caveats[0])
+        if len(headline) > _CAVEAT_TAG_MAX_CHARS:
+            headline = headline[: _CAVEAT_TAG_MAX_CHARS - 1].rstrip() + "…"
+        tag = f"{CAVEAT_MARK} {headline}"
+        if len(row_caveats) > 1:
+            tag += f" (+{len(row_caveats) - 1} more)"
+        parts.append(tag)
+        if not bool(row["not_testable"]):
+            text_color = OKABE_ITO["vermillion"]
+    return "   ".join(parts), text_color
+
+
+def _effect_size_note_lines(caveated: pd.DataFrame, not_computed_rows: pd.DataFrame) -> list[str]:
+    """The note block below the forest plot: why particular rows are marked.
+
+    Empty (and the block omitted entirely) when nothing is marked, so the
+    presence of the box is itself a signal rather than standing furniture.
+    """
+    lines: list[str] = []
+    if not caveated.empty:
+        lines.append(
+            f"{CAVEAT_MARK} CAVEATED — these comparisons do not measure what the row label "
+            "alone suggests:"
+        )
+        for _, row in caveated.iterrows():
+            lines.append(f"    {row['label']}")
+            for caveat in row["caveat_list"]:
+                lines.append(f"        {CAVEAT_MARK} {_caveat_headline(caveat)}")
+        lines.append(
+            "    Full text: the `caveats` column of effect-sizes.csv; the decisions they "
+            "cite are in DECISIONS.md."
+        )
+    if not not_computed_rows.empty:
+        if lines:
+            lines.append("")
+        lines.append("NOT COMPUTED — no effect estimate exists for these comparisons:")
+        for _, row in not_computed_rows.iterrows():
+            reason = str(row.get("not_computed_reason") or "").strip() or "reason not recorded"
+            lines.append(f"    {row['label']}: {reason}")
+    return lines
 
 
 # ---------------------------------------------------------------------------

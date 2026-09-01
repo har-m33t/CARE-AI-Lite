@@ -71,6 +71,7 @@ from pathlib import Path
 from typing import Any, NoReturn
 
 from carelite.config import get_settings
+from carelite.eval.judge.arms import SERVING_BACKENDS, is_partial_record
 from carelite.eval.judge.store import (
     MEDIAN_RATER_SUFFIX,
     UPSERT_SQL,
@@ -93,7 +94,11 @@ __all__ = [
     "resolve_rater_id",
 ]
 
-#: Conditions that are a partial record rather than a complete condition (D11).
+#: Conditions whose completeness depends on which serving stack produced the
+#: row. After D13 `LC` is both: 180 complete cells under vLLM and D11's 39-cell
+#: partial record under Ollama. The predicate that decides a given row is
+#: `carelite.eval.judge.arms.is_partial_record`; this set only says which
+#: conditions have to be asked the question.
 PARTIAL_CONDITIONS = frozenset({Condition.LC.value})
 
 #: `rubric_score.rater_type` carries a CHECK constraint. Validating here means a
@@ -350,10 +355,20 @@ def _check_internal(rec: ScoreRecord, problems: list[str]) -> None:
     condition = rec.meta.get("condition")
     if condition is not None and str(condition) not in {c.value for c in Condition}:
         problems.append(f"{rec.origin}: unknown condition {condition!r}")
-    partial = rec.meta.get("partial_condition")
-    if isinstance(partial, bool) and partial != (str(condition) in PARTIAL_CONDITIONS):
+    served_by = rec.meta.get("served_by")
+    if served_by is not None and str(served_by) not in SERVING_BACKENDS:
         problems.append(
-            f"{rec.origin}: partial_condition={partial} disagrees with condition {condition!r}"
+            f"{rec.origin}: unknown serving stack {served_by!r}; schema.sql permits "
+            f"{list(SERVING_BACKENDS)}"
+        )
+    partial = rec.meta.get("partial_condition")
+    expected_partial = is_partial_record(
+        str(condition), None if served_by is None else str(served_by)
+    )
+    if isinstance(partial, bool) and partial != expected_partial:
+        problems.append(
+            f"{rec.origin}: partial_condition={partial} disagrees with condition "
+            f"{condition!r} served by {str(served_by or 'ollama')!r}"
         )
 
 
@@ -433,7 +448,8 @@ def check_against_database(records: Sequence[ScoreRecord], report: LoadReport) -
     gen_ids = sorted({r.score.generation_id for r in records})
 
     rows = fetch_all(
-        "SELECT g.generation_id, g.scenario_id, g.condition, g.gate_blocked, sc.split "
+        "SELECT g.generation_id, g.scenario_id, g.condition, g.served_by, "
+        "g.gate_blocked, sc.split "
         "FROM generation g JOIN scenario sc USING (scenario_id) "
         "WHERE g.generation_id = ANY(%s)",
         (gen_ids,),
@@ -446,7 +462,11 @@ def check_against_database(records: Sequence[ScoreRecord], report: LoadReport) -
                 f"{rec.origin}: generation_id {rec.score.generation_id} has no `generation` row"
             )
             continue
-        for label, column in (("scenario_id", "scenario_id"), ("condition", "condition")):
+        for label, column in (
+            ("scenario_id", "scenario_id"),
+            ("condition", "condition"),
+            ("served_by", "served_by"),
+        ):
             claimed = rec.meta.get(label)
             if claimed is not None and str(claimed) != str(row[column]):
                 problems.append(
@@ -502,6 +522,11 @@ class LoadReport:
     incomplete_by_condition: Counter[str] = field(default_factory=Counter)
     gate_blocked: Counter[str] = field(default_factory=Counter)
     partial_rows: Counter[str] = field(default_factory=Counter)
+    #: Rows per serving stack, and per `condition/served_by` arm. After D13 the
+    #: condition alone no longer identifies an arm, so a per-condition count is
+    #: not enough to say what was loaded.
+    by_backend: Counter[str] = field(default_factory=Counter)
+    by_arm: Counter[str] = field(default_factory=Counter)
     judge_models: Counter[str] = field(default_factory=Counter)
     prompt_versions: Counter[str] = field(default_factory=Counter)
     rubric_versions: Counter[str] = field(default_factory=Counter)
@@ -539,10 +564,16 @@ class LoadReport:
         for condition in sorted(self.by_condition):
             n = self.by_condition[condition]
             scenarios = len(self.scenarios_by_condition[condition])
-            note = ""
-            if condition in PARTIAL_CONDITIONS:
-                note = "  <- PARTIAL RECORD (D11): not a usable sample, never randomised"
-            lines.append(f"  {condition:<3} {n:>4} rows  {scenarios:>2} scenarios{note}")
+            lines.append(f"  {condition:<3} {n:>4} rows  {scenarios:>2} scenarios")
+        if len(self.by_backend) > 1 or any(
+            is_partial_record(*arm.split("/", 1)) for arm in self.by_arm
+        ):
+            for arm in sorted(self.by_arm):
+                condition, backend = arm.split("/", 1)
+                note = ""
+                if is_partial_record(condition, backend):
+                    note = "  <- PARTIAL RECORD (D11): not a usable sample, never randomised"
+                lines.append(f"    {arm:<12} {self.by_arm[arm]:>4} rows{note}")
         if self.rows_with_null_dimension:
             per = " ".join(f"{d}={self.nulls_by_dimension[d]}" for d in RUBRIC_DIMENSIONS)
             by_cond = " ".join(f"{c}={n}" for c, n in sorted(self.incomplete_by_condition.items()))
@@ -621,6 +652,7 @@ SIDECAR_FIELDS = (
     "condition",
     "scenario_id",
     "split",
+    "served_by",
     "partial_condition",
     "output_gate_blocked",
 )
@@ -713,7 +745,10 @@ def _summarise(records: Sequence[ScoreRecord], report: LoadReport) -> None:
                 report.nulls_by_dimension[dim] += 1
         if rec.meta.get("output_gate_blocked"):
             report.gate_blocked[condition] += 1
-        if condition in PARTIAL_CONDITIONS:
+        backend = str(rec.meta.get("served_by") or "ollama")
+        report.by_backend[backend] += 1
+        report.by_arm[f"{condition}/{backend}"] += 1
+        if is_partial_record(condition, backend):
             report.partial_rows[condition] += 1
         for key, counter in (
             ("judge_model", report.judge_models),

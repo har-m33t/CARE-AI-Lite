@@ -150,6 +150,28 @@ def retrieve_detailed(
     turns instead of reconstructing them per call.
     """
     flags = flags or RetrievalFlags()
+
+    if flags.langchain_adapter:
+        # The second implementation, off by default and never used by the
+        # study. Imported here rather than at module scope for the same reason
+        # the reranker is: a run that does not select it must not pay for
+        # importing langchain. See `langchain_adapter.py` for what it does not
+        # do — no router, no HyDE, no rerank, and no CRAG gate.
+        #
+        # Built and torn down per call, which costs a full corpus read and a
+        # BM25 index rebuild every turn. That is the wrong shape for a
+        # production path and the right shape for this one: the adapter is a
+        # comparison artefact, and `run_equivalence` shares a single instance
+        # across the whole query set rather than coming through here.
+        from carelite.retrieval.langchain_adapter import LangChainRetrievalAdapter
+
+        adapter = LangChainRetrievalAdapter.build(flags=flags, embedder=embedder)
+        try:
+            result: RetrievalResult = adapter.result(utterance)
+        finally:
+            adapter.close()
+        return result
+
     settings = get_settings()
     started = time.monotonic()
     stage_ms: dict[str, int] = {}

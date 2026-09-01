@@ -15,7 +15,10 @@ settings:
 - all of them can be overridden by environment variable
   (`CARELITE_RETRIEVAL_<NAME>`), so an ablation run is still *configuration*
   rather than a code edit even from a shell,
-- and `PRESETS` names the R0-R9 + LC rows of the ablation table as flag sets.
+- and `PRESETS` names the R0-R9 + LC rows of the ablation table as flag sets,
+  plus `LCHAIN`, which is not a row of the table but the LangChain adapter's
+  configuration, kept here so selecting it is the same gesture as selecting
+  any other component switch.
 
 If the foundation lane later moves these onto `config.Retrieval`, this module
 becomes a thin adapter and no calling code changes.
@@ -177,6 +180,23 @@ class RetrievalFlags:
     pinned by temperature 0, a fixed seed, and a persistent prompt-hash cache;
     the cost is roughly 5-15s per uncached turn on `gpt-oss:20b`."""
 
+    langchain_adapter: bool = False
+    """Replace the whole native stack with the LangChain composition in
+    `langchain_adapter.py` — `PGVectorStore` dense + `BM25Retriever` +
+    `EnsembleRetriever` over the same `chunk` and `kb_entry` rows.
+
+    **Off by default and it must stay off for the study.** The native stack
+    produced all 939 generations in `generation` and is what condition C runs.
+    The adapter exists so the LangChain claim is measured rather than asserted
+    (see `langchain_adapter.run_equivalence`), and turning it on is
+    study-invalidating for the same reason `crag=False` is: LangChain has no
+    counterpart to the CRAG gate, so the adapter cannot decline to answer a
+    turn the corpus does not address.
+
+    Selected like every other switch here — a preset (`preset("LCHAIN")`), a
+    keyword, or `CARELITE_RETRIEVAL_LANGCHAIN_ADAPTER=1` — rather than through
+    a parallel mechanism of its own."""
+
     long_context: bool = False
     """Condition LC-sample: no query-dependent retrieval. Handled by
     `ablation.py`, not by `pipeline.py`.
@@ -290,6 +310,7 @@ _BOOL_FIELDS: tuple[str, ...] = (
     "drop_boilerplate",
     "use_llm_router",
     "use_llm_crag",
+    "langchain_adapter",
     "long_context",
 )
 
@@ -456,6 +477,26 @@ PRESETS: dict[str, RetrievalFlags] = {
         rerank=False,
         tier_weighting=False,
         crag=False,
+    ),
+    "LCHAIN": _f(
+        label="LCHAIN",
+        note="the LangChain adapter: PGVectorStore dense + BM25Retriever, fused by "
+        "EnsembleRetriever, over the same chunk and kb_entry rows. NOT part of the "
+        "R0-R9 ladder and not in ABLATION_ORDER — it is a second implementation kept "
+        "for the equivalence measurement in langchain_adapter.py, not a rung of the "
+        "study. It has no router, no HyDE, no rerank and no CRAG gate.",
+        langchain_adapter=True,
+        router=False,
+        query_expansion=False,
+        hyde=False,
+        dense=True,
+        lexical=True,
+        graph=False,
+        rerank=False,
+        tier_weighting=False,
+        crag=False,
+        drop_boilerplate=False,
+        metadata_filter=False,
     ),
 }
 

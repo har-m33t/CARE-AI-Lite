@@ -46,10 +46,10 @@ from typing import Any
 import pandas as pd
 
 from carelite.eval.judge.validation import DimensionValidity, EvidenceStatus
+from carelite.stats.arms import ArmSelection, restrict_to_analysis_arms
 from carelite.stats.data import (
     DataInventory,
     attach_equity_kind,
-    drop_dropped_conditions,
     inventory,
     load_judge_samples,
     load_scores,
@@ -63,8 +63,10 @@ from carelite.stats.negative_control import NegativeControlResult, negative_cont
 from carelite.stats.power import PowerReport, build_power_report
 from carelite.stats.primary import CONFIRMATORY_FAMILY, FamilyResult, Hypothesis, run_family
 from carelite.stats.sensitivity import (
+    BackendEquivalenceCheck,
     RetrievalContrast,
     SensitivityReport,
+    read_backend_equivalence,
     retrieval_contrast,
     run_all_sensitivity,
 )
@@ -92,6 +94,10 @@ class AnalysisReport:
     inventory: DataInventory | None = None
     instrument: InstrumentReport | None = None
     retrieval: RetrievalContrast | None = None
+    #: How the frame was narrowed to one serving stack per condition (D13).
+    #: Rendered with the inventory, because "which rows are this arm" is an
+    #: exclusion like any other and belongs where the others are priced.
+    arms: ArmSelection | None = None
     empty: bool = False
 
     @property
@@ -126,6 +132,9 @@ class AnalysisReport:
 
         if self.inventory is not None:
             sections.extend(["", "-" * 78, self.inventory.render()])
+
+        if self.arms is not None:
+            sections.extend(["", self.arms.render()])
 
         if self.instrument is not None:
             sections.extend(["", "-" * 78, self.instrument.render()])
@@ -189,6 +198,7 @@ def run_analysis(
     n_boot: int = DEFAULT_N_BOOT,
     seed: int = DEFAULT_SEED,
     drop_conditions: bool = True,
+    backend_equivalence: BackendEquivalenceCheck | None = None,
 ) -> AnalysisReport:
     """Run every analysis against one split.
 
@@ -201,15 +211,27 @@ def run_analysis(
     the correct state of the world without human rating (docs/limitations.md §4),
     not a placeholder.
 
-    `drop_conditions` applies D11: condition LC is removed before anything is
-    computed. It is a parameter rather than a hard-coded filter so a caller can
-    inspect the dropped rows deliberately, and it defaults to the decision.
+    `drop_conditions` narrows the frame to one serving stack per condition
+    (`carelite.stats.arms`). Under D11 this removed condition LC outright; under
+    D13 it removes one `(condition, served_by)` selection — the 39 Ollama LC
+    cells — and keeps the 180-cell vLLM arm. It is a parameter rather than a
+    hard-coded filter so a caller can inspect the excluded rows deliberately, and
+    it defaults to the decision. **With it off, the frame may pool two serving
+    stacks into one arm and every LC comparison it produces is wrong**; the guard
+    that would have caught that is part of what this switch turns off.
+
+    `backend_equivalence` is the paired two-stack check (D13, sensitivity (e)).
+    When it is `None` and this function is the one opening the database, it is
+    read from there; when the caller supplied `long`, it is reported as
+    unavailable rather than triggering a database read the caller did not ask
+    for.
 
     **The instrument diagnostic runs before every comparison and is threaded into
     all of them.** That ordering is the point: a degenerate dimension has to be
     known before its p-value is produced, or the p-value gets rendered as a null
     result on the way past.
     """
+    read_the_database = long is None
     if long is None:
         long = load_scores(split=split, conn=conn)
     if "equity_kind" not in long.columns and not long.empty:
@@ -222,8 +244,22 @@ def run_analysis(
         judge_samples = load_judge_samples(split=split, conn=conn)
 
     dropped: dict[str, int] = {}
+    arms: ArmSelection | None = None
     if drop_conditions:
-        long, dropped = drop_dropped_conditions(long)
+        long, arms = restrict_to_analysis_arms(long)
+        dropped = arms.excluded_counts
+
+    if backend_equivalence is None:
+        backend_equivalence = (
+            read_backend_equivalence()
+            if read_the_database
+            else BackendEquivalenceCheck(
+                unavailable_reason=(
+                    "this analysis ran on a frame supplied by its caller, so the database was "
+                    "not opened and the paired backend sample was not read"
+                )
+            )
+        )
 
     # `None` when the validation study has not run, so the label machinery says
     # "has not run" rather than "failed the threshold" — the two are different
@@ -289,6 +325,7 @@ def run_analysis(
         n_boot=n_boot,
         seed=seed,
         discrimination=discrimination,
+        backend_equivalence=backend_equivalence,
     )
 
     return AnalysisReport(
@@ -308,5 +345,6 @@ def run_analysis(
         inventory=counts,
         instrument=instrument,
         retrieval=retrieval,
+        arms=arms,
         empty=empty,
     )

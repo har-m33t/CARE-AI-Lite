@@ -401,59 +401,98 @@ def test_a_scenario_missing_one_condition_is_dropped_and_counted(
 
 
 # ---------------------------------------------------------------------------
-# D11: a comparison retired by decision, not by absent data
+# D13: secondary outcome 3 runs again, and cannot be read without its caveats
 # ---------------------------------------------------------------------------
 
 
-class TestRetiredByDecision:
-    """C vs LC keeps its slot in the family and is never computed.
+class TestSecondaryOutcomeThree:
+    """C vs LC is computable again, and carries two qualifications in the output.
 
-    The distinction being pinned: a comparison the analysis *declines* to run
-    must behave differently from one it *cannot* run. If the 39 LC cells were
-    simply absent these tests would pass trivially — so the fixtures deliberately
-    supply LC rows, and the assertion is that the analysis still refuses.
+    D11 retired this comparison; D13 generated all 180 LC cells under vLLM and
+    restored it. What is pinned here is that restoring it did not quietly turn it
+    into a clean architectural comparison: the arm was served by a different
+    stack from condition C, and under D7 it is the reduced form of the question.
+    Both sentences must reach the rendered result and the result's own label, not
+    only a docstring.
     """
 
     @pytest.fixture
-    def with_lc(self, nurse_dimensions: tuple[str, ...]) -> pd.DataFrame:
+    def c_and_lc(self, nurse_dimensions: tuple[str, ...]) -> pd.DataFrame:
+        """20 scenarios with a complete LC arm, as D13 left the database."""
         scores: dict[tuple[str, str, int], dict[str, int]] = {}
         for i in range(20):
             scenario = f"SC-{i:03d}"
             for sample in range(3):
                 scores[(scenario, "C", sample)] = constant_scores(nurse_dimensions, 4)
-                # LC present for a third of scenarios, as in the real partial run.
-                if i < 7:
-                    scores[(scenario, "LC", sample)] = constant_scores(nurse_dimensions, 2)
+                scores[(scenario, "LC", sample)] = constant_scores(nurse_dimensions, 2)
         return make_long(scores=scores)
 
-    def test_the_hypothesis_declares_itself_retired(self) -> None:
+    def test_the_hypothesis_is_no_longer_retired(self) -> None:
         hypothesis = next(h for h in PRESPECIFIED_HYPOTHESES if h.key == "secondary3_nurse_C_vs_LC")
-        assert hypothesis.retired_by_decision
-        assert "D11" in hypothesis.not_computable_reason
+        assert not hypothesis.retired_by_decision
+        assert hypothesis.not_computable_reason == ""
+        assert "D13" in hypothesis.description
 
-    def test_it_is_not_computed_even_when_rows_exist(self, with_lc: pd.DataFrame) -> None:
-        """The refusal is on provenance, so the presence of data must not defeat it."""
-        assert (with_lc["condition"] == "LC").any(), "fixture must supply LC rows"
-        hypothesis = next(h for h in PRESPECIFIED_HYPOTHESES if h.key == "secondary3_nurse_C_vs_LC")
-        assert run_pairwise(with_lc, hypothesis, n_boot=200) is None
+    def test_no_hypothesis_in_the_family_is_retired_any_more(self) -> None:
+        assert [h.key for h in CONFIRMATORY_FAMILY if h.retired_by_decision] == []
 
-    def test_it_keeps_its_slot_in_the_correction_family(self, with_lc: pd.DataFrame) -> None:
-        """Dropping to m = 7 would make every surviving comparison easier to pass."""
-        family = run_family(with_lc, n_boot=200)
-        assert family.family_size == len(PRESPECIFIED_HYPOTHESES) == 8
-        assert family.by_key("secondary3_nurse_C_vs_LC") is None
+    def test_it_computes_and_keeps_the_family_at_eight(self, c_and_lc: pd.DataFrame) -> None:
+        family = run_family(c_and_lc, n_boot=200)
+        result = family.by_key("secondary3_nurse_C_vs_LC")
+        assert result is not None
+        assert result.n_scenarios == 20
+        assert result.family_size == len(PRESPECIFIED_HYPOTHESES) == 8
 
-    def test_the_reason_is_reported_not_silently_dropped(self, with_lc: pd.DataFrame) -> None:
-        family = run_family(with_lc, n_boot=200)
-        notes = " ".join(family.notes)
-        assert "NOT COMPUTED" in notes
-        assert "D11" in notes
-        assert "never randomised" in notes
+    def test_the_serving_stack_confound_is_in_the_rendered_result(
+        self, c_and_lc: pd.DataFrame
+    ) -> None:
+        result = run_pairwise(
+            c_and_lc,
+            next(h for h in PRESPECIFIED_HYPOTHESES if h.key == "secondary3_nurse_C_vs_LC"),
+            n_boot=200,
+        )
+        assert result is not None
+        text = result.render()
+        assert "CONFOUNDED BY SERVING STACK" in text
+        # The caveat precedes the number it qualifies, for the same reason the
+        # instrument verdict does.
+        assert text.index("CONFOUNDED BY SERVING STACK") < text.index("then p:")
 
-    def test_a_missing_comparison_reads_differently_from_a_retired_one(
+    def test_the_reduced_form_caveat_names_d7(self, c_and_lc: pd.DataFrame) -> None:
+        result = run_pairwise(
+            c_and_lc,
+            next(h for h in PRESPECIFIED_HYPOTHESES if h.key == "secondary3_nurse_C_vs_LC"),
+            n_boot=200,
+        )
+        assert result is not None
+        text = result.render()
+        assert "REDUCED FORM" in text
+        assert "151/471 chunks" in text
+        assert "D7" in text
+
+    def test_the_caveats_demote_the_label_itself(self, c_and_lc: pd.DataFrame) -> None:
+        """Structure, not prose: the confound reaches `effect-sizes.csv`'s label column."""
+        result = run_pairwise(
+            c_and_lc,
+            next(h for h in PRESPECIFIED_HYPOTHESES if h.key == "secondary3_nurse_C_vs_LC"),
+            n_boot=200,
+        )
+        assert result is not None
+        assert not result.label.cleared_gate
+        tag = result.label.tag()
+        assert tag.startswith("EXPLORATORY")
+        assert "CONFOUNDED BY SERVING STACK" in tag
+
+    def test_a_comparison_with_no_caveats_is_unchanged(self, separated_ab: pd.DataFrame) -> None:
+        """The mechanism must not add noise to the seven comparisons that have none."""
+        result = run_pairwise(separated_ab, CONFIRMATORY_FAMILY[0], n_boot=200)
+        assert result is not None
+        assert "!!!" not in result.render()
+
+    def test_a_missing_comparison_still_reads_as_missing(
         self, nurse_dimensions: tuple[str, ...]
     ) -> None:
-        """ "No data" and "declined" must not produce the same note."""
+        """With no LC rows at all, the family says so rather than reporting a null."""
         scores = {
             (f"SC-{i:03d}", "A", s): constant_scores(nurse_dimensions, 3)
             for i in range(10)
@@ -462,7 +501,8 @@ class TestRetiredByDecision:
         family = run_family(make_long(scores=scores), n_boot=200)
         notes = " ".join(family.notes)
         assert "no paired data for" in notes
-        assert "NOT COMPUTED" in notes  # the retired one, separately worded
+        assert "secondary3_nurse_C_vs_LC" in notes
+        assert family.family_size == 8
 
 
 # ---------------------------------------------------------------------------
@@ -524,3 +564,79 @@ class TestInstrumentLimitedRendering:
         assert result is not None
         assert result.testability is None
         assert not result.not_testable
+
+
+# ---------------------------------------------------------------------------
+# The pooling guard reaches the comparison, not only the frame builder
+# ---------------------------------------------------------------------------
+
+
+class TestBackendGuardInAComparison:
+    """A comparison built on a pooled arm must not quietly produce a number.
+
+    `restrict_to_analysis_arms` is the selection the report uses, but a caller
+    can assemble a family from a frame of its own. The LC arm is the one place
+    that matters, because it is the one condition served by two stacks.
+    """
+
+    @pytest.fixture
+    def pooled_lc(self, nurse_dimensions: tuple[str, ...]) -> pd.DataFrame:
+        arm: dict[tuple[str, str, int], dict[str, int]] = {}
+        for i in range(10):
+            scenario = f"SC-{i:03d}"
+            for sample in range(3):
+                arm[(scenario, "C", sample)] = constant_scores(nurse_dimensions, 4)
+                arm[(scenario, "LC", sample)] = constant_scores(nurse_dimensions, 3)
+        stale = {
+            (f"SC-{i:03d}", "LC", sample): constant_scores(nurse_dimensions, 1)
+            for i in range(3)
+            for sample in range(3)
+        }
+        return pd.concat(
+            [
+                make_long(scores=arm),
+                make_long(scores=stale, served_by="ollama", generation_id_suffix="-ollama"),
+            ],
+            ignore_index=True,
+        )
+
+    def test_a_pooled_lc_arm_raises_rather_than_scoring(self, pooled_lc: pd.DataFrame) -> None:
+        from carelite.stats.arms import MixedBackendError
+
+        hypothesis = next(h for h in PRESPECIFIED_HYPOTHESES if h.key == "secondary3_nurse_C_vs_LC")
+        with pytest.raises(MixedBackendError, match="C vs LC"):
+            run_pairwise(pooled_lc, hypothesis, n_boot=100)
+
+    def test_a_comparison_that_does_not_touch_lc_is_unaffected(
+        self, pooled_lc: pd.DataFrame, nurse_dimensions: tuple[str, ...]
+    ) -> None:
+        """The guard is about the one ambiguous condition, not about every frame.
+
+        The A-vs-B rows are appended to the frame whose LC arm is pooled, so the
+        assertion is that the guard is scoped to the comparison rather than to
+        the whole frame.
+        """
+        scores = {
+            (f"SC-{i:03d}", c, s): constant_scores(nurse_dimensions, 3 if c == "A" else 4)
+            for i in range(6)
+            for c in ("A", "B")
+            for s in range(3)
+        }
+        frame = pd.concat([pooled_lc, make_long(scores=scores)], ignore_index=True)
+        assert run_pairwise(frame, CONFIRMATORY_FAMILY[0], n_boot=100) is not None
+
+    def test_a_frame_without_the_column_is_labelled_not_refused(
+        self, nurse_dimensions: tuple[str, ...]
+    ) -> None:
+        """A legacy frame cannot confirm the arm, and the label says exactly that."""
+        scores: dict[tuple[str, str, int], dict[str, int]] = {}
+        for i in range(10):
+            scenario = f"SC-{i:03d}"
+            for sample in range(3):
+                scores[(scenario, "C", sample)] = constant_scores(nurse_dimensions, 4)
+                scores[(scenario, "LC", sample)] = constant_scores(nurse_dimensions, 3)
+        frame = make_long(scores=scores).drop(columns=["served_by"])
+        hypothesis = next(h for h in PRESPECIFIED_HYPOTHESES if h.key == "secondary3_nurse_C_vs_LC")
+        result = run_pairwise(frame, hypothesis, n_boot=100)
+        assert result is not None
+        assert "no `served_by` column" in result.label.tag()

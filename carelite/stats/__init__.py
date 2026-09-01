@@ -22,9 +22,17 @@ Three invariants hold across every module here:
   object says EXPLORATORY -- in the structure, not only in the prose.
 """
 
+from carelite.stats.arms import (
+    EXCLUDED_ARMS,
+    ArmSelection,
+    MixedBackendError,
+    assert_single_backend_per_condition,
+    restrict_to_analysis_arms,
+)
 from carelite.stats.data import load_judge_samples, load_scores
 from carelite.stats.effects import PairedEffects, bootstrap_ci, paired_effects
 from carelite.stats.evidence import EvidenceStatus, Label, RaterScope, label_for
+from carelite.stats.headline import GenerationCounts, HeadlineNumbers, headline_numbers
 from carelite.stats.measures import (
     FOUR_HABITS_COMPOSITE,
     MEASURES,
@@ -47,22 +55,29 @@ from carelite.stats.primary import (
     wilcoxon_paired,
 )
 from carelite.stats.report import AnalysisReport, run_analysis
-from carelite.stats.sensitivity import run_all_sensitivity
+from carelite.stats.sensitivity import BackendEquivalenceCheck, run_all_sensitivity
 from carelite.stats.subgroups import equity_subgroup, exploratory_subgroup
 
 __all__ = [
     "CONFIRMATORY_FAMILY",
+    "EXCLUDED_ARMS",
     "FOUR_HABITS_COMPOSITE",
     "MEASURES",
     "NURSE_COMPOSITE",
     "PRESPECIFIED_HYPOTHESES",
     "AnalysisReport",
+    "ArmSelection",
+    "BackendEquivalenceCheck",
     "EvidenceStatus",
     "FamilyResult",
+    "GenerationCounts",
+    "HeadlineNumbers",
     "Label",
     "Measure",
+    "MixedBackendError",
     "PairedEffects",
     "RaterScope",
+    "assert_single_backend_per_condition",
     "attach_quality",
     "bootstrap_ci",
     "build_power_report",
@@ -72,6 +87,7 @@ __all__ = [
     "exploratory_subgroup",
     "fit_random_intercept",
     "friedman_across_conditions",
+    "headline_numbers",
     "holm_bonferroni",
     "label_for",
     "load_judge_samples",
@@ -80,6 +96,7 @@ __all__ = [
     "negative_control",
     "paired_effects",
     "required_n",
+    "restrict_to_analysis_arms",
     "run_all_sensitivity",
     "run_analysis",
     "run_family",

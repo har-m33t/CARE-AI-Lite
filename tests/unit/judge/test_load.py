@@ -260,12 +260,61 @@ class TestRowsThatMustNotBeFiltered:
         assert "loaded, not filtered" in report.summary()
 
     def test_lc_rows_load_and_stay_marked(self, tmp_path: Path) -> None:
-        """D11: LC is a partial record. Present, marked, never a complete arm."""
+        """D11: the Ollama LC cells are a partial record. Present, marked, not an arm."""
         report = load(journal(tmp_path, row("gen-1"), row("gen-2", condition="LC")))
         assert report.records == 2
         assert report.by_condition["LC"] == 1
         assert report.partial_rows["LC"] == 1
         assert "PARTIAL RECORD (D11)" in report.summary()
+
+    def test_the_vllm_lc_arm_is_not_marked_partial(self, tmp_path: Path) -> None:
+        """D13: 180 cells over all 60 scenarios is an arm, whatever the label says."""
+        report = load(
+            journal(
+                tmp_path,
+                row("gen-1", condition="LC", served_by="vllm", partial_condition=False),
+            )
+        )
+        assert report.records == 1
+        assert report.partial_rows["LC"] == 0
+        assert report.by_arm["LC/vllm"] == 1
+        assert "PARTIAL RECORD" not in report.summary()
+
+    def test_a_vllm_lc_row_claiming_to_be_partial_is_refused(self, tmp_path: Path) -> None:
+        with pytest.raises(ScoreRefusal, match="partial_condition"):
+            load(
+                journal(
+                    tmp_path,
+                    row("gen-1", condition="LC", served_by="vllm", partial_condition=True),
+                )
+            )
+
+    def test_an_ollama_lc_row_claiming_to_be_complete_is_refused(self, tmp_path: Path) -> None:
+        with pytest.raises(ScoreRefusal, match="partial_condition"):
+            load(
+                journal(
+                    tmp_path,
+                    row("gen-1", condition="LC", served_by="ollama", partial_condition=False),
+                )
+            )
+
+    def test_an_unknown_serving_stack_is_refused(self, tmp_path: Path) -> None:
+        """`served_by` carries a CHECK constraint; a value past it means a bad write."""
+        with pytest.raises(ScoreRefusal, match="tgi"):
+            load(journal(tmp_path, row("gen-1", served_by="tgi")))
+
+    def test_both_lc_backends_in_one_file_are_counted_separately(self, tmp_path: Path) -> None:
+        """219 LC rows under one heading is the pooling D13 refuses, in a report."""
+        report = load(
+            journal(
+                tmp_path,
+                row("gen-1", condition="LC", served_by="ollama"),
+                row("gen-2", condition="LC", served_by="vllm", partial_condition=False),
+            )
+        )
+        assert report.by_condition["LC"] == 2
+        assert report.by_arm == {"LC/ollama": 1, "LC/vllm": 1}
+        assert report.partial_rows["LC"] == 1
 
 
 # ---------------------------------------------------------------------------

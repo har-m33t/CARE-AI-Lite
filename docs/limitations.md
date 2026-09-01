@@ -11,12 +11,20 @@ ones it did not. **Per `DECISIONS.md` D10, nothing in this document is confirmat
 pre-specified in a registered sense — every finding below, including the ones from the completed
 run, is descriptive.**
 
-Status of the underlying work as of 2026-08-25: the corpus and knowledge base are loaded, the
-100-scenario bank is frozen, and the six-condition holdout run is complete except Condition LC,
-which was stopped early by decision (D11) — see §4. `carelite-stats` is running the pre-specified
-statistical analysis on this data now and owns the results write-up; this document owns the
-end-to-end record of what was built, what was run, what was found, what could not be found and
-why, and what a reader must not conclude from any of it.
+Status of the underlying work as of 2026-09-01: the corpus and knowledge base are loaded, the
+100-scenario bank is frozen, the five conditions A, A2, B, C and D completed in full under Ollama
+on 2026-08-25, and Condition LC — stopped at 39 of 180 cells by D11 — was completed on 2026-09-01
+under a second serving stack (vLLM with prefix caching, `DECISIONS.md` D13). §4 carries what that
+changes and, more importantly, what it does not. `carelite-stats` owns the statistical write-up;
+this document owns the end-to-end record of what was built, what was run, what was found, what
+could not be found and why, and what a reader must not conclude from any of it.
+
+**Row counts in this document are a snapshot; `runs/repro/headline-numbers.txt` is the authority.**
+`make reproduce` writes that file by querying Postgres, with each figure printed next to the
+qualification it cannot honestly be quoted without (`carelite/stats/headline.py`). It exists
+because a planning document in this repository was written from figures carried forward in memory,
+and prose in this repository has already gone stale once against the database. Where a count below
+disagrees with that file, that file is right and this one needs an edit.
 
 ---
 
@@ -296,10 +304,21 @@ bridging the journal into Postgres) rather than writing straight to the database
 here because an honest process record does not omit the parts that make the project look less
 tidy.
 
-**939 generations, zero failures at generation time.** Conditions A, A2, B, C, and D completed in
-full: 180 cells each (all 60 holdout scenarios × 3 samples). Condition LC did not: see "LC was
-dropped, twice, for the same reason" below. All 939 route decisions are `informational`; zero route
-`emotional_only` anywhere in the holdout set, at any condition, including the 39 completed LC cells.
+**939 generations, zero failures at generation time, on the Ollama run of 2026-08-25.** Conditions
+A, A2, B, C, and D completed in full: 180 cells each (all 60 holdout scenarios × 3 samples).
+Condition LC did not, and was stopped at 39 cells: see "LC was dropped twice on a measured runtime
+cost, and completed once the runtime changed" below. All 939 route decisions are `informational`;
+zero route `emotional_only` anywhere in the holdout set, at any condition, including the 39
+completed LC cells.
+
+**`generation` now holds 1,119 rows, not 939.** On 2026-09-01 the remaining LC cells were generated
+under vLLM (D13), so the table holds 180 cells each for A, A2, B, C and D at `served_by = 'ollama'`,
+180 LC cells at `served_by = 'vllm'`, and the 39 D11 Ollama LC cells retained as a paired
+backend-equivalence sample rather than pooled into the LC arm. **The primary comparison did not
+move**: it runs on the 900 holdout generations with LC removed, which is what it ran on before. Do
+not transcribe either figure into a write-up — read `runs/repro/headline-numbers.txt`, which prints
+the census, the analysed frame, and the per-backend split as three separate numbers precisely
+because collapsing them is the mistake that produced this paragraph's earlier version.
 
 **17 of the 939 generations were refused by the output safety gate and are flagged
 `generation.gate_blocked` rather than silently dropped or silently scored — `DECISIONS.md` D12.**
@@ -319,6 +338,14 @@ this project that the safety layer has been observed doing its job against real 
 scale, which is itself worth recording as a positive finding about `carelite/safety/`, not only a
 data-quality caveat.
 
+**The gate-blocked census is now 24 across all 1,119 rows: the 17 above, plus 7 on the 180 vLLM LC
+cells.** The 17 is still the right figure for the five-condition Ollama frame the primary analysis
+runs on, and the 24 is the right figure for the table as a whole; quoting either without saying
+which frame it belongs to is how the two get confused. The 39 Ollama LC cells contributed none. **A
+7-in-180 refusal rate on LC is not yet interpretable as a property of the long-context condition**
+— it is a single arm, served by a different stack, and the LC cells have not been scored — so it is
+recorded here as a count and nothing more.
+
 **Condition C fell back to Condition-B behavior on 69 of 180 cells (38%).** CRAG graded the
 retrieved evidence `relevant` on 111 cells and `none` on 69, and a `none` grade means C generates
 exactly as B would on that cell — framework-prompted, ungrounded. **38% of the treatment arm
@@ -331,28 +358,69 @@ or, read carelessly, being mistaken for a retrieval failure rate rather than wha
 gate correctly declining to inject irrelevant evidence, which is the gate working as designed
 (`docs/preregistration.md` §8.6b already pre-specifies this as a sensitivity analysis).
 
-### LC was dropped, twice, for the same measured reason
+### LC was dropped twice on a measured runtime cost, and completed once the runtime changed
 
 **`DECISIONS.md` D11: Condition LC was stopped after 39 of its planned 180 cells.** Measured on the
 rented L40S, LC cost **3.3 minutes per cell against 6 seconds for the A/A2/D group — roughly 33×** —
 with about 8.5 hours and $8.50 left to run when the other five conditions were within the hour of
 finishing. The cause is understood and is not a pipeline defect: `lc_sample()` is deterministic and
 query-independent by design (D7), so every LC prompt shares an identical ~119,500-token prefix that
-should be nearly free after the first prefill via KV-cache reuse. The measured per-cell time says
-the serving stack re-prefills that whole prefix on every request instead of reusing it — the design
-anticipated a saving the runtime did not deliver. **This is the second time LC was dropped for cost,
-by an independent lane, for the same measured reason**: `carelite-judge` had already excluded LC
-from the §13 validation subset after measuring ~21 minutes per LC generation locally and projecting
-~59 hours. Two lanes reaching the same conclusion from different hardware is itself the finding:
-**under this architecture, a long-context baseline is not affordable to evaluate at the scale the
-rest of the design assumes.** That is a result about the method, not an apology for a missing
-column, and it closes secondary outcome 3 (C vs. LC — `docs/preregistration.md` §4) as untestable
-rather than merely incomplete. What survives intact and complete: the primary outcome (composite
-NURSE, A vs. B), the retrieval comparison that motivates the whole architecture (B vs. C), the
-cross-model baseline (A vs. A2), and the negative control (B vs. D) — every condition the study's
-main questions depend on. **The 39 completed LC cells are kept in the database as a partial record,
-not discarded, and support no comparison against a complete arm**: they cover 13 of the 60 holdout
-scenarios, were never randomized for partial analysis, and any use of them must say so plainly.
+should be nearly free after the first prefill via KV-cache reuse. The measured per-cell time said
+Ollama re-prefills that whole prefix on every request instead of reusing it — the design
+anticipated a saving that runtime did not deliver. **This was the second time LC was dropped for
+cost, by an independent lane, for the same measured reason**: `carelite-judge` had already excluded
+LC from the §13 validation subset after measuring ~21 minutes per LC generation locally and
+projecting ~59 hours.
+
+**Both lanes were measuring a serving stack, and neither said so.** The conclusion recorded here
+until 2026-09-01 was the stronger one — that under this architecture a long-context baseline is not
+affordable at the scale the rest of the design assumes, offered as a result about the method. That
+claim was not supported by the evidence behind it. Two independent measurements of the same runtime
+are one measurement of that runtime, not two measurements of long-context evaluation, and the
+agreement between them was reassuring in a way it had not earned. `DECISIONS.md` D13 tested the
+premise against a second stack and it did not survive.
+
+**The measurement (D13).** `google/gemma-4-12B-it` served by vLLM 0.28.0 with
+`--enable-prefix-caching`, pinned at revision `707f0a3b8a3c7ad586ed01e27eafbad8a27dd0f7`, on one
+A100 SXM 80GB, driven by the production prompt assembly: **3.61 s per cell** as the mean of 9 warm
+calls (min 2.03, max 6.51), against D11's 198 s — a **54.9×** difference — after a single cold
+prefill of 110,653 tokens at 64.31 s. All 180 LC cells then generated in about 21 minutes of wall
+clock for roughly **$1.38** of GPU time, against D11's projected ~8.5 hours and ~$8.50. The saving
+D7's design anticipated is real; one runtime delivers it and the other does not.
+
+**So the limitation is a narrower one, and it is stated in the terms the evidence supports: under
+Ollama, a long-context baseline whose prompts share a large identical prefix is not affordable to
+evaluate at this scale, because that stack re-prefills the shared prefix on every request rather
+than reusing it from cache.** That is a property of the serving stack. It is not a property of the
+design, of `lc_sample()`, or of long-context evaluation in general, and the earlier phrasing of it
+here should not be quoted. **The transferable lesson is the reason it was wrong**: when a cost
+measurement is used to close a scientific question, the runtime is a variable in that measurement
+and has to be named as one. Twice in this project it was not, and the second agreement made the
+first look like a confirmation.
+
+**What this restores, and what it does not.** Secondary outcome 3 (C vs. LC —
+`docs/preregistration.md` §4) is testable again, in the reduced form D7 already fixed: whether
+query-dependent selection beats a fixed context, not whether retrieval beats stuffing the corpus
+in, because the corpus still does not fit the window and any selection rule is itself retrieval.
+Nothing here re-opens D7. **Nothing here improves the instrument either**: `ie`, `naturalness` and
+`ritualistic` are degenerate on this run and stay degenerate, the judge validation study has still
+not run, and every result in this project remains EXPLORATORY under D10. A new comparison is not a
+stronger comparison, and completing a condition is not evidence about any other condition. **As of
+this writing the 180 vLLM LC cells have been generated but not yet scored** — `rubric_score` holds
+939 rows against 1,119 generations — so no C-vs-LC result exists, in this document or anywhere
+else, and any number presented as one is fabricated. The primary outcome (composite NURSE, A vs.
+B), the retrieval comparison (B vs. C), the cross-model baseline (A vs. A2) and the negative
+control (B vs. D) are unchanged by all of this; LC never entered them.
+
+**The 39 Ollama LC cells are not pooled into the LC arm, and there are now two reasons rather than
+one.** They were always a non-randomised 13 of 60 scenarios. They were also served by a different
+stack — a GGUF against HF safetensors, different quantisation, different sampling defaults — and
+they realised a different pack: the production packing rule admits 116/116 knowledge base entries
+and 151/471 chunks at 117,849 real tokens, which is not what the Ollama run's window admitted. They
+are retained, marked `served_by = 'ollama'`, and used only as a paired backend-equivalence sample
+against their vLLM counterparts. **The LC analysis arm is `served_by = 'vllm'` and nothing else**;
+`carelite/stats/headline.py` prints the per-backend split for exactly this reason, so a pooled
+count cannot pass unnoticed.
 
 ### The §13 judge-validation study, first measured at n = 30, now confirmed at n = 939
 
@@ -481,9 +549,15 @@ concentration on low-discrimination dimensions are independently verified above.
   (69/180) fell back to B behavior on CRAG's own relevance grade; a pooled comparison is a
   comparison against an already-diluted-by-38%-B arm unless the fallback split is reported
   alongside it.
-- **Not** that the 39 completed LC cells support any comparison against a complete condition. They
-  cover 13 of 60 scenarios, were never randomized for partial analysis, and D11 records why they
-  exist at all.
+- **Not** that the 39 Ollama LC cells support any comparison against a complete condition. They
+  cover 13 of 60 scenarios, were never randomized for partial analysis, and are served by a
+  different stack than the LC arm. D11 records why they exist and D13 why they stay out of it.
+- **Not** that a C-vs-LC result exists. The 180 vLLM LC cells were generated on 2026-09-01 and
+  scoring is outstanding; `rubric_score` holds 939 rows against 1,119 generations. There is a seam
+  here for a comparison and no number in it.
+- **Not** that completing Condition LC strengthens any other result in this section. It adds one
+  comparison to the study and changes nothing about the instrument, the judge validation, or the
+  descriptive status D10 fixed for every finding here.
 - **Not** that excluding `gate_blocked` cells is a neutral, symmetric operation. 13 of the 17 sit on
   one scenario (SC-029); excluding them removes that scenario's evidence unevenly across the five
   complete conditions rather than evenly.
@@ -515,10 +589,17 @@ concentration on low-discrimination dimensions are independently verified above.
   construction for the lexical leg of retrieval accounts for this rather than passing the raw
   utterance through.
 - **Condition LC cannot be "the whole corpus stuffed into context" as build plan v3 §3 specifies,
-  and is redefined rather than silently approximated — `DECISIONS.md` D7.** 471 chunks is
-  approximately 326,526 tokens against a 128,000-token context window: 255% utilisation. Reserving
-  16K for the system prompt, patient turn, and response leaves room for roughly a third of the
-  corpus. **LC is now `LC-sample`**: a fixed, query-independent round-robin selection across all 33
+  and is redefined rather than silently approximated — `DECISIONS.md` D7.** 471 chunks is an
+  estimated 326,526 tokens against a 128,000-token context window: **255% utilisation, which is an
+  estimate and not a measurement.** D7's figures come from `carelite.generate.model.estimate_tokens`,
+  a heuristic, and D13 measured it against the model's own tokenizer for the first time: the
+  production long-context pack estimates 123,758 tokens and really is 117,849, so the heuristic
+  **overcounts this corpus by about 4.5%**. The direction is the safe one — it errs toward not
+  overflowing the window, which is why nothing downstream broke — but every token figure D7 states,
+  the 255% included, should be read as approximately that and not as a measured quantity. The
+  conclusion it supports is unaffected: 4.5% does not close a 2.5× gap, and the corpus does not fit.
+  Reserving 16K for the system prompt, patient turn, and response leaves room for roughly a third of
+  the corpus. **LC is now `LC-sample`**: a fixed, query-independent round-robin selection across all 33
   papers at a pinned seed (`carelite.retrieval.ablation.lc_sample`), 169 chunks, 35.9% of the
   corpus. Round-robin rather than random sampling guarantees every paper is represented, so LC's
   content is not an accident of the seed. **The point that must not be quietly absorbed: any
@@ -528,16 +609,18 @@ concentration on low-discrimination dimensions are independently verified above.
   a practitioner would actually build, but a different one from what build plan v3 posed. This
   distinction is carried in `docs/preregistration.md` §2 and §4 rather than left to a results-section
   footnote.
-- **D7's window-filling fix made LC implementable, not affordable, and that cost is why this
-  project rents GPU hardware at all and, ultimately, why LC did not complete.** `carelite/eval/judge/study.py`
-  measured LC's prefill directly on local hardware first — roughly 119,500 tokens at ~95 tok/s,
-  about 21 minutes per generation, projecting ~59 hours for LC alone — which is what moved the
-  holdout run to a rented L40S in the first place. **Even rented, LC still cost roughly 33× the
-  other conditions per cell** and was stopped 39 cells into its planned 180 by `DECISIONS.md` D11,
-  the second time two independent lanes reached the same conclusion about this condition on
-  different hardware. §4 above ("LC was dropped, twice, for the same measured reason") has the full
-  account, the measured per-cell numbers on the rented GPU, and what it does and does not cost the
-  study's other conclusions.
+- **D7's window-filling fix made LC implementable, and under Ollama it was not affordable — which
+  is why this project rents GPU hardware at all, and why LC did not complete on the first
+  attempt.** `carelite/eval/judge/study.py` measured LC's prefill directly on local hardware first —
+  roughly 119,500 tokens at ~95 tok/s, about 21 minutes per generation, projecting ~59 hours for LC
+  alone — which is what moved the holdout run to a rented L40S. **Even rented, LC still cost roughly
+  33× the other conditions per cell under Ollama** and was stopped 39 cells into its planned 180 by
+  `DECISIONS.md` D11. **Both of those measurements were of Ollama.** Under vLLM 0.28.0 with
+  `--enable-prefix-caching` the same work costs 3.61 s per warm cell after one 64.31 s cold prefill,
+  and all 180 cells completed in about 21 minutes for roughly $1.38 (D13). The affordability
+  limitation is real and belongs to the serving stack, not to the condition; §4 above ("LC was
+  dropped twice on a measured runtime cost, and completed once the runtime changed") has the full
+  account and the numbers on both stacks.
 - **Index build is complete and independently verified: 471/471 chunks embedded.** The 342
   pre-existing embeddings were confirmed byte-identical against a fresh embed, 0 mismatches, and
   mean pairwise cosine across the corpus is 0.5788 (decomposing to old-old 0.5755, new-new 0.6100,
@@ -576,9 +659,13 @@ concentration on low-discrimination dimensions are independently verified above.
 - **Synthetic scenarios**, not real patient utterances, throughout the bank.
 - **Single- or short-turn interactions.** The system responds to one patient turn at a time with
   bounded history; it does not model a full multi-phase encounter end to end.
-- **Local-model capability ceiling.** Every generator, judge, embedder, and reranker in this
-  project runs locally via Ollama or `sentence-transformers`. Results describe what this system
-  does with these models, not the ceiling of the largest hosted frontier models.
+- **Open-weight model capability ceiling.** Every generator, judge, embedder, and reranker in this
+  project is an open-weight model the project serves itself — via Ollama or `sentence-transformers`
+  locally, and, for Condition LC's 180 cells, via vLLM on a rented GPU (D13). No hosted frontier
+  model appears anywhere in the inference path. Results describe what this system does with these
+  models, not the ceiling of the largest hosted models. **"Local" is now a statement about where
+  the serving process ran, not about which models were used**, and the two conditions of that
+  sentence came apart when LC moved to a rented pod; `generation.served_by` is what records which.
 - **One particular operationalization of NURSE and the Four Habits Model.** `docs/rubric.md` fixes
   eleven scored dimensions with anchored examples; NURSE and 4HM each admit other defensible
   operationalizations, and this rubric's judgments are specific to the one built here.
@@ -593,9 +680,11 @@ concentration on low-discrimination dimensions are independently verified above.
 
 ---
 
-*Last updated 2026-08-24, alongside `docs/preregistration.md` and `docs/decisions/`. Figures
-sourced by direct query against the live `carelite` database and against
+*Last updated 2026-09-01 for `DECISIONS.md` D13, alongside `REPRODUCE.md`, `docs/reporting/`, and
+`docs/decisions/`. Figures sourced by direct query against the live `carelite` database and against
 `carelite/scenarios/freeze.py`, `knowledge_base/TAXONOMY.md`, `carelite/kb/validate.py`, and
-`DECISIONS.md` — not carried over from planning-time estimates. Where a figure is expected to
-change (the equity re-extraction under D3, human rating, judge validation), that is stated above
-rather than left for the reader to infer.*
+`DECISIONS.md` — not carried over from planning-time estimates. Row counts stated here are a
+snapshot of that query; `runs/repro/headline-numbers.txt`, regenerated by `make reproduce`, is the
+authority and is what a write-up should quote. Where a figure is expected to change (the equity
+re-extraction under D3, human rating, judge validation, and the scoring of the 180 vLLM LC cells),
+that is stated above rather than left for the reader to infer.*

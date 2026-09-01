@@ -89,37 +89,65 @@ def rubric_scores_fixture_with_missing_ci() -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+#: The shape `carelite.viz.queries.effect_sizes_df` returns, in its column order.
+EFFECT_SIZE_COLUMNS = [
+    "dimension",
+    "comparison",
+    "effect",
+    "ci_lo",
+    "ci_hi",
+    "n",
+    "p_value",
+    "confirmatory",
+    "not_computed",
+    "not_computed_reason",
+    "not_testable",
+    "testability_note",
+    "caveats",
+]
+
+#: Paraphrases of the two caveats `carelite.stats.primary` attaches to
+#: `secondary3_nurse_C_vs_LC` — a fixture, not the authority; the real strings
+#: live on `Hypothesis.caveats`. Both open with their claim in a headline
+#: sentence, which is the convention the figure's inline mark relies on.
+C_VS_LC_CAVEATS = (
+    "CONFOUNDED BY SERVING STACK. The LC arm was served by vLLM and condition C by Ollama, "
+    "so they differ in artifact, quantisation, sampling defaults, hardware and realised "
+    "context pack, and no analysis can separate those from the architecture."
+    " | "
+    "THE REDUCED FORM OF THE QUESTION (D7). The corpus does not fit the window, so LC is a "
+    "fixed query-independent sample rather than the whole corpus, and any selection rule is "
+    "itself a form of retrieval."
+)
+
+#: A generic retired-by-decision reason. Deliberately not D11's: D13 restored
+#: C vs LC, and a fixture that keeps naming the one comparison that used to be
+#: retired makes the mechanism look like it belongs to that comparison.
+RETIRED_BY_DECISION_REASON = (
+    "RETIRED BY DECISION (fixture). Not computed from the data at all, as distinct from "
+    "computed and null."
+)
+
+_INSTRUMENT_NOTE = (
+    "INSTRUMENT-LIMITED: every dimension of this measure is degenerate on this run — "
+    "the judge concentrated its scores on one value."
+)
+
+
 @pytest.fixture
 def effect_sizes_fixture() -> pd.DataFrame:
-    """Mirrors the real eight-hypothesis family, including its two live
-    caveats: `nurse_composite`/`C vs LC` is D11-retired (`not_computed`), and
-    the two `naturalness`/`ritualistic` rows are instrument-limited
+    """Mirrors the real eight-hypothesis family as it stands under D13.
+
+    All eight comparisons compute, including `nurse_composite`/`C vs LC`, which
+    D11 had retired and D13 restored by generating the full 180-cell LC arm
+    under vLLM. That row carries the two caveats D13 attached to it, and the
+    two `naturalness`/`ritualistic` rows are instrument-limited
     (`not_testable`) the way they are on the `ie` holdout run.
+
+    Every number here is invented. The real C-vs-LC effect does not exist yet.
     """
-    columns = [
-        "dimension",
-        "comparison",
-        "effect",
-        "ci_lo",
-        "ci_hi",
-        "n",
-        "p_value",
-        "confirmatory",
-        "not_computed",
-        "not_computed_reason",
-        "not_testable",
-        "testability_note",
-    ]
-    d11_reason = (
-        "DECISIONS.md D11 stopped LC generation at 39 of 180 cells, covering 13 of 60 "
-        "scenarios; never randomised for partial analysis, so NOT COMPUTED."
-    )
-    instrument_note = (
-        "INSTRUMENT-LIMITED: every dimension of this measure is degenerate on this run — "
-        "the judge concentrated its scores on one value."
-    )
     comparisons = [
-        ("nurse_composite", "A vs B", 0.62, 0.41, 0.79, 60, 0.0012, True, False, "", False, ""),
+        ("nurse_composite", "A vs B", 0.62, 0.41, 0.79, 60, 0.0012, True, False, "", False, "", ""),
         (
             "four_habits_composite",
             "A vs B",
@@ -133,21 +161,23 @@ def effect_sizes_fixture() -> pd.DataFrame:
             "",
             False,
             "",
+            "",
         ),
-        ("nurse_composite", "B vs C", 0.18, -0.05, 0.39, 58, 0.11, True, False, "", False, ""),
+        ("nurse_composite", "B vs C", 0.18, -0.05, 0.39, 58, 0.11, True, False, "", False, "", ""),
         (
             "nurse_composite",
             "C vs LC",
-            math.nan,
-            math.nan,
-            math.nan,
-            0,
-            math.nan,
+            0.29,
+            0.02,
+            0.52,
+            60,
+            0.048,
             False,
-            True,
-            d11_reason,
             False,
             "",
+            False,
+            "",
+            C_VS_LC_CAVEATS,
         ),
         (
             "naturalness",
@@ -161,7 +191,8 @@ def effect_sizes_fixture() -> pd.DataFrame:
             False,
             "",
             True,
-            instrument_note,
+            _INSTRUMENT_NOTE,
+            "",
         ),
         (
             "ritualistic",
@@ -175,15 +206,87 @@ def effect_sizes_fixture() -> pd.DataFrame:
             False,
             "",
             True,
-            instrument_note,
+            _INSTRUMENT_NOTE,
+            "",
         ),
-        ("nurse_composite", "A vs A2", 0.04, -0.22, 0.29, 59, 0.81, True, False, "", False, ""),
-        ("nurse_composite", "B vs D", 0.71, 0.52, 0.86, 60, 0.0001, True, False, "", False, ""),
+        ("nurse_composite", "A vs A2", 0.04, -0.22, 0.29, 59, 0.81, True, False, "", False, "", ""),
+        (
+            "nurse_composite",
+            "B vs D",
+            0.71,
+            0.52,
+            0.86,
+            60,
+            0.0001,
+            True,
+            False,
+            "",
+            False,
+            "",
+            "",
+        ),
         # exploratory extras: not in the family planned in advance
-        ("de", "A vs C", 0.22, -0.10, 0.48, 55, math.nan, False, False, "", False, ""),
-        ("epp", "B vs LC", -0.05, -0.30, 0.20, 55, math.nan, False, False, "", False, ""),
+        ("de", "A vs C", 0.22, -0.10, 0.48, 55, math.nan, False, False, "", False, "", ""),
+        ("epp", "B vs LC", -0.05, -0.30, 0.20, 55, math.nan, False, False, "", False, "", ""),
     ]
-    return pd.DataFrame(comparisons, columns=columns)
+    return pd.DataFrame(comparisons, columns=EFFECT_SIZE_COLUMNS)
+
+
+@pytest.fixture
+def effect_sizes_fixture_with_not_computed_row(
+    effect_sizes_fixture: pd.DataFrame,
+) -> pd.DataFrame:
+    """`effect_sizes_fixture` plus one comparison retired by decision.
+
+    No hypothesis carries a `not_computable_reason` under D13, so nothing in
+    the live family exercises the NOT COMPUTED rendering any more. It is still
+    needed — a comparison with no paired data must render as an explicit marker
+    rather than vanish (D12) — so the row is supplied here, deliberately as an
+    anonymous comparison, so the test does not encode which decision retired
+    what this month.
+    """
+    retired = pd.DataFrame(
+        [
+            (
+                "nurse_composite",
+                "B vs LC",
+                math.nan,
+                math.nan,
+                math.nan,
+                0,
+                math.nan,
+                False,
+                True,
+                RETIRED_BY_DECISION_REASON,
+                False,
+                "",
+                "",
+            )
+        ],
+        columns=EFFECT_SIZE_COLUMNS,
+    )
+    return pd.concat([effect_sizes_fixture, retired], ignore_index=True)
+
+
+@pytest.fixture
+def effect_sizes_fixture_caveated_and_not_computed(
+    effect_sizes_fixture: pd.DataFrame,
+) -> pd.DataFrame:
+    """The live state of the database while the LC arm is still being scored.
+
+    `secondary3_nurse_C_vs_LC` is restored to the family by D13 and carries its
+    two caveats, but the 180 vLLM cells have not been scored yet, so the
+    comparison has no paired data and no effect estimate. Both marks apply to
+    the same row at once, and the figure has to render that without either one
+    swallowing the other.
+    """
+    df = effect_sizes_fixture.copy()
+    row = df["comparison"] == "C vs LC"
+    df.loc[row, ["effect", "ci_lo", "ci_hi", "p_value"]] = math.nan
+    df.loc[row, "n"] = 0
+    df.loc[row, "not_computed"] = True
+    df.loc[row, "not_computed_reason"] = "no paired data available for this comparison on this run"
+    return df
 
 
 @pytest.fixture

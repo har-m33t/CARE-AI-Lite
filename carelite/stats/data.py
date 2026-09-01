@@ -35,6 +35,13 @@ simply halve every standard error. `load_scores` takes the median rows and
 nothing else by default; `load_judge_samples` is the separate entry point for
 the per-sample rows that the self-consistency sensitivity analysis needs.
 
+**`served_by` is selected on every score row, and is not decoration.** After
+`DECISIONS.md` D13 the condition label does not identify an arm: `condition =
+'LC'` matches the 180-cell vLLM arm and D11's 39 Ollama cells alike. The column
+is the only thing in the frame that separates them, so it is read here and
+`carelite.stats.arms` is what acts on it. A frame built without it cannot be
+resolved into arms and the guard there refuses rather than guessing.
+
 **`equity_kind` is not in the database.** `carelite/db/schema.sql` stores the
 eight frozen `Scenario` fields; `equity_kind` stays in `scenarios/bank.jsonl`
 (`carelite/scenarios/load.py`: "the schema is not mine to extend").
@@ -57,12 +64,15 @@ from carelite.types import RUBRIC_DIMENSIONS, RaterType, Split
 
 __all__ = [
     "DROPPED_CONDITIONS",
+    "GENERATION_COUNTS_SQL",
     "JUDGE_SAMPLES_SQL",
     "SCORES_SQL",
+    "SERVING_BACKENDS",
     "DataInventory",
     "attach_equity_kind",
     "drop_dropped_conditions",
     "inventory",
+    "load_generation_counts",
     "load_judge_samples",
     "load_scores",
     "to_long",
@@ -81,6 +91,7 @@ SELECT
     g.sample_idx,
     g.model,
     g.model_digest,
+    g.served_by,
     g.prompt_id,
     rs.rater_type,
     rs.rater_id,
@@ -125,6 +136,46 @@ WHERE sc.split = %(split)s
   AND rs.rater_type = 'llm_judge'
   AND rs.rater_id NOT LIKE %(median_pattern)s
 ORDER BY g.scenario_id, g.condition, rs.rater_id, rs.sample_idx
+"""
+
+#: The `served_by` vocabulary, which is `carelite/db/schema.sql`'s CHECK
+#: constraint and not this module's to widen. It is restated here so the count
+#: breakdown can print a zero for a backend that produced nothing, rather than
+#: omitting the row and leaving "no vLLM generations" indistinguishable from
+#: "nobody looked". `tests/unit/stats/test_headline.py` reads the constraint out
+#: of the schema and fails if the two disagree.
+SERVING_BACKENDS: tuple[str, ...] = ("ollama", "vllm")
+
+#: One row per (condition, serving stack, split), counted from `generation`
+#: itself with no exclusion applied. This is deliberately **not** the frame the
+#: analysis runs on: it counts the LC cells D11 dropped and the gate-blocked
+#: cells D12 flags, because "how many generations does this study have" and "how
+#: many generations did the primary comparison run on" are different questions
+#: that a single number has been asked to answer before.
+#:
+#: `served_by` is in the grouping because condition LC may yet be re-run under a
+#: second serving stack. Two backends serve different artifacts of the same
+#: model family, so a count pooled across them would hide a confound rather than
+#: report one.
+#:
+#: `rubric_score` is joined through a DISTINCT subselect: a generation has one
+#: row per rater and dimension set, so a plain join would multiply every count
+#: it touches.
+GENERATION_COUNTS_SQL = """
+SELECT
+    g.condition,
+    g.served_by,
+    sc.split,
+    COUNT(*)                                             AS n_generations,
+    COUNT(*) FILTER (WHERE g.gate_blocked)               AS n_gate_blocked,
+    COUNT(*) FILTER (WHERE s.generation_id IS NOT NULL)  AS n_scored,
+    COUNT(DISTINCT g.scenario_id)                        AS n_scenarios
+FROM generation g
+JOIN scenario sc ON sc.scenario_id = g.scenario_id
+LEFT JOIN (SELECT DISTINCT generation_id FROM rubric_score) s
+       ON s.generation_id = g.generation_id
+GROUP BY g.condition, g.served_by, sc.split
+ORDER BY sc.split, g.condition, g.served_by
 """
 
 
@@ -238,6 +289,7 @@ def load_scores(
             "sample_idx",
             "model",
             "model_digest",
+            "served_by",
             "prompt_id",
             "rater_type",
             "rater_id",
@@ -288,6 +340,33 @@ def load_judge_samples(
     return to_long(frame)
 
 
+def load_generation_counts(*, conn: Any | None = None) -> pd.DataFrame:
+    """Row counts straight out of `generation`, grouped by condition and backend.
+
+    No split filter and no exclusion: this is the census the headline block
+    quotes, and every decision that narrows it -- the holdout restriction, D11's
+    dropped condition, D12's gate-blocked rows -- is applied downstream and
+    reported as its own number. See `GENERATION_COUNTS_SQL`.
+
+    An empty frame with the right columns comes back when the table is empty,
+    which is a legitimate answer and not an error.
+    """
+    frame = _read(GENERATION_COUNTS_SQL, {}, conn)
+    if frame.empty:
+        return pd.DataFrame(
+            columns=[
+                "condition",
+                "served_by",
+                "split",
+                "n_generations",
+                "n_gate_blocked",
+                "n_scored",
+                "n_scenarios",
+            ]
+        )
+    return frame
+
+
 def attach_equity_kind(long: pd.DataFrame, *, bank_path: str | None = None) -> pd.DataFrame:
     """Join `equity_kind` in from `scenarios/bank.jsonl`.
 
@@ -305,16 +384,21 @@ def attach_equity_kind(long: pd.DataFrame, *, bank_path: str | None = None) -> p
 
 
 # ---------------------------------------------------------------------------
-# D11: conditions dropped from the run, and what that costs
+# Conditions dropped wholesale -- of which, after D13, there are none
 # ---------------------------------------------------------------------------
 
-#: `DECISIONS.md` D11. LC generation was stopped at 39 of 180 cells, covering 13
-#: of 60 scenarios, and those cells were never randomised for partial analysis --
-#: they are the scenarios LC happened to reach before it was stopped. So LC is
-#: not a small arm, it is a non-arm, and the honest treatment is to exclude it
-#: from every comparison rather than to compute a C-vs-LC test on 13 scenarios
-#: and caveat it. The rows stay in the database as a record of what ran.
-DROPPED_CONDITIONS: tuple[str, ...] = ("LC",)
+#: **Empty, and that is the decision.** D11 dropped condition LC entirely: it had
+#: been stopped at 39 of 180 cells over 13 of 60 scenarios, never randomised for
+#: partial analysis, so it was not a small arm but a non-arm. D13 re-opened it —
+#: all 180 cells were generated under vLLM — and the exclusion moved from the
+#: condition to the `(condition, served_by)` pair, because a rule that still
+#: dropped `LC` would now discard the arm D13 exists to restore.
+#:
+#: The selection rule now lives in `carelite.stats.arms.EXCLUDED_ARMS`, and
+#: `restrict_to_analysis_arms` is what the report calls. `drop_dropped_conditions`
+#: is kept as the general utility it always was, for a caller that wants to
+#: exclude a condition by name.
+DROPPED_CONDITIONS: tuple[str, ...] = ()
 
 
 def drop_dropped_conditions(
@@ -322,11 +406,15 @@ def drop_dropped_conditions(
     *,
     conditions: Sequence[str] = DROPPED_CONDITIONS,
 ) -> tuple[pd.DataFrame, dict[str, int]]:
-    """Remove D11-dropped conditions. Returns the frame and what was removed.
+    """Remove whole conditions by name. Returns the frame and what was removed.
 
-    The counts come back rather than being logged, because "39 LC cells over 13
+    The counts come back rather than being logged, because "n cells over m
     scenarios were excluded" is a sentence the results document has to contain
     and a number nobody should have to re-derive to write it.
+
+    `conditions` defaults to `DROPPED_CONDITIONS`, which is empty after D13.
+    Excluding a serving stack within a condition is a different operation and is
+    `carelite.stats.arms.restrict_to_analysis_arms`.
     """
     if long.empty or "condition" not in long.columns:
         return long, {}
@@ -402,7 +490,7 @@ class DataInventory:
             dropped = ", ".join(
                 f"{k} {v} cells" for k, v in sorted(self.dropped_conditions.items())
             )
-            lines.append(f"  dropped by D11:          {dropped}")
+            lines.append(f"  excluded selections:     {dropped}")
         return "\n".join(lines)
 
 

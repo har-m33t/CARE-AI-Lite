@@ -15,7 +15,18 @@ and this is a second way of spelling it, not a second implementation — the
 tables below are rendered from one `AnalysisReport`, so a number in a CSV and
 the same number in the printed report cannot disagree.
 
-**What gets written, and why these four.**
+**What gets written, and why these six.**
+
+`headline-numbers.txt` and `headline-numbers.csv` are the small set of figures
+that end up quoted in prose — the generation census with its condition and
+serving-stack breakdown, the scored count, and the primary B-vs-A contrast —
+each printed with the qualification it cannot be quoted without. They exist
+because a planning document in this repository was once written from figures
+carried forward from memory rather than read from the database, and happened to
+be right. `carelite.stats.headline` documents the rest of that reasoning. They
+are a second spelling of numbers `analysis.txt` already contains, plus a census
+of `generation` that the analysis frame deliberately does not answer, since the
+frame is what survives the holdout restriction and D13's single-stack arm rule.
 
 `analysis.txt` is the full rendered report, which is the artefact that carries
 the reasoning: the exclusions, the instrument table, the ordering that keeps a
@@ -48,7 +59,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from carelite.stats.data import load_generation_counts
 from carelite.stats.effects import DEFAULT_N_BOOT
+from carelite.stats.headline import GenerationCounts, headline_numbers, write_headline
 from carelite.stats.primary import PairwiseResult
 from carelite.stats.report import AnalysisReport, run_analysis
 from carelite.types import Split
@@ -84,6 +97,11 @@ EFFECT_SIZE_COLUMNS: tuple[str, ...] = (
     "observed_direction",
     "planned_in_advance",
     "label",
+    # The qualifications the comparison cannot be read without, verbatim from
+    # `Hypothesis.caveats`. C vs LC is confounded by serving stack and is the
+    # reduced form of the question D7 describes; a CSV that carried the effect
+    # without those sentences would be the artefact someone plots.
+    "caveats",
 )
 
 #: Column order for `instrument-resolution.csv`.
@@ -143,6 +161,7 @@ def _effect_rows(results: Sequence[PairwiseResult], role: str) -> list[dict[str,
                 "observed_direction": r.observed_direction,
                 "planned_in_advance": r.hypothesis.prespecified,
                 "label": r.label.tag(),
+                "caveats": " | ".join(r.hypothesis.caveats),
             }
         )
     return rows
@@ -204,9 +223,12 @@ def _tables(report: AnalysisReport) -> list[_Table]:
             },
             *[
                 {
-                    "item": f"dropped_condition_{name}",
+                    "item": f"excluded_arm_{name.replace('/', '_')}",
                     "count": count,
-                    "detail": "DECISIONS.md D11",
+                    "detail": (
+                        "DECISIONS.md D13: excluded by (condition, served_by), not by "
+                        "condition — the LC analysis arm is served_by = 'vllm'"
+                    ),
                 }
                 for name, count in sorted(inv.dropped_conditions.items())
             ],
@@ -228,14 +250,28 @@ def _write_csv(path: Path, columns: Sequence[str], rows: Sequence[dict[str, Any]
     return path
 
 
-def write_tables(report: AnalysisReport, output_dir: Path) -> list[Path]:
-    """Render one `AnalysisReport` to the directory. Pure given the report."""
+def write_tables(
+    report: AnalysisReport,
+    output_dir: Path,
+    *,
+    counts: GenerationCounts | None = None,
+) -> list[Path]:
+    """Render one `AnalysisReport` to the directory. Pure given the report and counts.
+
+    `counts` is the census of `generation` that `run` reads from the database.
+    It is a parameter rather than a read inside this function so that everything
+    here stays a pure function of its inputs; `None` means the census was not
+    taken, and the headline block then prints `not read` rather than a zero
+    nobody measured.
+    """
     output_dir.mkdir(parents=True, exist_ok=True)
     written: list[Path] = []
 
     text_path = output_dir / "analysis.txt"
     text_path.write_text(report.render() + "\n", encoding="utf-8")
     written.append(text_path)
+
+    written.extend(write_headline(headline_numbers(report, counts=counts), output_dir))
 
     for table in _tables(report):
         written.append(_write_csv(output_dir / table.name, table.columns, table.rows))
@@ -254,5 +290,15 @@ def run(
     nothing it can help: a database that is reachable but empty produces a
     report that says so and CSVs with headers and no rows, because "0
     generations, nothing to reproduce yet" is a clean run.
+
+    Two reads, not one. `run_analysis` reads the scored holdout frame the
+    comparisons run on; `load_generation_counts` reads the unfiltered census of
+    `generation`. They answer different questions -- 939 rows exist, 900 were
+    analysed -- and the headline block prints both rather than letting one
+    number stand in for the other.
     """
-    return write_tables(run_analysis(split=split, n_boot=n_boot), Path(output_dir))
+    return write_tables(
+        run_analysis(split=split, n_boot=n_boot),
+        Path(output_dir),
+        counts=GenerationCounts.from_frame(load_generation_counts()),
+    )

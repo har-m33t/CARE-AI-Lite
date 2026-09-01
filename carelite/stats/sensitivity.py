@@ -18,6 +18,18 @@ wherever it appears:
         the **preferred reading** of the primary comparison, for the reason
         given on `sensitivity_gate_blocked`.
 
+A fifth entry is a robustness check on the *measurement stack* rather than on
+the analysis, added under D13 and labelled as not planned in advance:
+
+    (e) backend equivalence. Condition LC's 39 Ollama cells (D11) and their vLLM
+        counterparts share scenario, sample index and seed, so they are paired
+        observations of the same cells under two serving stacks. The measurement
+        belongs to `carelite.eval.judge.backend_equivalence`, which owns it; this
+        module frames its result as a sensitivity analysis and states the limits
+        that must accompany the number. It is not a rerun of the §8.1 family and
+        produces no flips — see `BackendEquivalenceCheck` for why the distinction
+        is kept rather than smoothed over.
+
 `retrieval_contrast` is not a rerun and is not in this list. It reports B vs C
 twice because the pooled and retrieval-only forms answer two different
 questions, and it is a headline result rather than a robustness check.
@@ -79,14 +91,17 @@ from carelite.types import Condition, RaterType
 
 __all__ = [
     "DEFAULT_MAX_PCT_RANGE_GE_2",
+    "BackendEquivalenceCheck",
     "Conclusion",
     "ConclusionFlip",
     "JudgeConsistencyExclusion",
     "RetrievalContrast",
     "SensitivityReport",
     "SensitivityRun",
+    "backend_equivalence_check",
     "compare_conclusions",
     "conclusions",
+    "read_backend_equivalence",
     "retrieval_contrast",
     "run_all_sensitivity",
     "scenario_judge_consistency",
@@ -747,6 +762,141 @@ def sensitivity_judge_consistency(
 
 
 # ---------------------------------------------------------------------------
+# (e) backend equivalence — D13, consumed from the judge lane
+# ---------------------------------------------------------------------------
+
+#: What this comparison cannot support, stated on the result rather than in the
+#: prose around it. `carelite.eval.judge.backend_equivalence` carries the same
+#: limits on its own object; these are the ones a reader of `analysis.txt` needs
+#: in front of the number, phrased for the sensitivity section it appears in.
+BACKEND_EQUIVALENCE_LIMITS: tuple[str, ...] = (
+    "39 paired cells over 13 of the 60 held-out scenarios. They are the scenarios condition LC "
+    "happened to reach before D11 stopped it and were never randomised for partial analysis, so "
+    "they are not a sample of the holdout — they are a convenience sample of it.",
+    "The two arms differ in more than the server: model artifact (GGUF against HF safetensors), "
+    "quantisation, sampling defaults, realised context pack (D13) and hardware. So agreement "
+    "does NOT license 'the stacks are interchangeable', and disagreement does NOT isolate the "
+    "serving stack. Neither direction identifies a cause.",
+    "Generation ran at temperature 0.7. Two sampling implementations produce different text from "
+    "the same seed, so even two faithful stacks would differ here by sampling alone.",
+    "This is not a rerun of the §8.1 family. It cannot flip a conclusion, and a clean result "
+    "here is not evidence that the C-vs-LC comparison is unconfounded — that confound is "
+    "structural and is stated on the comparison itself.",
+    "EXPLORATORY. D10 dropped the pre-registration and the judge validation study has not run.",
+)
+
+
+@dataclass(frozen=True, slots=True)
+class BackendEquivalenceCheck:
+    """The paired two-stack agreement result, framed as a sensitivity analysis.
+
+    **This class computes nothing.** `carelite.eval.judge.backend_equivalence`
+    owns the measurement — per-dimension exact and within-one agreement, ordinal
+    Krippendorff's alpha, Spearman's rho, and a Wilcoxon over the 13 scenario-level
+    cell means — and this wraps whatever that produced. A second implementation
+    in this package would be a second number for the same question, which is the
+    failure mode the whole lane is arranged against.
+
+    **Why it is not a `SensitivityRun`.** A `SensitivityRun` re-runs the §8.1
+    family under a different exclusion and reports which conclusions moved. This
+    varies neither the family nor the exclusion: it asks whether the instrument
+    reads two serving stacks alike on the cells both produced. Modelling it as a
+    run would give it a `conclusions_hold` property, and "no conclusion flipped"
+    would then be printed about an analysis that never had a conclusion to flip.
+
+    `equivalence` is `None` when the comparison could not be made — no database,
+    or one of the two sides not yet judged — and `unavailable_reason` says which.
+    An absent result is reported as absent, never as agreement.
+    """
+
+    equivalence: object | None = None
+    unavailable_reason: str = ""
+    limits: tuple[str, ...] = BACKEND_EQUIVALENCE_LIMITS
+    prespecified: bool = False
+
+    @property
+    def available(self) -> bool:
+        return self.equivalence is not None
+
+    @property
+    def poolable(self) -> bool | None:
+        """The judge lane's verdict on whether the two stacks may be pooled.
+
+        `None` when the comparison did not run. **Even `True` does not authorise
+        pooling here**: D13 decided the arms are not pooled, and this reports the
+        evidence bearing on that decision rather than reversing it.
+        """
+        value = getattr(self.equivalence, "poolable", None)
+        return None if value is None else bool(value)
+
+    def render(self) -> str:
+        lines = [
+            "  (e) backend equivalence: the same LC cells under two serving stacks"
+            "   [NOT PLANNED IN ADVANCE]",
+            "    D13. The 39 Ollama LC cells D11 left behind and their vLLM counterparts share "
+            "scenario,",
+            "    sample index and seed, so they are paired observations of the same cells. "
+            "Measured by",
+            "    carelite.eval.judge.backend_equivalence; reported here, not recomputed here.",
+        ]
+        if not self.available:
+            lines.append(
+                f"    NOT AVAILABLE: {self.unavailable_reason or 'the comparison was not run'}. "
+                "This is an absence of evidence about the two stacks, not evidence that they "
+                "agree."
+            )
+        else:
+            rendered = getattr(self.equivalence, "render", None)
+            body = rendered() if callable(rendered) else str(self.equivalence)
+            lines.extend(f"    {line}" for line in body.splitlines())
+            lines.append(
+                "    The verdict above bears on D13's decision not to pool the two stacks; it "
+                "does not reverse it. The LC analysis arm is served_by = 'vllm' and nothing else."
+            )
+        for limit in self.limits:
+            lines.append(f"    LIMIT: {limit}")
+        return "\n".join(lines)
+
+
+def read_backend_equivalence(**kwargs: object) -> BackendEquivalenceCheck:
+    """Read the judge lane's paired comparison out of Postgres, or say why not.
+
+    Every failure mode is the same answer — the check is unavailable and the
+    reason is recorded — because a missing database, an unjudged arm and an
+    unpairable sample are all "this comparison was not made", and none of them
+    is a finding about the two stacks. The exception text is carried through so
+    the distinction is still readable.
+
+    Keyword arguments are forwarded to
+    `carelite.eval.judge.backend_equivalence.run_backend_equivalence`.
+    """
+    try:
+        from carelite.eval.judge.backend_equivalence import run_backend_equivalence
+
+        return BackendEquivalenceCheck(equivalence=run_backend_equivalence(**kwargs))  # type: ignore[arg-type]
+    except Exception as exc:  # every failure is the same report
+        return BackendEquivalenceCheck(
+            unavailable_reason=f"{type(exc).__name__}: {exc}",
+        )
+
+
+def backend_equivalence_check(
+    equivalence: object | None = None,
+    *,
+    unavailable_reason: str = "",
+) -> BackendEquivalenceCheck:
+    """Wrap an already-computed `BackendEquivalence`, or record its absence."""
+    if equivalence is None:
+        return BackendEquivalenceCheck(
+            unavailable_reason=(
+                unavailable_reason
+                or "no paired backend comparison was supplied to this analysis run"
+            )
+        )
+    return BackendEquivalenceCheck(equivalence=equivalence)
+
+
+# ---------------------------------------------------------------------------
 # All three
 # ---------------------------------------------------------------------------
 
@@ -758,6 +908,9 @@ class SensitivityReport:
     runs: tuple[SensitivityRun, ...]
     judge_consistency_exclusion: JudgeConsistencyExclusion | None
     not_runnable: tuple[str, ...] = ()
+    #: (e). Not a member of `runs`: it varies the serving stack rather than the
+    #: analysis, so it has no family and no flips. See `BackendEquivalenceCheck`.
+    backend_equivalence: BackendEquivalenceCheck | None = None
 
     @property
     def flips(self) -> tuple[ConclusionFlip, ...]:
@@ -799,6 +952,9 @@ class SensitivityReport:
         for run in self.runs:
             lines.append(run.render())
             lines.append("")
+        if self.backend_equivalence is not None:
+            lines.append(self.backend_equivalence.render())
+            lines.append("")
         return "\n".join(lines).rstrip()
 
 
@@ -815,8 +971,15 @@ def run_all_sensitivity(
     n_boot: int = DEFAULT_N_BOOT,
     seed: int = DEFAULT_SEED,
     discrimination: Mapping[str, Discrimination] | None = None,
+    backend_equivalence: BackendEquivalenceCheck | None = None,
 ) -> SensitivityReport:
-    """Run (a), (b), (c) and (d), and collect every conclusion that moved."""
+    """Run (a), (b), (c) and (d), collect every conclusion that moved, and attach (e).
+
+    `backend_equivalence` is the already-computed two-stack check (D13). It is
+    passed in rather than read here so this function stays a pure function of its
+    frame; `carelite.stats.report.run_analysis` is what reads it from the
+    database, and only when it was the one that opened the database.
+    """
     runs: list[SensitivityRun] = []
     not_runnable: list[str] = []
 
@@ -895,4 +1058,7 @@ def run_all_sensitivity(
         runs=tuple(runs),
         judge_consistency_exclusion=exclusion,
         not_runnable=tuple(not_runnable),
+        backend_equivalence=backend_equivalence
+        if backend_equivalence is not None
+        else backend_equivalence_check(None),
     )

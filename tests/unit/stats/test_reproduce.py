@@ -69,6 +69,8 @@ class TestContract:
         names = {p.name for p in written}
         assert names == {
             "analysis.txt",
+            "headline-numbers.txt",
+            "headline-numbers.csv",
             "effect-sizes.csv",
             "instrument-resolution.csv",
             "data-inventory.csv",
@@ -157,6 +159,16 @@ class TestTablesAgreeWithTheReport:
         items = {r["item"] for r in _read(tmp_path / "out" / "data-inventory.csv")}
         assert {"gate_blocked", "crag_fell_back_to_b", "incomplete_generations"} <= items
 
+    def test_the_headline_block_is_written_and_says_the_census_was_not_read(
+        self, analysed: pd.DataFrame, tmp_path: Path
+    ) -> None:
+        """`write_tables` with no census must not print a count it never took."""
+        report = run_analysis(long=analysed, n_boot=200)
+        write_tables(report, tmp_path / "out")
+        text = (tmp_path / "out" / "headline-numbers.txt").read_text(encoding="utf-8")
+        assert "HEADLINE NUMBERS" in text
+        assert "not read" in text.lower()
+
     def test_the_text_report_carries_the_d10_banner(
         self, analysed: pd.DataFrame, tmp_path: Path
     ) -> None:
@@ -173,7 +185,7 @@ class TestEmptyDatabase:
         """`make reproduce` on a fresh clone must be a clean run, not a crash."""
         report = run_analysis(long=make_long(scores={}), n_boot=50)
         written = write_tables(report, tmp_path / "out")
-        assert len(written) == 4
+        assert len(written) == 6
 
         for name, columns in (
             ("effect-sizes.csv", EFFECT_SIZE_COLUMNS),
@@ -186,3 +198,57 @@ class TestEmptyDatabase:
 
         text = (tmp_path / "out" / "analysis.txt").read_text(encoding="utf-8")
         assert "NO RESULTS DATA" in text
+
+
+# ---------------------------------------------------------------------------
+# D13: the C-vs-LC caveats reach the machine-readable table
+# ---------------------------------------------------------------------------
+
+
+def test_effect_sizes_csv_carries_the_c_vs_lc_caveats(
+    tmp_path: Path, nurse_dimensions: tuple[str, ...]
+) -> None:
+    """A plot built from this CSV must not be able to lose the confound."""
+    scores: dict[tuple[str, str, int], dict[str, int]] = {}
+    for i in range(12):
+        scenario = f"SC-{i:03d}"
+        for condition, value in (("C", 4), ("LC", 2)):
+            for sample in range(3):
+                scores[(scenario, condition, sample)] = constant_scores(nurse_dimensions, value)
+
+    report = run_analysis(long=make_long(scores=scores), n_boot=100)
+    write_tables(report, tmp_path)
+
+    rows = list(csv.DictReader((tmp_path / "effect-sizes.csv").open()))
+    row = next(r for r in rows if r["key"] == "secondary3_nurse_C_vs_LC")
+    assert "caveats" in EFFECT_SIZE_COLUMNS
+    assert "CONFOUNDED BY SERVING STACK" in row["caveats"]
+    assert "REDUCED FORM OF THE QUESTION" in row["caveats"]
+    assert row["label"].startswith("EXPLORATORY")
+
+
+def test_the_data_inventory_names_the_excluded_arm_by_backend(
+    tmp_path: Path, nurse_dimensions: tuple[str, ...]
+) -> None:
+    scores: dict[tuple[str, str, int], dict[str, int]] = {}
+    for i in range(12):
+        scenario = f"SC-{i:03d}"
+        for sample in range(3):
+            scores[(scenario, "C", sample)] = constant_scores(nurse_dimensions, 4)
+            scores[(scenario, "LC", sample)] = constant_scores(nurse_dimensions, 2)
+    stale = {(f"SC-{i:03d}", "LC", 0): constant_scores(nurse_dimensions, 1) for i in range(4)}
+    frame = pd.concat(
+        [
+            make_long(scores=scores),
+            make_long(scores=stale, served_by="ollama", generation_id_suffix="-ollama"),
+        ],
+        ignore_index=True,
+    )
+    report = run_analysis(long=frame, n_boot=100)
+    write_tables(report, tmp_path)
+
+    rows = list(csv.DictReader((tmp_path / "data-inventory.csv").open()))
+    excluded = next(r for r in rows if r["item"].startswith("excluded_arm"))
+    assert excluded["item"] == "excluded_arm_LC_ollama"
+    assert excluded["count"] == "4"
+    assert "D13" in excluded["detail"]

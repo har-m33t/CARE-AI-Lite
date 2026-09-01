@@ -32,10 +32,29 @@ the module contains no comparison against a member of `Condition`.
 **LangGraph.** The topology below is declared once, in `NODES` and `EDGES`. When
 `langgraph` is importable, `to_langgraph()` compiles that same declaration into a
 `StateGraph`; otherwise `build_graph()` returns a small executor that walks the
-same declaration. `langgraph` is not in `pyproject.toml` and this lane cannot
-add it, so the built-in executor is what runs today. The two are driven by one
-topology on purpose: a fallback that reimplemented the flow would be a second
-program to keep in step with the first.
+same declaration. `langgraph` is now an `orchestration` extra in
+`pyproject.toml` and `build_graph()` prefers it, so the compiled `StateGraph` is
+what runs on a machine that has it. The executor is not dead code: it is what
+produced every generation in the database before the extra existed, and a
+machine without the extra still runs the whole system on it.
+
+The two are driven by one topology on purpose — a fallback that reimplemented
+the flow would be a second program to keep in step with the first — and
+`tests/unit/generate/test_graph_langgraph.py` runs a fixed set of seeded states
+through both compilers and asserts the final states are identical on every
+branch. That is what makes "one topology, two compilers" a property of the code
+rather than a claim in this docstring.
+
+**Why the two agree on the merge.** The executor applies a node's return with
+`dict.update`; LangGraph merges it into channels. Those coincide here because
+`TurnState` declares no reducers, so every field is a last-write-wins channel and
+the topology gives each field exactly one writer per step. The one field that
+accumulates — `errors` — is written as a whole new list built from the previous
+value rather than as an appended fragment, which is correct under both and would
+be correct under a reducer as well. There is one difference and it is not in the
+state: the executor mutates the mapping it was handed and returns it, while
+LangGraph returns a fresh one. Callers take the return value, and the runner
+copies it, so nothing depends on the aliasing.
 
 **What the safety layer does at each end.** The input screen runs before
 anything else and a red flag ends the turn — the tool escalates rather than
@@ -55,8 +74,9 @@ from enum import StrEnum
 from typing import Any, TypedDict
 
 from carelite.generate import prompts
+from carelite.generate.backend import default_client
 from carelite.generate.conditions import ConditionSpec, spec_for
-from carelite.generate.model import DIGEST_UNAVAILABLE, GenerationClient, GenerationError
+from carelite.generate.model import DIGEST_UNAVAILABLE, GenerationError, ModelClient
 from carelite.generate.selfcheck import SelfCheckResult, run_self_check
 from carelite.safety import fencing, screen_input, screen_output
 from carelite.types import (
@@ -133,6 +153,7 @@ class TurnState(TypedDict, total=False):
     text: str
     model: str
     model_digest: str
+    served_by: str
     num_ctx: int
     prompt_chars: int
 
@@ -154,7 +175,11 @@ class GraphDeps:
     loaded cross-encoder across many turns instead of rebuilding them per call.
     """
 
-    client: GenerationClient = field(default_factory=GenerationClient)
+    client: ModelClient = field(default_factory=default_client)
+    """Ollama, or a remote vLLM server under `CARELITE_BACKEND=vllm`. The swap
+    is the whole of the backend change: nothing else in this module, in
+    `conditions.py` or in `runner.py` knows which stack it is running on."""
+
     embedder: Any | None = None
     retrieval_generator: Any | None = None
     grader_client: Any | None = None
@@ -172,11 +197,16 @@ class GraphDeps:
 
 def initial_state(request: GuidanceRequest, *, deps: GraphDeps | None = None) -> TurnState:
     spec = spec_for(request.condition)
+    deps = deps if deps is not None else GraphDeps()
     return TurnState(
         request=request,
         spec=spec,
-        deps=deps if deps is not None else GraphDeps(),
+        deps=deps,
         utterance=request.utterance,
+        # Set here rather than only in `generate`, so a turn the safety screen
+        # ends before any model is reached still says which stack the run was
+        # configured against.
+        served_by=deps.client.served_by,
         may_persist=True,
         halted=False,
         context=[],
@@ -338,6 +368,7 @@ def generate(state: TurnState) -> dict[str, Any]:
             "system_text": system_text,
             "model": spec.model_tag,
             "model_digest": DIGEST_UNAVAILABLE,
+            "served_by": deps.client.served_by,
             "context": context,
             "context_note": note,
         }
@@ -349,6 +380,7 @@ def generate(state: TurnState) -> dict[str, Any]:
         "text": out.text,
         "model": out.model,
         "model_digest": out.model_digest,
+        "served_by": out.served_by,
         "num_ctx": out.num_ctx,
         "prompt_chars": out.prompt_chars,
         "context": context,
@@ -452,7 +484,13 @@ class _Executor:
     def __init__(self, max_steps: int = 32) -> None:
         self.max_steps = max_steps
 
-    def invoke(self, state: TurnState) -> TurnState:
+    def invoke(self, state: TurnState, *, thread_id: str | None = None) -> TurnState:
+        """Run one turn. `thread_id` is accepted and ignored.
+
+        The executor has nowhere to checkpoint to, so it cannot resume a turn
+        part-way. Taking the argument anyway means the runner has one call
+        shape for both compilers rather than a branch on which one it holds.
+        """
         current = START
         for _ in range(self.max_steps):
             if current == END:
@@ -466,18 +504,73 @@ class _Executor:
         return state
 
 
-def to_langgraph() -> Any:
+@dataclass
+class _CompiledLangGraph:
+    """A compiled `StateGraph` behind the same `invoke` the executor offers.
+
+    Two things live here rather than in the graph itself.
+
+    **`latency_ms` is stamped after the walk.** It is a column on `generation`
+    and it is not the product of any node — every node can be skipped by some
+    branch, so there is nowhere in the topology to set it that every path
+    reaches. The executor set it after its loop and the compiled graph, having
+    no such loop, silently wrote `NULL` into that column on every row it would
+    have produced.
+
+    **Resumption is decided here.** With a checkpointer attached, a turn that
+    was interrupted part-way is continued from its last completed node instead
+    of restarted, which for the long-context condition is the difference
+    between re-prefilling ~119,500 tokens and not.
+    """
+
+    app: Any
+    checkpointed: bool = False
+
+    def invoke(self, state: TurnState, *, thread_id: str | None = None) -> TurnState:
+        started = time.monotonic()
+        if not self.checkpointed or thread_id is None:
+            final = dict(self.app.invoke(state))
+            final["latency_ms"] = int((time.monotonic() - state["started_at"]) * 1000)
+            return final  # type: ignore[return-value]
+
+        from carelite.generate.checkpoint import bind_live_deps
+
+        # The checkpoint deliberately does not contain the live collaborators —
+        # see `checkpoint.py` — so they are handed back to the deserialiser here.
+        bind_live_deps(state["deps"])
+        config = {"configurable": {"thread_id": thread_id}}
+        pending = tuple(self.app.get_state(config).next)
+        if pending:
+            # Resumed: the clock restarts, because `started_at` was taken from a
+            # `time.monotonic()` in a process that is now gone and monotonic
+            # clocks are not comparable across processes. The recorded latency
+            # is the resumed portion, which is the only interval this process
+            # actually measured.
+            final = dict(self.app.invoke(None, config=config))
+            final["latency_ms"] = int((time.monotonic() - started) * 1000)
+            return final  # type: ignore[return-value]
+        final = dict(self.app.invoke(state, config=config))
+        final["latency_ms"] = int((time.monotonic() - state["started_at"]) * 1000)
+        return final  # type: ignore[return-value]
+
+
+def to_langgraph(*, checkpointer: Any | None = None) -> Any:
     """Compile `NODES`/`EDGES` into a LangGraph `StateGraph`.
 
-    Raises `ImportError` when `langgraph` is not installed, which is the case in
-    the pinned environment today: it is not a dependency in `pyproject.toml` and
-    this lane does not own that file.
+    Raises `ImportError` when `langgraph` is not installed. It is the
+    `orchestration` extra rather than a core dependency, so that a machine
+    without it still runs the system on `_Executor`.
+
+    `checkpointer` is a LangGraph saver — `carelite.generate.checkpoint`
+    builds the Postgres one. Passing it makes an interrupted turn resumable at
+    its last completed node; the returned object then requires a `thread_id` on
+    `invoke` to know which turn it is resuming.
     """
     from langgraph.graph import END as LG_END
     from langgraph.graph import START as LG_START
     from langgraph.graph import StateGraph
 
-    builder = StateGraph(TurnState)
+    builder: Any = StateGraph(TurnState)
     for name, fn in NODES.items():
         builder.add_node(name, fn)
     builder.add_edge(LG_START, START)
@@ -489,14 +582,15 @@ def to_langgraph() -> Any:
             builder.add_edge(name, LG_END)
         else:
             builder.add_edge(name, edge)
-    return builder.compile()
+    app = builder.compile(checkpointer=checkpointer) if checkpointer else builder.compile()
+    return _CompiledLangGraph(app=app, checkpointed=checkpointer is not None)
 
 
-def build_graph(*, prefer_langgraph: bool = True) -> Any:
+def build_graph(*, prefer_langgraph: bool = True, checkpointer: Any | None = None) -> Any:
     """The compiled turn graph. LangGraph when available, the executor otherwise."""
     if prefer_langgraph:
         try:
-            return to_langgraph()
+            return to_langgraph(checkpointer=checkpointer)
         except ImportError:
             pass
     return _Executor()
