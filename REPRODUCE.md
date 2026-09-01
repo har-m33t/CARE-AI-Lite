@@ -433,9 +433,10 @@ provider's secret mechanism — not by typing it into a command the pod logs. No
 document should ever be followed by pasting a real token into a tracked file.
 
 `carelite/generate/backend.py` keeps the token out of `repr()` and scrubs it from every message it
-raises or prints, because run logs get committed. `.env.example` carries the variable names with
-placeholder values and is the file to copy; the repository's `.githooks/pre-commit` runs
-`detect-secrets` as a second line of defence, not as a first.
+raises or prints, because run logs get committed. `.env.example` carries placeholder values for
+`CARELITE_BACKEND`, `CARELITE_VLLM_BASE_URL` and `CARELITE_VLLM_API_KEY` and is the file to copy —
+it does not yet list `CARELITE_VLLM_MODEL_REVISION`, so add that line yourself. The repository's
+`.githooks/pre-commit` runs `detect-secrets` as a second line of defence, not as a first.
 
 **Configure the client.** Four environment variables, read from the process environment or from
 `.env`; the unprefixed spellings (`VLLM_BASE_URL` and so on) are accepted as aliases:
