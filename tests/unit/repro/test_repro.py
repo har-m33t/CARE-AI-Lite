@@ -53,31 +53,50 @@ def test_render_report_partial_run_says_so() -> None:
     )
     text = render_report(report)
     assert "500" in text
-    assert "939" in text  # EXPECTED_HOLDOUT_GENERATIONS_ACTUAL, not the original 1,080
+    # EXPECTED_HOLDOUT_GENERATIONS_ACTUAL, which D13 moved from 939 to 1,119 once condition
+    # LC was generated in full on a serving stack that could afford it.
+    assert "1,119" in text
     assert "partial run" in text
 
 
-def test_render_report_complete_run_at_the_d11_figure() -> None:
-    # 939, not 1,080 -- DECISIONS.md D11 stopped Condition LC at 39/180 cells by decision.
+def test_render_report_complete_run_at_the_d13_figure() -> None:
+    # 1,119: the full 1,080 across six conditions, plus the 39 LC cells D11 stopped at and
+    # D13 retained as a backend-equivalence sample rather than deleting.
+    report = ReproReport(
+        db_ok=True,
+        db_errors=[],
+        stages=[StageStatus(stage="generation", table="generation", n_rows=1119)],
+    )
+    text = render_report(report)
+    assert "complete" in text
+    assert "D13" in text
+    assert "1,080" in text  # the six-condition total, named alongside the 39 retained cells
+    assert "39" in text
+
+
+def test_render_report_the_old_d11_figure_now_reads_as_partial() -> None:
+    """939 was complete under D11 and is short a condition under D13.
+
+    The number did not change; what the project expects of it did. A census that still
+    called 939 complete would report a run missing 141 LC cells as finished.
+    """
     report = ReproReport(
         db_ok=True,
         db_errors=[],
         stages=[StageStatus(stage="generation", table="generation", n_rows=939)],
     )
     text = render_report(report)
-    assert "complete" in text
-    assert "D11" in text
-    assert "1,080" in text  # named as the superseded original figure, for contrast
+    assert "partial run" in text
 
 
-def test_render_report_more_than_d11_expected_flags_for_a_look() -> None:
+def test_render_report_more_than_expected_flags_for_a_look() -> None:
     report = ReproReport(
         db_ok=True,
         db_errors=[],
-        stages=[StageStatus(stage="generation", table="generation", n_rows=1080)],
+        stages=[StageStatus(stage="generation", table="generation", n_rows=1200)],
     )
     text = render_report(report)
-    assert "1,080" in text
+    assert "1,200" in text
     assert "exceeding" in text
 
 

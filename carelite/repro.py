@@ -64,12 +64,18 @@ PIPELINE_STAGES: tuple[tuple[str, str], ...] = (
 #: number this run actually reaches, and is what completion is checked against.
 EXPECTED_HOLDOUT_GENERATIONS = 60 * 6 * 3
 
-#: What the holdout run actually completes to, per `DECISIONS.md` D11: Condition LC was stopped
-#: at 39 of its planned 180 cells (cost ~33x the other conditions per cell on the rented GPU), so
-#: this run is complete, by decision, at 5 conditions x 180 + 39 = 939 -- not at 1,080. Checking
-#: against the original 1,080 would report a run that finished exactly as decided as "still
-#: partial", which is a worse error than the one this constant fixes.
-EXPECTED_HOLDOUT_GENERATIONS_ACTUAL = 5 * 60 * 3 + 39
+#: Cells retained from the run D11 stopped. Condition LC was halted at 39 of its planned 180
+#: cells, and D13 completed it on a different serving stack rather than resuming it: the 39 are
+#: kept as a paired backend-equivalence sample and are not part of any analysis arm. They are
+#: still rows in `generation`, so a census has to expect them.
+RETAINED_OLLAMA_LC_CELLS = 39
+
+#: What the holdout run completes to now that D13 has generated condition LC in full. D11 fixed
+#: this at 939 -- 5 conditions x 180 plus 39 partial LC cells -- because LC cost ~33x the other
+#: conditions per cell under Ollama. D13 measured 3.61s per cell under vLLM with prefix caching
+#: against D11's 198s and generated all 180, so the run is no longer short a condition. The total
+#: is the full 1,080 plus the 39 retained cells, because those were never deleted.
+EXPECTED_HOLDOUT_GENERATIONS_ACTUAL = EXPECTED_HOLDOUT_GENERATIONS + RETAINED_OLLAMA_LC_CELLS
 
 #: The two downstream lanes this module hands off to once they exist. See the module docstring
 #: for the call contract each is expected to expose.
@@ -225,23 +231,25 @@ def render_report(report: ReproReport) -> str:
         )
     elif n_gen == EXPECTED_HOLDOUT_GENERATIONS_ACTUAL:
         lines.append(
-            f"{n_gen:,} generations present — the holdout run is complete at the figure "
-            "DECISIONS.md D11 fixed it at (5 conditions x 180 cells + 39 partial LC cells), not "
-            f"at the originally-specified {EXPECTED_HOLDOUT_GENERATIONS:,}. Condition LC was "
-            "stopped by decision, not by failure — see docs/limitations.md SS4."
+            f"{n_gen:,} generations present — the holdout run is complete. All six conditions "
+            f"ran to {EXPECTED_HOLDOUT_GENERATIONS:,} cells, plus the "
+            f"{RETAINED_OLLAMA_LC_CELLS} LC cells retained from the run DECISIONS.md D11 stopped. "
+            "Condition LC was completed under D13 on a serving stack with prefix caching; the "
+            "retained cells are a backend-equivalence sample and belong to no analysis arm — see "
+            "docs/limitations.md SS4."
         )
     elif n_gen < EXPECTED_HOLDOUT_GENERATIONS_ACTUAL:
         lines.append(
             f"{n_gen:,} of the expected {EXPECTED_HOLDOUT_GENERATIONS_ACTUAL:,} holdout "
-            "generations present (5 conditions x 180 + 39 partial LC cells, per DECISIONS.md "
-            "D11 — see docs/limitations.md SS4). The full run has not completed — figures and "
-            "tables below reflect a partial run."
+            f"generations present ({EXPECTED_HOLDOUT_GENERATIONS:,} across six conditions plus "
+            f"{RETAINED_OLLAMA_LC_CELLS} retained LC cells, per DECISIONS.md D11 and D13). The "
+            "full run has not completed — figures and tables below reflect a partial run."
         )
     else:
         lines.append(
             f"{n_gen:,} generations present, exceeding the {EXPECTED_HOLDOUT_GENERATIONS_ACTUAL:,} "
-            "this run was expected to complete to under DECISIONS.md D11 — check whether LC "
-            "generation resumed after being stopped, or whether this is a different run."
+            "this run is expected to complete to under DECISIONS.md D11 and D13 — check whether a "
+            "condition was generated on a third serving stack, or whether this is a different run."
         )
 
     lines.append("")
