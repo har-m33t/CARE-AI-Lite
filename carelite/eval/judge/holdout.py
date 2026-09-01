@@ -32,13 +32,14 @@ third of its mass. The flag is not derivable from the score, so if it does not
 survive into what this module emits, the distinction is lost downstream and the
 attenuation is silently absorbed into the effect size.
 
-**Condition LC is a partial record, not a condition.** D11 stopped LC generation
-at 39 of 180 cells, covering 13 of 60 scenarios, and those cells were never
-randomised for partial analysis — they are the scenarios LC happened to reach
-before it was stopped. They are judged (39 calls is nothing) and every LC row is
-stamped `partial_condition: true`, with the coverage recorded in the manifest,
-so nothing downstream can read LC as a complete arm. `--skip-lc` drops them
-entirely if that is preferred.
+**Condition LC is two things and they must not merge.** D11 stopped LC at 39 of
+180 cells covering 13 of 60 scenarios, never randomised for partial analysis.
+D13 then completed LC in full under vLLM: 180 cells, all 60 scenarios. Both sets
+carry `condition = 'LC'`, so partiality is stamped from `(condition, served_by)`
+via `carelite.eval.judge.arms.is_partial_record` rather than from the label —
+the Ollama rows are the partial record and stay `partial_condition: true`, the
+vLLM rows are a complete arm and are not. The manifest breaks LC out by backend
+for the same reason. `--skip-lc` drops both if that is preferred.
 
 **All results are descriptive.** D10 dropped the pre-registration; this is a
 local proof of concept. Nothing this module produces is confirmatory or
@@ -61,6 +62,7 @@ from pathlib import Path
 from typing import Any
 
 from carelite.config import get_settings
+from carelite.eval.judge.arms import is_partial_record
 from carelite.eval.judge.cache import JudgeCache
 from carelite.eval.judge.client import ChatClient, OllamaChatClient
 from carelite.eval.judge.judge import JudgeResult, LLMJudge
@@ -76,7 +78,7 @@ __all__ = [
     "rows_for",
 ]
 
-#: Cells LC actually reached before D11 stopped it, out of the 180 a full arm has.
+#: Cells a complete arm holds: 60 held-out scenarios x 3 samples.
 LC_PLANNED_CELLS = 180
 
 
@@ -104,6 +106,10 @@ class GenerationMeta:
     model_digest: str
     output_gate_blocked: bool
     output_gate_flags: tuple[str, ...]
+    #: Which serving stack produced the response. A journal written before the
+    #: column existed carries no value and every one of those cells was Ollama,
+    #: so the default is the truth about them rather than a placeholder.
+    served_by: str = "ollama"
 
 
 def load_holdout(
@@ -176,6 +182,7 @@ def load_holdout(
                 model_digest=record.key.model_digest,
                 output_gate_blocked=bool(extra.get("output_gate_blocked", False)),
                 output_gate_flags=tuple(extra.get("output_gate_flags") or ()),
+                served_by=record.served_by,
             )
     return generations, scenario_texts, meta
 
@@ -321,7 +328,8 @@ def rows_for(
                     "n_retrieved": m.n_retrieved,
                     "generator_model": m.model,
                     "generator_digest": m.model_digest,
-                    "partial_condition": m.condition == Condition.LC.value,
+                    "served_by": m.served_by,
+                    "partial_condition": is_partial_record(m.condition, m.served_by),
                     "output_gate_blocked": m.output_gate_blocked,
                     "output_gate_flags": list(m.output_gate_flags),
                 }
@@ -340,7 +348,6 @@ def build_manifest(
 
     settings = get_settings()
     by_condition = Counter(str(r.get("condition")) for r in rows)
-    lc_scenarios = {m.scenario_id for m in meta.values() if m.condition == Condition.LC.value}
     fell_back = [r for r in rows if r.get("fell_back_to_b")]
     incomplete = [r for r in rows if not r.get("complete")]
 
@@ -387,18 +394,10 @@ def build_manifest(
                 "pooling compares a condition against itself for that share of its mass."
             ),
         },
-        "condition_lc": {
-            "n_cells": by_condition.get(Condition.LC.value, 0),
-            "planned_cells": LC_PLANNED_CELLS,
-            "n_scenarios": len(lc_scenarios),
-            "partial": True,
-            "note": (
-                "D11 stopped LC generation partway. These are the scenarios LC happened "
-                "to reach before it was stopped, not a randomised subsample, so they "
-                "support no comparison against a complete arm. Every LC row carries "
-                "`partial_condition: true`."
-            ),
-        },
+        "condition_lc": _lc_summary(rows),
+        "served_by": dict(
+            sorted(Counter(str(r.get("served_by") or "ollama") for r in rows).items())
+        ),
         "output_gate_blocked": _gate_block_summary(rows),
         "score_summary": summarise_scores(rows),
         "reporting": {
@@ -428,6 +427,49 @@ def build_manifest(
             "span_support_rate_validation": 0.80,
             "automatic_span_grounding_validation": 0.96,
         },
+    }
+
+
+def _lc_summary(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """Condition LC broken out by serving stack, because the two are not one arm.
+
+    D13 completed LC under vLLM at 180 cells over all 60 held-out scenarios and
+    kept D11's 39 Ollama cells as a paired equivalence sample. Reporting a single
+    `n_cells` for LC would put 219 in a field a reader will take for the arm.
+    """
+    from collections import Counter
+
+    lc_rows = [r for r in rows if str(r.get("condition")) == Condition.LC.value]
+    by_backend = Counter(str(r.get("served_by") or "ollama") for r in lc_rows)
+    scenarios: dict[str, set[str]] = {}
+    for row in lc_rows:
+        scenarios.setdefault(str(row.get("served_by") or "ollama"), set()).add(
+            str(row.get("scenario_id"))
+        )
+
+    return {
+        "n_rows_all_backends": len(lc_rows),
+        "planned_cells_per_arm": LC_PLANNED_CELLS,
+        "by_backend": {
+            backend: {
+                "n_cells": n,
+                "n_scenarios": len(scenarios.get(backend, set())),
+                "partial_record": is_partial_record(Condition.LC.value, backend),
+                "role": (
+                    "analysis arm (D13)"
+                    if backend == "vllm"
+                    else "paired equivalence sample only (D11, D13)"
+                ),
+            }
+            for backend, n in sorted(by_backend.items())
+        },
+        "note": (
+            "The LC analysis arm is `served_by = 'vllm'` and nothing else. The 39 "
+            "Ollama cells are D11's partial record — 13 of 60 scenarios, never "
+            "randomised for partial analysis — retained under D13 solely as a paired "
+            "backend-equivalence sample. Pooling the two would combine two serving "
+            "stacks and double-count 13 scenarios in one step."
+        ),
     }
 
 
