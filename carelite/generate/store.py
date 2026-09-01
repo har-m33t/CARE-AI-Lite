@@ -27,6 +27,13 @@ the long-context coverage, the input-screen flags — goes to a sidecar JSONL
 beside the run. The schema is a shared contract and this lane does not own it,
 so the choice is a sidecar or dropping the data, and dropping it would mean a
 run with a silently broken self-check looks exactly like a healthy one.
+
+**Two columns the insert has to name explicitly.** `gate_blocked` (D12) and
+`served_by` are both `NOT NULL DEFAULT`, so an insert that omits them succeeds
+and writes the default — which is silently wrong for a refused response and for
+anything a second serving stack produced. `gate_blocked` is read off the sidecar
+payload rather than carried as a second field that could disagree with it;
+`served_by` comes from the client that produced the text.
 """
 
 from __future__ import annotations
@@ -94,7 +101,21 @@ class GenerationRecord:
     response: str
     latency_ms: int | None = None
     trace: dict[str, Any] | None = None
+    served_by: str = "ollama"
+    """Which serving stack produced the response, from the client that produced
+    it. Defaults to Ollama, which is what every row already in the database is
+    and what the schema backfills existing rows to."""
+
     extra: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def gate_blocked(self) -> bool:
+        """Whether the output gate withheld this response (D12).
+
+        Read off the sidecar payload the runner already builds rather than
+        duplicated as a second field that could disagree with it.
+        """
+        return bool(self.extra.get("output_gate_blocked"))
 
     @property
     def generation_id(self) -> str:
@@ -125,6 +146,9 @@ class GenerationRecord:
             response=str(obj["response"]),
             latency_ms=obj.get("latency_ms"),
             trace=obj.get("trace"),
+            # Journals written before a second backend existed have no field
+            # here, and every one of those cells was served by Ollama.
+            served_by=str(obj.get("served_by") or "ollama"),
             extra=obj.get("extra") or {},
         )
 
@@ -262,8 +286,8 @@ class PostgresStore:
                 """
                 INSERT INTO generation (generation_id, scenario_id, condition, prompt_id,
                                         model, model_digest, seed, temperature, sample_idx,
-                                        response, latency_ms)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                                        response, latency_ms, gate_blocked, served_by)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (scenario_id, condition, prompt_id, model_digest, seed, sample_idx)
                 DO NOTHING
                 """,
@@ -279,6 +303,8 @@ class PostgresStore:
                     key.sample_idx,
                     record.response,
                     record.latency_ms,
+                    record.gate_blocked,
+                    record.served_by,
                 ),
             )
             if record.trace is not None:

@@ -19,9 +19,19 @@ ctrl-C. So resumption is the design rather than a feature bolted on afterwards:
 * Every record is durably stored before the next cell starts. A `SIGKILL` costs
   the cell in flight and nothing else.
 
-There is deliberately no checkpoint file and no run-level state. A checkpoint is
-one more thing that can disagree with the data; `completed_keys()` asks the
-store what is actually there.
+There is deliberately no checkpoint *file* and no run-level state. A checkpoint
+file is one more thing that can disagree with the data; `completed_keys()` asks
+the store what is actually there, and that remains the whole of the resume rule.
+
+**`--checkpoint` adds resumption inside a cell, and changes nothing else.** With
+it, the graph is compiled against the LangGraph Postgres checkpointer and each
+cell runs on a thread id derived from its own cache key, so a turn killed after
+the generation but before the self-check is continued rather than restarted. It
+is off by default and it is an optimisation on a resume that already worked: if
+the database is unreachable or `langgraph-checkpoint-postgres` is missing,
+`carelite.generate.checkpoint` says so on stderr and the run proceeds on the
+per-cell resume that produced every existing row. For the A/A2/D group the
+saving is about six seconds; for condition LC it is a ~119,500-token prefill.
 
 **Which split, and why the two cannot contaminate each other.**
 
@@ -84,6 +94,15 @@ keys change and the affected cells are regenerated under the new digest rather
 than silently mixing two models in one column. That is the behaviour a mutable
 tag makes necessary.
 
+**Which serving stack produced each row is recorded, from the client.** A run
+under `CARELITE_BACKEND=vllm` differs from an Ollama run only in the client
+`GraphDeps` holds: same plan, same seeds, same prompts, same graph. `served_by`
+comes off the client rather than off a flag, and the model digest it resolves is
+a vLLM identity (`vllm:<repo>@<revision>`) rather than a GGUF hash — which is
+also why re-running an existing cell under the second stack inserts a new row
+instead of colliding with the first: `model_digest` is part of the uniqueness
+key.
+
 **Two things get recorded that a reader might expect to be dropped.**
 
 *Gate-blocked generations are stored, flagged.* When the output gate withholds a
@@ -110,6 +129,8 @@ from typing import Any
 
 from carelite.config import get_settings, seed_for
 from carelite.generate import prompts
+from carelite.generate.backend import default_client
+from carelite.generate.checkpoint import graph_checkpointer
 from carelite.generate.conditions import SPEC, ConditionSpec, spec_for
 from carelite.generate.graph import (
     GraphDeps,
@@ -117,8 +138,14 @@ from carelite.generate.graph import (
     build_graph,
     initial_state,
 )
-from carelite.generate.model import DIGEST_UNAVAILABLE, GenerationClient
-from carelite.generate.store import CacheKey, GenerationRecord, GenerationStore, JsonlStore
+from carelite.generate.model import DIGEST_UNAVAILABLE
+from carelite.generate.store import (
+    CacheKey,
+    GenerationRecord,
+    GenerationStore,
+    JsonlStore,
+    generation_id_for,
+)
 from carelite.types import Condition, GuidanceRequest, Scenario, Split
 
 __all__ = [
@@ -401,7 +428,9 @@ def run(
             )
 
     if digests is None:
-        client = deps.client if isinstance(deps.client, GenerationClient) else GenerationClient()
+        # Whatever client the run is actually using, so a vLLM run keys on a
+        # vLLM identity rather than on an Ollama digest for the same tag.
+        client = deps.client if hasattr(deps.client, "resolve_digest") else default_client()
         digests = {c: client.resolve_digest(spec_for(c).model_tag) for c in conditions}
         if not dry_run:
             assert_digests_resolved(digests)
@@ -436,7 +465,12 @@ def run(
         )
         state = initial_state(request, deps=deps)
         try:
-            final = dict(compiled.invoke(state))
+            # The thread id is the cell's own stable identity, so a run that is
+            # killed and restarted lands on the checkpoint the dead run left and
+            # continues the turn instead of restarting it. It is derived from
+            # the cache key rather than generated, for the same reason
+            # `generation_id_for` is: a per-process id would never match.
+            final = dict(compiled.invoke(state, thread_id=generation_id_for(cell.key)))
         except Exception as exc:  # a store or daemon fault: the cell retries next run
             report.failed += 1
             report.errors.append(f"{cell.key.as_tuple()}: {type(exc).__name__}: {exc}")
@@ -475,6 +509,10 @@ def run(
                 response=text,
                 latency_ms=final.get("latency_ms"),
                 trace=_trace_payload(final),
+                # From the client that produced the text, never from a flag on
+                # the run: a row that says which backend served it is the only
+                # thing that lets two stacks be compared instead of pooled.
+                served_by=str(final.get("served_by") or deps.client.served_by),
                 extra=_extra_payload(cell, final),
             )
         )
@@ -524,6 +562,14 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--dry-run", action="store_true", help="plan and count, generate nothing")
     parser.add_argument("--require-committed", action="store_true")
     parser.add_argument("--register-prompts", action="store_true", help="upsert prompt_version")
+    parser.add_argument(
+        "--checkpoint",
+        action="store_true",
+        help=(
+            "checkpoint each turn to Postgres so an interrupted cell resumes at its "
+            "last completed node (also settable with CARELITE_GRAPH_CHECKPOINT=1)"
+        ),
+    )
     return parser
 
 
@@ -585,16 +631,21 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - CLI wr
         )
 
     try:
-        report = run(
-            store=store,
-            split=split,
-            conditions=_parse_conditions(args.conditions),
-            samples=args.samples,
-            limit=args.limit,
-            dry_run=args.dry_run,
-            require_committed=args.require_committed,
-            on_cell=progress,
-        )
+        # The checkpointer is opened around the whole run rather than per cell:
+        # one connection for the run, and `None` — with a line on stderr — on any
+        # machine that cannot open one, which leaves the per-cell resume intact.
+        with graph_checkpointer(enabled=True if args.checkpoint else None) as saver:
+            report = run(
+                store=store,
+                split=split,
+                conditions=_parse_conditions(args.conditions),
+                samples=args.samples,
+                limit=args.limit,
+                dry_run=args.dry_run,
+                require_committed=args.require_committed,
+                on_cell=progress,
+                graph=None if args.dry_run else build_graph(checkpointer=saver),
+            )
     except PreflightRefusal as exc:
         # Refused before the first cell: nothing was generated and nothing was
         # written. Exit 2 so a script can tell that from "ran, some cells failed".

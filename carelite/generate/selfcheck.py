@@ -34,7 +34,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from carelite.generate import prompts
-from carelite.generate.model import GenerationClient, GenerationError
+from carelite.generate.model import GenerationError, ModelClient
 from carelite.safety import fencing
 
 __all__ = ["SELF_CHECK_PROMPT_ID", "SelfCheckResult", "parse_verdict", "run_self_check"]
@@ -108,7 +108,7 @@ def run_self_check(
     *,
     utterance: str,
     retrieved: Sequence[Any] = (),
-    client: GenerationClient,
+    client: ModelClient,
     model_tag: str,
     seed: int,
     window: int = 8192,
