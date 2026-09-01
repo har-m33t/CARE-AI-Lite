@@ -12,14 +12,21 @@ holdout generation runs. What still applies: every result this reproduction prod
 analysis plan fixed its thresholds in advance — say so in anything you write up from this run.
 
 **Hardware requirement, stated plainly because it is not optional: this experiment does not
-reproduce on a consumer laptop in reasonable time.** The judge lane measured ~21 minutes per
-Condition-LC generation on local hardware and projected ~59 hours for that condition alone; even on
-a rented 48 GB GPU, LC still cost ~33× the other conditions per cell (`DECISIONS.md` D11) and was
-stopped after 39 of its planned 180 cells for exactly that reason. **This project's own holdout run
-was executed on a rented Runpod L40S (48 GB VRAM), not a local machine.** If you are reproducing
-this on a laptop-class GPU (24 GB or less), plan on Condition LC being effectively unaffordable at
-this scale even though the other five conditions (A, A2, B, C, D — 180 cells each, the study's
-primary comparisons) are tractable; §7 has the measured per-cell numbers.
+reproduce on a consumer laptop in reasonable time.** **This project's own holdout run was executed
+on a rented Runpod L40S (48 GB VRAM), not a local machine**, and Condition LC was later completed
+on a rented A100 SXM (80 GB). If you are reproducing this on a laptop-class GPU (24 GB or less),
+the five Ollama-served conditions (A, A2, B, C, D — 180 cells each, the study's primary
+comparisons) are tractable but slow; §7 has the measured per-cell numbers.
+
+**Condition LC is the expensive one, and which serving stack you use decides by how much.** Under
+Ollama the judge lane measured ~21 minutes per LC generation locally and projected ~59 hours for
+that condition alone; even on the rented L40S, LC cost ~33× the other conditions per cell and was
+stopped after 39 of its planned 180 cells for exactly that reason (`DECISIONS.md` D11). Under vLLM
+with prefix caching the same work is **3.61 s per warm cell after one 64.31 s cold prefill**, and
+the full 180 cells complete in about 21 minutes for roughly $1.38 of GPU time (`DECISIONS.md` D13).
+That is a 54.9× difference on the same prompts and the same model family, and it is a property of
+the serving stack rather than of the condition — **§7.3 is the path that finishes**. Ollama is
+correct for the other five conditions and is what this project used for them.
 
 ---
 
@@ -29,9 +36,17 @@ Corpus retrieval → knowledge-base extraction → index build → scenario-cond
 six experimental conditions → LLM-as-judge scoring → statistics → figures and tables. Every stage
 writes to one PostgreSQL database, and `make reproduce` at the end regenerates every figure and
 table from what's in it — it does not re-run inference. Re-running inference is a separate, much
-longer step described in §6–7. **This project's own run completed at 939 generations, not the
-1,080 originally specified** — Condition LC was stopped by decision (`DECISIONS.md` D11), not by
-failure; see §7 and `docs/limitations.md` §4 for the full account.
+longer step described in §6–7. This project's own run was produced in two passes: five conditions
+under Ollama on 2026-08-25, then Condition LC under vLLM on 2026-09-01 after `DECISIONS.md` D13
+re-opened D11's cost premise. See §7 and `docs/limitations.md` §4 for the full account.
+
+**Do not take a row count from this document, or from any other prose in this repository.**
+`make reproduce` writes `runs/repro/headline-numbers.txt` by querying Postgres, printing the
+generation census, the frame the analysis actually ran on, and the per-serving-stack split as three
+separate figures, each next to the qualification it cannot be quoted without. Prose in this
+repository has gone stale against the database before — that file exists because of it
+(`carelite/stats/headline.py`). Run `make reproduce` and read that file; where it disagrees with a
+sentence here, it is right.
 
 ---
 
@@ -46,6 +61,9 @@ failure; see §7 and `docs/limitations.md` §4 for the full account.
 - **Ollama**, for local model serving. Built against `ollama 0.32.15`. Install from
   [ollama.com](https://ollama.com) or your platform's package manager.
 - **PostgreSQL with the `pgvector` and `pg_trgm` extensions**, version details in §3.
+- **A rented GPU running vLLM**, only if you intend to complete Condition LC. Nothing else in this
+  document needs it, and vLLM is never installed locally — the `vllm` extra installs an
+  OpenAI-compatible *client* (`openai`), not the server. §7.3 has the full procedure.
 - macOS (Apple Silicon) and Linux are both fine; nothing here depends on macOS specifically except
   that the EDB Postgres installer path in §3 is macOS-specific. On Linux, install Postgres and
   pgvector via your distribution's packages or the pgvector project's own instructions.
@@ -61,7 +79,7 @@ uv --version                                       # confirm
 
 ```sh
 git clone <repo-url> carelite-ai && cd carelite-ai
-uv sync --extra dev
+uv sync --extra dev --extra rerank --extra orchestration --extra langchain --extra vllm
 ```
 
 This creates `.venv/` from `uv.lock` exactly — **not** from `pyproject.toml`'s loose version
@@ -69,8 +87,18 @@ ranges. `uv.lock` is what makes this reproducible; do not delete it and re-resol
 deliberately updating dependencies, and if you do, that is a change worth its own commit, not a
 side effect of "getting reproduce to run."
 
+**What each extra is for, since three of them are optional in a way `rerank` is not.** `dev` is
+lint, typecheck and pytest. `rerank` pulls `sentence-transformers` and `torch` for the
+cross-encoder, and retrieval needs it. `orchestration` installs `langgraph` and its Postgres
+checkpointer: `carelite/generate/graph.py` declares its topology once and compiles it two ways, and
+without this extra the built-in executor runs instead — which is how the study's first 939
+generations were produced, so it is a supported path, not a degraded one. `langchain` installs the
+retrieval adapter's dependencies; the adapter is measured against the native pipeline and is never
+the default, so nothing in this document requires it. `vllm` installs the `openai` client used to
+talk to a remote vLLM server in §7.3 — it does **not** install vLLM, which runs on the pod.
+
 ```sh
-make install     # equivalent to the uv sync above, via the Makefile
+make install     # runs exactly the uv sync above, via the Makefile
 make check       # lint + typecheck + unit tests, no model, no DB — should pass clean on a fresh clone
 ```
 
@@ -145,7 +173,7 @@ ollama pull bge-m3           # embedder
 ```
 
 The reranker (`BAAI/bge-reranker-v2-m3`) is a `sentence-transformers` cross-encoder, not an Ollama
-model — it's pulled automatically on first use once you `uv sync --extra rerank` (see §5).
+model — it's pulled automatically on first use, from the `rerank` extra installed in §2.
 
 Record the digest actually pulled — this is what gets stored on every generation per build plan v3
 §16, because a tag can point to different weights tomorrow than it does today:
@@ -175,11 +203,10 @@ are recorded as an example of the format, not as values to expect to match):
 
 ---
 
-## 5. Install the reranker extra and rebuild the corpus
+## 5. Rebuild the corpus
 
-```sh
-uv sync --extra dev --extra rerank    # pulls sentence-transformers + torch for the cross-encoder
-```
+The `rerank` extra that the cross-encoder needs was already installed in §2. If you skipped straight
+here, `make install` covers it.
 
 Rebuild the paper corpus. This step is network-bound and polite by design (`time.sleep(1)` between
 manifest rows in `carelite/corpus/fetch.py`) — expect roughly **one to two minutes** for 43 unique
@@ -246,9 +273,13 @@ It's harmless to retrieval and only worth knowing so you don't spend an hour cha
 mismatch that isn't a bug.
 
 **Condition LC is `LC-sample`, not the whole corpus stuffed into context, per `DECISIONS.md` D7 —
-know this before you run §7's generation step.** 471 chunks is ~326,526 tokens against a
-128,000-token context window (255% utilisation), so build plan v3 §3's original LC specification is
-not implementable against this corpus. What actually runs is a fixed, **query-independent**
+know this before you run §7's generation step.** 471 chunks is an estimated ~326,526 tokens against
+a 128,000-token context window — 255% utilisation, **an estimate rather than a measurement**, since
+D7's figures come from the `estimate_tokens` heuristic, which D13 later found overcounts this corpus
+by about 4.5% against the model's own tokenizer (the production pack estimates 123,758 tokens and
+really is 117,849). The direction is safe and the conclusion is unaffected — 4.5% does not close a
+2.5× gap — so build plan v3 §3's original LC specification is still not implementable against this
+corpus. What actually runs is a fixed, **query-independent**
 round-robin selection across all 33 papers at a pinned seed
 (`carelite.retrieval.ablation.lc_sample`): 169 chunks, 35.9% of the corpus. Round-robin rather than
 random sampling guarantees every paper is represented, so LC's content is not an accident of the
@@ -264,7 +295,7 @@ selection beats LC-sample's *fixed* context, which is a real question and a narr
 **This is the multi-hour part. Plan for it — do not start it expecting to watch it finish in one
 sitting.**
 
-### Smoke test first
+### 7.1 Smoke test first
 
 ```sh
 make eval-smoke    # 5 scenarios x all 6 conditions, end to end — minutes, not hours
@@ -300,7 +331,7 @@ executed step, until that changes.
 uv run python -m carelite.generate.runner --limit 5 --dry-run   # plan and count only, no model calls
 ```
 
-### Full evaluation run — what this project actually did, and how to repeat it
+### 7.2 The five Ollama conditions — what this project actually did, and how to repeat it
 
 **No registration gate applies — `DECISIONS.md` D10 dropped OSF registration by decision.** Every
 response this step generates is analysis data from a single rented-GPU run, and any conclusion
@@ -322,7 +353,7 @@ uv run python -m carelite.generate.runner --store jsonl \
 the fast group A/A2/D, for B, for C, and for LC — matching "four parallel workers by condition" in
 the record), each writing its own journal file. `--dry-run` first to see the planned cell count
 without generating anything; `--limit N` to scope a partial run while testing. Every cell is keyed
-by `(scenario_id, condition, prompt_version, model_digest, seed, sample_idx)` and already-generated
+by `(scenario_id, condition, prompt_id, model_digest, seed, sample_idx)` and already-generated
 cells are skipped on rerun, so an interrupted invocation resumes rather than restarts. Then bridge
 every journal into Postgres:
 
@@ -330,18 +361,123 @@ every journal into Postgres:
 uv run python -m carelite.generate.load runs/holdout/generations-*.jsonl
 ```
 
-**What this project's own run actually produced: 939 generations, zero failures at generation
-time**, across A/A2/B/C/D at 180 cells each (all 60 holdout scenarios × 3 samples) plus 39 partial
-LC cells. **Condition LC does not complete in this pipeline as originally specified — expect to stop
-it.** Measured on a rented L40S: ~3.3 minutes per LC cell against ~6 seconds for the fast group,
-roughly 33×, which is why `DECISIONS.md` D11 stopped it at 39/180 cells rather than let it run to
-completion at a projected extra 8+ hours and several dollars for one condition. `docs/limitations.md`
-§4 has the full account, including why the cost does not shrink with a smaller token budget (the
-serving stack re-prefills LC's shared prefix on every request rather than reusing it via KV cache,
-which the design assumed and the runtime did not deliver) and exactly which comparisons are and are
-not affected by LC's incompleteness. Budget accordingly if you intend to complete LC yourself: the
-other five conditions are tractable on a single rented mid-tier GPU in a few hours; LC at full scale
-is not, on this serving stack, regardless of hardware tier.
+**What this pass produced: 939 generations, zero failures at generation time**, across A/A2/B/C/D at
+180 cells each (all 60 holdout scenarios × 3 samples) plus 39 partial LC cells. **Under Ollama,
+Condition LC does not complete at this scale — expect to stop it.** Measured on a rented L40S: ~3.3
+minutes per LC cell against ~6 seconds for the fast group, roughly 33×, which is why `DECISIONS.md`
+D11 stopped it at 39/180 cells rather than let it run to a projected extra 8+ hours. The cause is
+that Ollama re-prefills LC's identical shared prefix on every request rather than reusing it from
+its KV cache; `lc_sample()` is query-independent and deterministic by design (D7), so that prefill
+should be paid once. **This is a property of that serving stack and not of the condition** — §7.3
+completes the same 180 cells in about 21 minutes on a stack that does reuse the prefix. Run LC there
+instead. `docs/limitations.md` §4 has the full account and the numbers on both stacks.
+
+### 7.3 Condition LC under vLLM with prefix caching
+
+**Only Condition LC needs this.** A, A2, B, C and D are cheap under Ollama and this project served
+them that way; moving them would change the serving stack underneath five completed arms for no
+gain. What follows generates LC's 180 cells against a remote vLLM server.
+
+**The architecture, because it decides most of the security posture.** The generation loop runs on
+your own machine against your local Postgres. Only model serving is remote. The runner opens one
+HTTPS request per cell to the pod and writes every row locally and transactionally; **Postgres is
+never exposed to the internet, and the pod initiates no connection back.** The alternatives are all
+worse in ways that are not about convenience: exposing Postgres to the pod puts the system of
+record on the public internet, a reverse SSH tunnel means the run dies with the tunnel, and moving
+Postgres onto the pod turns the study's one authoritative table into a `pg_dump`/`pg_restore` merge
+— which is how this project already lost ~863 generations once. Sending the ~119.5k-token prompt
+over the wire on each of 180 requests is roughly 500 KB per request and under 100 MB in total; the
+bottleneck is prefill, and prefix caching is server-side and indifferent to where the client sits.
+
+**Serve the model.** One 80 GB-class GPU is enough — this project used an A100 SXM 80 GB, and 96 GB
+Blackwell parts work equally well. `gemma-4-12B-it` in bf16 is about 24 GB, leaving ample room for
+one cached ~119.5k-token prefix plus concurrent decode:
+
+```sh
+# on the pod, not on your machine
+vllm serve google/gemma-4-12B-it \
+    --revision 707f0a3b8a3c7ad586ed01e27eafbad8a27dd0f7 \
+    --enable-prefix-caching \
+    --max-model-len 131072 \
+    --api-key "$VLLM_API_KEY" \
+    --port 8000
+```
+
+**`--revision` pinned to an explicit commit sha is a prerequisite, not a nicety.** Every generation
+records a `model_digest`, because a tag is mutable and a run identified by a tag is not
+reproducible. Ollama's digest names a GGUF blob; vLLM serves HF safetensors and has no equivalent
+blob hash, so the identity recorded is `vllm:<repo id>@<revision>` — this project's 180 LC rows all
+carry `vllm:google/gemma-4-12B-it@707f0a3b8a3c7ad586ed01e27eafbad8a27dd0f7`. The revision is read
+from the server's `/v1/models` response when it reports one and from
+`CARELITE_VLLM_MODEL_REVISION` otherwise. **When neither is available, `resolve_digest` returns
+`DIGEST_UNAVAILABLE` and `runner.assert_digests_resolved` refuses to start the run.** That refusal
+is the design working: synthesising something digest-shaped from a tag would defeat the column's
+entire purpose. Launch unpinned and the run stops before it spends a cent.
+
+**Authenticate the endpoint, and understand why.** RunPod proxy URLs are public and unauthenticated
+by default. An open inference endpoint on a rented GPU is abuse-prone — anyone who learns the URL
+can spend your GPU hours — so vLLM is started with `--api-key`. **That token is generated by you,
+locally. It is not issued by RunPod, it is not shared with anyone, and it is not a RunPod API key.**
+Generate one, put it in `.env` (gitignored), and never put a real value in a tracked file, a shell
+history line that gets recorded, a log, or a commit:
+
+```sh
+umask 077
+printf 'CARELITE_VLLM_API_KEY=%s\n' \
+    "$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')" >> .env
+```
+
+That writes the token straight into `.env` without putting it in your terminal scrollback or your
+shell history. Set the same value in the pod's own environment as `VLLM_API_KEY` through your
+provider's secret mechanism — not by typing it into a command the pod logs. Nothing in this
+document should ever be followed by pasting a real token into a tracked file.
+
+`carelite/generate/backend.py` keeps the token out of `repr()` and scrubs it from every message it
+raises or prints, because run logs get committed. `.env.example` carries the variable names with
+placeholder values and is the file to copy; the repository's `.githooks/pre-commit` runs
+`detect-secrets` as a second line of defence, not as a first.
+
+**Configure the client.** Four environment variables, read from the process environment or from
+`.env`; the unprefixed spellings (`VLLM_BASE_URL` and so on) are accepted as aliases:
+
+| variable | what it is |
+|---|---|
+| `CARELITE_BACKEND` | `ollama` (default) or `vllm`. This one switch selects the client and nothing else — the graph, the six conditions, the prompts, the seeds and the runner are identical under both, deliberately, because a backend that also changed the pipeline would make the comparison uninterpretable. |
+| `CARELITE_VLLM_BASE_URL` | the OpenAI-compatible root **including `/v1`**, e.g. `https://<pod-id>-8000.proxy.runpod.net/v1` |
+| `CARELITE_VLLM_API_KEY` | the bearer token you generated above. Never a literal in any tracked file. |
+| `CARELITE_VLLM_MODEL_REVISION` | the commit sha the server was launched at, for when the server does not report one. Without a revision from one source or the other the run refuses to start. |
+
+**Run it.** The runner is the same one §7.2 used:
+
+```sh
+uv run python -m carelite.generate.runner --split holdout --conditions LC
+```
+
+Add `--store jsonl --journal runs/holdout/generations-lc-vllm.jsonl` and bridge with
+`carelite.generate.load` if you want the journal-first durability §7.2 argues for; the cell key
+`(scenario_id, condition, prompt_id, model_digest, seed, sample_idx)` includes the digest, so
+vLLM cells and Ollama cells never collide in the cache and an interrupted run resumes rather than
+restarts.
+
+**Expect:** one cold prefill of about 110,653 tokens at ~64 s, then a warm mean of **3.61 s per
+cell** (min 2.03, max 6.51 over 9 warm calls), 180 cells in about 21 minutes of wall clock, roughly
+**$1.38** of GPU time. If your warm calls are not dramatically faster than your first one, prefix
+caching is not engaging — check `--enable-prefix-caching` before you let 180 cells run.
+
+**Delete the pod when the run finishes.** Not left idling, and not merely stopped: a running pod
+bills for wall-clock time whether or not it is serving anything, and a stopped one still bills for
+its disk. The run is finished the moment `carelite.generate.load` has bridged the journal, and
+nothing on the pod is needed after that — the durable artifacts are the journal and the local
+database, both of which are already on your machine. Confirm the row count locally, then tear
+it down.
+
+**The 39 Ollama LC cells are kept and are not pooled into the LC arm.** They were a non-randomised
+13 of 60 scenarios, they were served by a different stack (a GGUF against HF safetensors, different
+quantisation, different sampling defaults), and they realised a different pack. They are retained at
+`served_by = 'ollama'` as a paired backend-equivalence sample against their vLLM counterparts;
+the LC analysis arm is `served_by = 'vllm'` and nothing else (`DECISIONS.md` D13).
+
+### 7.4 Judging
 
 **Judging** (`python -m carelite.eval.judge.holdout`) now has a real CLI — it did not when this
 document was last drafted, and `carelite/eval/judge/runner.py`'s bare `judge_generations` function
@@ -361,10 +497,16 @@ output-gate-blocked breakdown — read the manifest before reading the scores; i
 raw rows don't carry on their own. `--workers` runs a thread pool over generations (the model is
 resident and requests are independent, so this is a real speedup, not oversubscription); resumption
 is automatic via `JudgeCache`, keyed by generation, model digest, prompt version, rubric version,
-temperature, sample index, and anchor order. `--skip-lc` drops the partial LC rows entirely if you
-would rather not carry them downstream at all.
+temperature, sample index, and anchor order. `--skip-lc` drops the LC rows entirely if you would
+rather not carry them downstream at all.
 
-### Human rating (separate track, not blocking `make reproduce`)
+**The 939/939 figure above is the Ollama pass only.** As of this writing the 180 vLLM LC cells have
+been generated and not yet scored — `generation` holds 1,119 rows against 939 in `rubric_score` —
+so **there is no C-vs-LC result in this repository**, and any document presenting one has invented
+it. `make reproduce` prints both counts; the gap between them is exactly the set of generations
+that exist and have not been judged.
+
+### 7.5 Human rating (separate track, not blocking `make reproduce`)
 
 Per `docs/preregistration.md` §12: 60 responses, blinded, calibration set first. As of this writing
 no human rating has occurred; `carelite/eval/human/` is exercised against synthetic rater data
@@ -387,27 +529,33 @@ is idempotent in the ordinary sense: run it as many times as you like against th
 state and get the same output.
 
 What it does, concretely: connects to `CARELITE_DATABASE_URL`, checks that the schema and expected
-tables are present (reusing `carelite.db.connection.check_database`), reports what pipeline stages
-have and have not produced data yet, and hands off to `carelite.stats` and `carelite.viz` for the
-statistical tables and figures — this is a genuine gap-check, not a silent no-op, because as of this
-writing only one of those two lanes has landed under the contract this entry point looks for.
-**`carelite.viz.reproduce.run(output_dir)` exists and works** — it regenerates every figure it can
-from whatever data is actually in the database, skipping (with a reason, not silently) any figure
-that needs a table still empty, so `make reproduce` on this project's own database currently
-produces at least the retrieval-quality figure even before `rubric_score` is loaded.
-**`carelite.stats` exists (`carelite/stats/`, with `report.py` and its own
-`python -m carelite.stats` CLI) but does not yet expose `carelite.stats.reproduce.run(output_dir)`**,
-so `make reproduce` correctly reports its tables as `[pending]` rather than silently producing
-nothing — run `python -m carelite.stats` directly for the statistical write-up in the meantime; see
-`carelite/repro.py`'s own module docstring for the current state of that wiring, since it is kept
-current there rather than restated here where it would drift.
+tables are present (reusing `carelite.db.connection.check_database`), reports the row count of every
+pipeline stage, and hands off to `carelite.stats.reproduce.run(output_dir)` and
+`carelite.viz.reproduce.run(output_dir)`. Both lanes have landed under that contract. Each skips —
+with a stated reason, not silently — any table or figure that needs data the database does not hold
+yet, so a partially-populated database produces a partial run that says which parts are missing
+rather than a crash or a silent no-op.
+
+**Read `runs/repro/headline-numbers.txt` first.** It is the small set of figures a write-up actually
+quotes — the generation census, the per-serving-stack split, the frame the analysis ran on, and the
+primary contrast — each printed beside the qualification it cannot be lifted without. Every result
+in it is labelled EXPLORATORY, and that label is a measured state of the database rather than
+throat-clearing: `carelite/stats/headline.py` derives it from how many rubric dimensions have
+cleared the judge-agreement threshold, which is currently zero of eleven because the judge
+validation study has not run. A number quoted from it without the sentence under it misreports this
+study.
+
+Everything else lands in the same directory: `analysis.txt` (the full statistical write-up),
+`effect-sizes.csv`, `instrument-resolution.csv`, `data-inventory.csv`, and the figures as paired
+`.png`/`.pdf`. `carelite/repro.py`'s own module docstring is kept current on the wiring and is the
+place to check if this section has drifted.
 
 ---
 
 ## 9. Known-good order, summarized
 
 ```
-uv sync --extra dev --extra rerank
+uv sync --extra dev --extra rerank --extra orchestration --extra langchain --extra vllm
 make db-up && make db-check
 ollama pull gemma4:12b qwen3.5:9b gpt-oss:20b bge-m3
 uv run python -m carelite.corpus.fetch --email you@example.com
@@ -415,10 +563,19 @@ uv run python -m carelite.corpus.fetch --email you@example.com
 # ... index build (see §6) ...
 make eval-smoke
 # --- no registration gate (DECISIONS.md D10); results below are descriptive ---
-# --- expect to stop Condition LC partway through (D11); see §7 ---
+
+# 7.2 the five Ollama conditions, one process per condition group, in parallel
 uv run python -m carelite.generate.runner --store jsonl \
-    --journal runs/holdout/generations-X.jsonl --conditions X --split holdout  # once per condition group, in parallel
+    --journal runs/holdout/generations-X.jsonl --conditions X --split holdout
 uv run python -m carelite.generate.load runs/holdout/generations-*.jsonl
+
+# 7.3 condition LC, against a remote vLLM server with prefix caching (see §7.3 first --
+# the endpoint must be started with --revision pinned and --api-key set, and the pod deleted after)
+export CARELITE_BACKEND=vllm            # base URL, token and revision live in .env, never inline
+uv run python -m carelite.generate.runner --split holdout --conditions LC
+unset CARELITE_BACKEND
+
+# 7.4 judging, then the analysis
 uv run python -m carelite.eval.judge.holdout --glob 'runs/holdout/generations-*.jsonl'     --out runs/holdout/judge --workers 8
 make reproduce
 ```

@@ -396,6 +396,22 @@ which is the part of this checklist's original job that still matters.
       in `docs/limitations.md` §4, where the results actually live, rather than duplicated here.
 - [x] **OSF registration retired by decision, not left pending.** `DECISIONS.md` D10: this project
       will not be registered. No URL exists to record because none will be sought.
+- [x] `DECISIONS.md` D11 and D13 tracked without editing the plan text. D11 stopped Condition LC at
+      39 of 180 cells and closed §4's secondary outcome 3 (C vs. LC-sample) as untestable; D13
+      re-opened it on a measurement — vLLM with prefix caching serves an LC cell in 3.61 s warm
+      against Ollama's 198 s — and Condition LC was completed at 180 cells. **Outcome 3 is testable
+      again in exactly the reduced form §4 and §2's LC row already describe**, and nothing about it
+      is widened: the corpus still does not fit the window, any selection rule is still
+      retrieval, and D7 is not re-opened. **As of 2026-09-01 those cells are generated and not yet
+      scored, so outcome 3 has no result** — see `docs/limitations.md` §4.
+- [x] **The token figures in §2's LC row and §4's outcome 3 are estimates, not measurements,
+      and are left as written rather than silently corrected.** They come from `carelite.generate.model.estimate_tokens`,
+      a heuristic that D13 measured against the model's own tokenizer for the first time and found
+      to overcount this corpus by about 4.5% (the production pack estimates 123,758 tokens and is
+      really 117,849). Read "~326,526 tokens" and "255% utilisation" as approximations. The
+      direction is the safe one and the conclusion those figures support is unchanged — 4.5% does
+      not close a 2.5× gap — so the plan text stands as the record of what was believed when it was
+      written, with the correction recorded here where a reader meets it before quoting either.
 
 ---
 

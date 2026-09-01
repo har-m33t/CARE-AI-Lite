@@ -99,7 +99,7 @@ pass exists and the validation study clears its pre-registered threshold on a gi
 
 ## Later decisions
 
-`DECISIONS.md` D1–D12 (2026-08-24 through 2026-08-25, orchestrating session and project owner) are
+`DECISIONS.md` D1–D13 (2026-08-24 through 2026-09-01, orchestrating session and project owner) are
 recorded there, not duplicated here; `docs/limitations.md` and `docs/preregistration.md` cite the
 specific decisions that affect their content directly, at the point they affect it. In brief, for
 orientation: theme taxonomy (D1, seven not ten); equity stratum membership (D2); the equity
@@ -115,7 +115,29 @@ its own findings, this one included; Condition LC stopped at 39 of its planned 1
 after costing ~33× the other conditions per cell on rented GPU hardware, the second lane to reach
 that conclusion independently (D11); and `generation.gate_blocked` added so a response the output
 safety gate refused is visible and excludable rather than silently scored as though it had passed —
-17 of 939 holdout generations, 13 of them on one scenario (D12).
+17 of 939 holdout generations, 13 of them on one scenario (D12); and **D11's cost premise tested
+against a second serving stack and not surviving it (D13)** — vLLM with prefix caching generates an
+LC cell in 3.61 s warm against Ollama's 198 s, a 54.9× difference, so Condition LC was completed in
+full at 180 cells and `generation` now holds 1,119 rows.
+
+**D13 bears directly on the 2026-08-22 model-roster entry above and on the reasoning behind it, so
+the qualification is recorded here rather than left for a reader to notice.** That entry argued the
+roster from "everything runs local and offline," and the argument's substance — open weights, no
+hosted vendor model, nothing metered per token — is intact: the vLLM route serves the same
+open-weight family from a pod the project starts, pins by commit sha, and deletes. What is no
+longer literally true is the word *local*. One condition's 180 cells were served from a rented GPU
+over an authenticated endpoint, with the generation loop and the database still on the operator's
+machine. `generation.served_by` exists so that distinction is a column rather than a recollection,
+and `docs/limitations.md` §6 states the ceiling in terms of open weights rather than locality for
+the same reason.
+
+**D13 also corrects something this log helped propagate: a runtime measurement was twice mistaken
+for a method result.** D11 and the judge lane independently concluded that a long-context baseline
+was unaffordable at this scale, and their agreement was read as confirmation. Both had measured
+Ollama. The limitation that survives is about a serving stack that re-prefills a shared prefix on
+every request, not about long-context evaluation; `docs/limitations.md` §4 now says so in those
+terms. Recorded here because the general form is worth carrying forward — when a cost measurement
+closes a question, the runtime is a variable in it and has to be named as one.
 
 Future entries in this log should be dated, should state the decision in one sentence before the
 reasoning, and should link the commit or file that encodes it — the pattern followed above.
