@@ -77,6 +77,7 @@ chunks, 116 knowledge base entries, `bge-m3`).**
 | dense leg alone | 1.000 | 1.000 | 13/13 |
 | lexical leg alone | 0.068 | -0.425 | 11/13 |
 | matched (dense + lexical, RRF) | 0.231 | -0.011 | 13/13 |
+| production (full native stack) | 0.019 | -0.566 | 13/13 |
 
 **The dense leg is exact.** `PGVectorStore` searching `chunk` and `kb_entry`
 in place returns the identical top-4, in the identical order, on every query
@@ -106,6 +107,15 @@ terms, and sums per-term scores, so a long chunk containing "the", "for" and
 "I" can outrank one containing the single word that mattered. On two queries
 the native leg returned nothing at all — no row satisfies the conjunction even
 after backoff — and BM25 confidently returned four.
+
+**Against the pipeline condition C actually runs, agreement is 0.019.** Twelve
+of the thirteen queries share not one document in the top 4. This is the
+expected result and it is worth stating in the direction that makes it useful:
+the full stack embeds a HyDE guidance passage rather than the utterance, fuses
+a third leg, and reorders everything through a cross-encoder weighted by
+evidence tier, so the adapter is not a degraded version of it but a different
+retrieval. The number measures what swapping the adapter in would cost the
+study. Nothing in this module is a candidate for that swap.
 
 **So the matched figure of 0.231 is one leg exact and one leg unrelated,**
 which is the honest reading and is a fact about `rank_bm25` versus Postgres
