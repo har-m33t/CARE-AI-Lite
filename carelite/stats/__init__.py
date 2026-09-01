@@ -25,6 +25,7 @@ Three invariants hold across every module here:
 from carelite.stats.data import load_judge_samples, load_scores
 from carelite.stats.effects import PairedEffects, bootstrap_ci, paired_effects
 from carelite.stats.evidence import EvidenceStatus, Label, RaterScope, label_for
+from carelite.stats.headline import GenerationCounts, HeadlineNumbers, headline_numbers
 from carelite.stats.measures import (
     FOUR_HABITS_COMPOSITE,
     MEASURES,
@@ -59,6 +60,8 @@ __all__ = [
     "AnalysisReport",
     "EvidenceStatus",
     "FamilyResult",
+    "GenerationCounts",
+    "HeadlineNumbers",
     "Label",
     "Measure",
     "PairedEffects",
@@ -72,6 +75,7 @@ __all__ = [
     "exploratory_subgroup",
     "fit_random_intercept",
     "friedman_across_conditions",
+    "headline_numbers",
     "holm_bonferroni",
     "label_for",
     "load_judge_samples",

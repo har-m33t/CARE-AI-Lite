@@ -57,12 +57,15 @@ from carelite.types import RUBRIC_DIMENSIONS, RaterType, Split
 
 __all__ = [
     "DROPPED_CONDITIONS",
+    "GENERATION_COUNTS_SQL",
     "JUDGE_SAMPLES_SQL",
     "SCORES_SQL",
+    "SERVING_BACKENDS",
     "DataInventory",
     "attach_equity_kind",
     "drop_dropped_conditions",
     "inventory",
+    "load_generation_counts",
     "load_judge_samples",
     "load_scores",
     "to_long",
@@ -125,6 +128,46 @@ WHERE sc.split = %(split)s
   AND rs.rater_type = 'llm_judge'
   AND rs.rater_id NOT LIKE %(median_pattern)s
 ORDER BY g.scenario_id, g.condition, rs.rater_id, rs.sample_idx
+"""
+
+#: The `served_by` vocabulary, which is `carelite/db/schema.sql`'s CHECK
+#: constraint and not this module's to widen. It is restated here so the count
+#: breakdown can print a zero for a backend that produced nothing, rather than
+#: omitting the row and leaving "no vLLM generations" indistinguishable from
+#: "nobody looked". `tests/unit/stats/test_headline.py` reads the constraint out
+#: of the schema and fails if the two disagree.
+SERVING_BACKENDS: tuple[str, ...] = ("ollama", "vllm")
+
+#: One row per (condition, serving stack, split), counted from `generation`
+#: itself with no exclusion applied. This is deliberately **not** the frame the
+#: analysis runs on: it counts the LC cells D11 dropped and the gate-blocked
+#: cells D12 flags, because "how many generations does this study have" and "how
+#: many generations did the primary comparison run on" are different questions
+#: that a single number has been asked to answer before.
+#:
+#: `served_by` is in the grouping because condition LC may yet be re-run under a
+#: second serving stack. Two backends serve different artifacts of the same
+#: model family, so a count pooled across them would hide a confound rather than
+#: report one.
+#:
+#: `rubric_score` is joined through a DISTINCT subselect: a generation has one
+#: row per rater and dimension set, so a plain join would multiply every count
+#: it touches.
+GENERATION_COUNTS_SQL = """
+SELECT
+    g.condition,
+    g.served_by,
+    sc.split,
+    COUNT(*)                                             AS n_generations,
+    COUNT(*) FILTER (WHERE g.gate_blocked)               AS n_gate_blocked,
+    COUNT(*) FILTER (WHERE s.generation_id IS NOT NULL)  AS n_scored,
+    COUNT(DISTINCT g.scenario_id)                        AS n_scenarios
+FROM generation g
+JOIN scenario sc ON sc.scenario_id = g.scenario_id
+LEFT JOIN (SELECT DISTINCT generation_id FROM rubric_score) s
+       ON s.generation_id = g.generation_id
+GROUP BY g.condition, g.served_by, sc.split
+ORDER BY sc.split, g.condition, g.served_by
 """
 
 
@@ -286,6 +329,33 @@ def load_judge_samples(
             ]
         )
     return to_long(frame)
+
+
+def load_generation_counts(*, conn: Any | None = None) -> pd.DataFrame:
+    """Row counts straight out of `generation`, grouped by condition and backend.
+
+    No split filter and no exclusion: this is the census the headline block
+    quotes, and every decision that narrows it -- the holdout restriction, D11's
+    dropped condition, D12's gate-blocked rows -- is applied downstream and
+    reported as its own number. See `GENERATION_COUNTS_SQL`.
+
+    An empty frame with the right columns comes back when the table is empty,
+    which is a legitimate answer and not an error.
+    """
+    frame = _read(GENERATION_COUNTS_SQL, {}, conn)
+    if frame.empty:
+        return pd.DataFrame(
+            columns=[
+                "condition",
+                "served_by",
+                "split",
+                "n_generations",
+                "n_gate_blocked",
+                "n_scored",
+                "n_scenarios",
+            ]
+        )
+    return frame
 
 
 def attach_equity_kind(long: pd.DataFrame, *, bank_path: str | None = None) -> pd.DataFrame:

@@ -69,6 +69,8 @@ class TestContract:
         names = {p.name for p in written}
         assert names == {
             "analysis.txt",
+            "headline-numbers.txt",
+            "headline-numbers.csv",
             "effect-sizes.csv",
             "instrument-resolution.csv",
             "data-inventory.csv",
@@ -157,6 +159,16 @@ class TestTablesAgreeWithTheReport:
         items = {r["item"] for r in _read(tmp_path / "out" / "data-inventory.csv")}
         assert {"gate_blocked", "crag_fell_back_to_b", "incomplete_generations"} <= items
 
+    def test_the_headline_block_is_written_and_says_the_census_was_not_read(
+        self, analysed: pd.DataFrame, tmp_path: Path
+    ) -> None:
+        """`write_tables` with no census must not print a count it never took."""
+        report = run_analysis(long=analysed, n_boot=200)
+        write_tables(report, tmp_path / "out")
+        text = (tmp_path / "out" / "headline-numbers.txt").read_text(encoding="utf-8")
+        assert "HEADLINE NUMBERS" in text
+        assert "not read" in text.lower()
+
     def test_the_text_report_carries_the_d10_banner(
         self, analysed: pd.DataFrame, tmp_path: Path
     ) -> None:
@@ -173,7 +185,7 @@ class TestEmptyDatabase:
         """`make reproduce` on a fresh clone must be a clean run, not a crash."""
         report = run_analysis(long=make_long(scores={}), n_boot=50)
         written = write_tables(report, tmp_path / "out")
-        assert len(written) == 4
+        assert len(written) == 6
 
         for name, columns in (
             ("effect-sizes.csv", EFFECT_SIZE_COLUMNS),
