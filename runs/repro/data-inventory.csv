@@ -1,0 +1,7 @@
+item,count,detail
+scored_generations,1080,
+scenarios,60,
+gate_blocked,24,by scenario: SC-012=1; SC-013=1; SC-029=15; SC-031=3; SC-055=1; SC-057=1; SC-072=1; SC-092=1
+crag_fell_back_to_b,69,111 cells actually retrieved
+incomplete_generations,58,missing per dimension: de=26; epp=22; explore=24; ib=24; ie=22; name=19; naturalness=26; respect=16; ritualistic=24; support=22; understand=24
+excluded_arm_LC_ollama,39,"DECISIONS.md D13: excluded by (condition, served_by), not by condition — the LC analysis arm is served_by = 'vllm'"

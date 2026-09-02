@@ -1,0 +1,12 @@
+dimension,n_scored,n_missing,distinct_values,mean_quality,mean_raw,sd,modal_value_quality,modal_share,discrimination,why
+name,1061,19,5,1.9622997172478793,1.9622997172478793,1.6438828829105603,1,0.7323279924599434,discriminating,"sd 1.64, 5 values used"
+understand,1056,24,5,2.6893939393939394,2.6893939393939394,1.694183305637461,1,0.4479166666666667,discriminating,"sd 1.69, 5 values used"
+respect,1064,16,5,1.7030075187969924,1.7030075187969924,1.4314536736782544,1,0.7922932330827067,discriminating,"sd 1.43, 5 values used — concentrated (79.2% on 1) but spread across the scale, which is discrimination, not a floor"
+support,1058,22,5,1.8052930056710774,1.8052930056710774,1.1491802677411418,1,0.6427221172022685,discriminating,"sd 1.15, 5 values used"
+explore,1056,24,5,2.5577651515151514,2.5577651515151514,1.8904790951631514,1,0.5823863636363636,discriminating,"sd 1.89, 5 values used"
+ib,1056,24,5,1.535037878787879,1.535037878787879,0.9893765562857342,1,0.7537878787878788,discriminating,"sd 0.99, 5 values used — concentrated (75.4% on 1) but spread across the scale, which is discrimination, not a floor"
+epp,1058,22,5,2.340264650283554,2.340264650283554,1.7689385359293455,1,0.6096408317580341,discriminating,"sd 1.77, 5 values used"
+de,1054,26,5,2.5,2.5,1.617655438221971,1,0.4838709677419355,discriminating,"sd 1.62, 5 values used"
+ie,1058,22,4,1.1275992438563327,1.1275992438563327,0.4880541772423854,1,0.9338374291115312,degenerate,sd 0.49 < 0.75; 93.4% of scores sit on the single value 1 and only 4 of 5 scale points were ever used
+naturalness,1054,26,5,3.1148007590132827,3.1148007590132827,0.648695899880476,3,0.8311195445920304,degenerate,sd 0.65 < 0.75; 83.1% of scores sit on the single value 3 and only 5 of 5 scale points were ever used
+ritualistic,1056,24,4,4.982007575757576,1.0179924242424243,0.19631231510284047,5,0.9895833333333334,degenerate,sd 0.20 < 0.75; 99.0% of scores sit on the single value 5 and only 4 of 5 scale points were ever used

@@ -1,0 +1,80 @@
+==============================================================================
+HEADLINE NUMBERS — read from the database, not carried forward from a document
+==============================================================================
+
+  Every figure below was queried from Postgres when this file was written. None of it is transcribed from a plan, a memo, or an earlier run. A number in prose that disagrees with this block is stale, and this block is the one to trust.
+
+  ALL RESULTS BELOW ARE DESCRIPTIVE. DECISIONS.md D10 dropped the pre-registration: this is a local proof of concept, it was never registered, and no number here is confirmatory, pre-specified in the registered sense, or hypothesis-testing. `DESCRIPTIVE` on a result means the comparison was written into docs/preregistration.md before any holdout data existed AND the judge cleared the fixed agreement threshold on every dimension it uses. That is a statement about when the analysis was chosen, not a claim of confirmatory status.
+
+  Each figure is printed with the qualification it cannot be quoted without. Lifting the number and leaving the line beneath it misreports this study.
+
+------------------------------------------------------------------------------
+GENERATIONS — counted from `generation` itself, before any exclusion
+
+  generations in `generation`
+      1,119
+      Every row the table holds, across all splits and all serving stacks. It includes D11's 39 partial LC cells, which D13 retains as a paired backend-equivalence sample rather than as part of any arm, and the 24 output-gate refusals D12 keeps flagged, so it is not the number any comparison ran on — see `generations_analysed` below.
+
+  condition A
+      180
+      By serving stack: ollama 180. 3 of these were refused by the output gate and are counted here (D12); sensitivity analysis (d) in analysis.txt is the rerun that excludes them.
+
+  condition A2
+      180
+      By serving stack: ollama 180. 7 of these were refused by the output gate and are counted here (D12); sensitivity analysis (d) in analysis.txt is the rerun that excludes them.
+
+  condition B
+      180
+      By serving stack: ollama 180. 2 of these were refused by the output gate and are counted here (D12); sensitivity analysis (d) in analysis.txt is the rerun that excludes them.
+
+  condition C
+      180
+      By serving stack: ollama 180. 2 of these were refused by the output gate and are counted here (D12); sensitivity analysis (d) in analysis.txt is the rerun that excludes them.
+
+  condition LC
+      219
+      By serving stack: ollama 39, vllm 180. 7 of these were refused by the output gate and are counted here (D12); sensitivity analysis (d) in analysis.txt is the rerun that excludes them. D13: the LC ANALYSIS ARM IS `served_by = 'vllm'` AND NOTHING ELSE. The count above pools both stacks because it is a census of the table, not of the arm. The Ollama rows are D11's partial record — 39 cells over 13 of 60 scenarios, never randomised for partial analysis — kept only as a paired backend-equivalence sample. Condition C was served by Ollama, so the C-vs-LC comparison is confounded by serving stack and says so wherever it is printed.
+
+  condition D
+      180
+      By serving stack: ollama 180. 3 of these were refused by the output gate and are counted here (D12); sensitivity analysis (d) in analysis.txt is the rerun that excludes them.
+
+  served by ollama
+      939
+      The two stacks serve different artifacts of the same model family — a GGUF against HF safetensors — so `model` and `model_digest` alone cannot tell them apart and a count pooled across backends would hide the difference. A zero is printed rather than the row omitted, so a stack that produced nothing is visibly nothing rather than silently absent. Conditions produced by more than one stack on this run: LC. Any arm on that list is pooled across backends and must be checked for agreement before it is treated as one arm.
+
+  served by vllm
+      180
+      The two stacks serve different artifacts of the same model family — a GGUF against HF safetensors — so `model` and `model_digest` alone cannot tell them apart and a count pooled across backends would hide the difference. A zero is printed rather than the row omitted, so a stack that produced nothing is visibly nothing rather than silently absent. Conditions produced by more than one stack on this run: LC. Any arm on that list is pooled across backends and must be checked for agreement before it is treated as one arm.
+
+  generations with a rubric score
+      1,119
+      Rows in `generation` with at least one row in `rubric_score`. A generation without one was produced but never judged, and the difference from the total above is exactly that set.
+
+  generations the analysis ran on
+      1,080
+      The `holdout` split narrowed to one serving stack per condition (D13): the LC arm is the vLLM cells, and D11's 39 Ollama LC cells are excluded. This is the frame behind every comparison in analysis.txt. Gate-blocked generations are included here, as D12 specifies for the base reading. This is a smaller number than the census above and the two are not interchangeable.
+
+  scenarios the analysis ran on
+      60
+      Held-out scenarios contributing at least one scored generation. The paired tests run on scenario-level cell means, so this — not the generation count — is the n every effect size and interval is computed at.
+
+
+------------------------------------------------------------------------------
+PRIMARY CONTRAST — condition B against condition A, composite NURSE adherence
+
+  mixed-effects coefficient, B vs A
+      +0.6724  95% CI [+0.5344, +0.8105]  p = 1.338e-21
+      EXPLORATORY (judge validation study has not run). Rubric quality points, condition B relative to reference A, from `value ~ condition + (1 | scenario)` fitted by REML over 1079 generations in 60 scenarios; the random intercept is what stops the 3 samples in a cell counting as 3 scenarios. Descriptive, not confirmatory: D10 dropped the pre-registration, so this is an observation from one local run rather than a hypothesis test. The p-value is uncorrected — the Holm family is the eight comparisons in analysis.txt, and this model is not a member of it.
+
+  Hodges-Lehmann shift, B vs A
+      +0.667 rubric points  95% CI [+0.467, +0.833]  Holm-adjusted p = 1.24e-07
+      EXPLORATORY (judge validation study has not run). The paired location shift in rubric quality points over 60 scenario-level cell means, with a 95% bootstrap interval. REORIENTED: the §8.1 family computes this comparison as A vs B, so the point estimate is negated and the interval bounds swapped to put it in the same B-against-A orientation as the coefficient above. The p-value is Holm-adjusted across the family of 8; read it in analysis.txt, where the instrument diagnostic that governs it is printed first.
+
+
+------------------------------------------------------------------------------
+WHY EVERY RESULT ABOVE IS EXPLORATORY
+
+  rubric dimensions clearing the judge-agreement threshold
+      0 of 11
+      Either the judge validation study has not run, or no dimension cleared alpha >= 0.667 and rho >= 0.5 on >= 30 paired units (analysis plan §9). While this reads 0, every judge-scored result in this block is EXPLORATORY, and that label is a measured state of the database rather than a hedge — `rating_assignment` is what has to be populated for it to change.

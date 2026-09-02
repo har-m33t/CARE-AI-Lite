@@ -17,8 +17,17 @@ carelite_pdfs/
 *.sql.gz
 dumps/
 
-# Generated run artifacts (regenerate via `make reproduce`)
-runs/
+# Run state: model caches, judge journals, generation logs. Regenerate via the
+# commands in REPRODUCE.md; none of it is a deliverable and the index cache alone
+# is 18 MB.
+# `runs/*` rather than `runs/`: git cannot re-include a path whose parent directory
+# is excluded, so the negation below only works if the directory itself is not.
+runs/*
+# ...except the published outputs of `make reproduce`, which ARE the deliverable.
+# The tables and figures cited by README.md, docs/limitations.md and the reporting
+# checklists live here, and a reader who clones this repo should be able to see the
+# run's results without first owning a populated Postgres and six hours of GPU time.
+!runs/repro/
 .cache/
 *.log
 

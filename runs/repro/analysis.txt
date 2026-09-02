@@ -1,0 +1,421 @@
+==============================================================================
+CARELITE AI — STATISTICAL ANALYSIS OF THE HOLDOUT RUN
+docs/preregistration.md §8 (the plan; NOT registered — see D10); build plan v3 §14
+==============================================================================
+
+  ALL RESULTS BELOW ARE DESCRIPTIVE. DECISIONS.md D10 dropped the pre-registration: this is a local proof of concept, it was never registered, and no number here is confirmatory, pre-specified in the registered sense, or hypothesis-testing. `DESCRIPTIVE` on a result means the comparison was written into docs/preregistration.md before any holdout data existed AND the judge cleared the fixed agreement threshold on every dimension it uses. That is a statement about when the analysis was chosen, not a claim of confirmatory status.
+
+  split: holdout   scenarios: 60   generations: 1080   raters: llm_judge
+
+------------------------------------------------------------------------------
+DATA INVENTORY — what was read, before any exclusion
+  1080 scored generations over 60 scenarios; raters: llm_judge
+  by condition: A 180, A2 180, B 180, C 180, D 180, LC 180
+
+  gate-blocked (D12):      24 generations [by scenario: SC-029 15, SC-031 3, SC-012 1, SC-013 1, SC-055 1, SC-057 1, SC-072 1, SC-092 1] [by condition: A 3, A2 7, B 2, C 2, D 3, LC 7]
+  CRAG fell back to B:     69 generations (111 actually retrieved)
+  incomplete on >= 1 dim:  58 generations [missing per dimension: de 26, epp 22, explore 24, ib 24, ie 22, name 19, naturalness 26, respect 16, ritualistic 24, support 22, understand 24]
+  excluded selections:     LC/ollama 39 cells
+
+ANALYSIS ARMS — one serving stack per condition (D13)
+  A: ollama 180
+  A2: ollama 180
+  B: ollama 180
+  C: ollama 180
+  D: ollama 180
+  LC: vllm 180
+  EXCLUDED LC/ollama: 39 generations over 13 scenarios. DECISIONS.md D13. These are D11's 39 partial LC cells over 13 of 60 scenarios, never randomised for partial analysis, and served by a different stack from the 180-cell arm. They are retained as the paired backend-equivalence sample and are never pooled into an arm.
+
+------------------------------------------------------------------------------
+INSTRUMENT RESOLUTION — does each dimension carry any variance? [NOT PLANNED IN ADVANCE: post-hoc diagnostic]
+
+  A dimension the judge scored at a floor or a ceiling cannot separate two conditions. A
+  large p-value on such a dimension means the instrument did not resolve it, NOT that the
+  conditions are alike. Read this table before any comparison below.
+
+  Rule: degenerate when sd < 0.75 rubric points. Modal share is REPORTED, not used as a criterion —
+  a bimodal dimension can be 77% concentrated and still discriminate hard (see `name` below).
+  Scored on the to_quality() scale the tests run on. Chosen after seeing this run's scores,
+  so the numbers for every dimension are printed and the cut can be moved by the reader.
+
+    name         n=1061 miss=19  distinct=5  mean(q)=1.96  sd=1.64  modal= 73.2%  DISCRIMINATING  [1:777 2:2 3:48 4:13 5:221]
+    understand   n=1056 miss=24  distinct=5  mean(q)=2.69  sd=1.69  modal= 44.8%  DISCRIMINATING  [1:473 2:8 3:251 4:22 5:302]
+    respect      n=1064 miss=16  distinct=5  mean(q)=1.70  sd=1.43  modal= 79.2%  DISCRIMINATING  [1:843 2:3 3:51 4:25 5:142]
+    support      n=1058 miss=22  distinct=5  mean(q)=1.81  sd=1.15  modal= 64.3%  DISCRIMINATING  [1:680 2:5 3:312 4:21 5:40]
+    explore      n=1056 miss=24  distinct=5  mean(q)=2.56  sd=1.89  modal= 58.2%  DISCRIMINATING  [1:615 2:4 3:43 4:21 5:373]
+    ib           n=1056 miss=24  distinct=5  mean(q)=1.54  sd=0.99  modal= 75.4%  DISCRIMINATING  [1:796 2:10 3:220 4:5 5:25]
+    epp          n=1058 miss=22  distinct=5  mean(q)=2.34  sd=1.77  modal= 61.0%  DISCRIMINATING  [1:645 2:6 3:101 4:14 5:292]
+    de           n=1054 miss=26  distinct=5  mean(q)=2.50  sd=1.62  modal= 48.4%  DISCRIMINATING  [1:510 2:11 3:261 4:40 5:232]
+    ie           n=1058 miss=22  distinct=4  mean(q)=1.13  sd=0.49  modal= 93.4%  DEGENERATE      [1:988 2:7 3:61 4:2]
+    naturalness  n=1054 miss=26  distinct=5  mean(q)=3.11  sd=0.65  modal= 83.1%  DEGENERATE      [1:29 2:17 3:876 4:68 5:64]
+    ritualistic  n=1056 miss=24  distinct=4  mean(q)=4.98  sd=0.20  modal= 99.0%  DEGENERATE      [1:1 3:5 4:5 5:1045]
+
+  DEGENERATE (3): ie, naturalness, ritualistic
+    - ie: sd 0.49 < 0.75; 93.4% of scores sit on the single value 1 and only 4 of 5 scale points were ever used
+    - naturalness: sd 0.65 < 0.75; 83.1% of scores sit on the single value 3 and only 5 of 5 scale points were ever used
+    - ritualistic: sd 0.20 < 0.75; 99.0% of scores sit on the single value 5 and only 4 of 5 scale points were ever used
+  DISCRIMINATING (8): name, understand, respect, support, explore, ib, epp, de
+
+  Threshold check: the degenerate set MOVES within the range tried, so this classification is a judgement call at the margin. What changes, and where:
+    sd < 0.60: -naturalness
+
+  *** THE RITUAL MECHANISM CANNOT BE TESTED ON THIS RUN. ***
+  Build plan v3 predicts Condition B loses to A on `naturalness` BECAUSE framework prompting
+  induces ritual. Both dimensions carrying that prediction — naturalness, ritualistic — are
+  degenerate here, so this run can neither support nor refute it. That is a null result about
+  the instrument, not about the system, and it is the honest form of the finding. Reporting it
+  as 'no significant difference in naturalness' would be a claim the data cannot carry.
+
+  A degenerate dimension is not fixable with a larger sample. The judge lane measured r = 0.878 between a dimension's score variance and the ordinal Krippendorff's alpha achievable on it: alpha is bounded above by the variance the judge produces. A judge that emits one value on a dimension cannot disagree with itself, cannot agree with a human, and cannot separate two conditions. More scenarios would narrow the intervals around the same floor.
+
+------------------------------------------------------------------------------
+JUDGE-VALIDATION GATE (analysis plan §9) — read before any result
+------------------------------------------------------------------------------
+  EVERY dimension is exploratory. Either the judge validation study has not run,
+  or no dimension cleared alpha >= 0.667 and rho >= 0.5 on >= 30 paired units.
+  No judge-only result below carries the DESCRIPTIVE label.
+
+------------------------------------------------------------------------------
+POWER ANALYSIS (build plan v3 §11, analysis plan §6)
+  paired design, Wilcoxon signed-rank, alpha = 0.05 (two-sided), power = 0.8
+  ARE(Wilcoxon vs paired t, normal differences) = 0.9549
+
+  effect                      dz    scenarios needed
+  large                     0.80                  15
+  medium                    0.50                  35
+  small                     0.30                  94
+
+  n = 60 held-out scenarios x 3 samples per cell.
+  Smallest detectable paired effect at n = 60: dz = 0.376.
+  Charging the whole Holm family (m = 8) against one test (alpha = 0.05/8) it is dz = 0.489. The planned n stands on the nominal figure above; this is context for reading a null result, not a revision of the plan.
+
+  n was set by secondary outcome 2, Condition B vs Condition C — the comparison expected to show the SMALLEST effect, not the primary outcome. The primary outcome (A vs B, expected large) is over-powered at this n. A null B-vs-C result at an effect below dz = 0.376 is a statement about this study's resolution, not about retrieval.
+
+------------------------------------------------------------------------------
+PRIMARY ANALYSIS (ANALYSIS PLAN §8.1)
+  correction: Holm-Bonferroni across the whole set of pairwise comparisons planned in advance, across measures and dimensions together, not per dimension
+  family size m = 8 (8 computed), alpha = 0.05
+  effect sizes and 95% bootstrap CIs are reported BEFORE p-values (analysis plan §8.2)
+
+  FRIEDMAN OMNIBUS across {A, B, C} — not part of the Holm family; the within-omnibus adjustment is shown for reference only
+    dimension          chi2  df    n         p   p(omnibus Holm)  instrument
+    name             44.904   2   60 1.775e-10         1.775e-09  resolved
+    understand        6.112   2   60   0.04708            0.2354  resolved
+    respect           5.574   2   60    0.0616            0.2464  resolved
+    support           2.816   2   60    0.2447             0.734  resolved
+    explore          31.779   2   60 1.257e-07         1.005e-06  resolved
+    ib               13.522   2   60  0.001158          0.006948  resolved
+    epp              33.518   2   60 5.268e-08         4.741e-07  resolved
+    de               47.326   2   60 5.287e-11         5.816e-10  resolved
+    ie                0.326   2   60    0.8498            0.8498  DEGENERATE — p uninterpretable
+    naturalness      14.800   2   60 0.0006113          0.004279  DEGENERATE — p uninterpretable
+    ritualistic       2.000   2   60    0.3679            0.7358  DEGENERATE — p uninterpretable
+
+A vs B on Composite NURSE adherence [EXPLORATORY (judge validation study has not run)]
+    effect (rank-biserial) -0.866 [-0.964, -0.719] (95% bootstrap CI, 60 scenarios)  |  dz -0.962 [-1.273, -0.719]  |  Hodges-Lehmann -0.667 points [-0.833, -0.467]
+    then p: Wilcoxon W = 107.0, p = 1.771e-08, Holm-adjusted p = 1.24e-07 (family of 8), significant at alpha = 0.05
+    predicted direction <, observed < — as predicted
+    n = 60 paired scenarios, 56 with a nonzero difference
+
+A vs B on Composite Four Habits adherence [EXPLORATORY (judge validation study has not run)]
+    ATTENUATED: 1 of 4 dimensions in four_habits_composite are degenerate (ie). The comparison is testable on the dimensions that discriminate, but the composite's effect size is pulled toward zero by the constant ones and understates the difference on the dimensions that actually moved.
+    effect (rank-biserial) -0.744 [-0.916, -0.525] (95% bootstrap CI, 60 scenarios)  |  dz -0.845 [-1.326, -0.513]  |  Hodges-Lehmann -0.708 points [-0.917, -0.500]
+    then p: Wilcoxon W = 226.5, p = 6.781e-07, Holm-adjusted p = 4.068e-06 (family of 8), significant at alpha = 0.05
+    predicted direction <, observed < — as predicted
+    n = 60 paired scenarios, 59 with a nonzero difference
+
+B vs C on Composite NURSE adherence [EXPLORATORY (judge validation study has not run)]
+    effect (rank-biserial) +0.214 [-0.091, +0.488] (95% bootstrap CI, 60 scenarios)  |  dz +0.199 [-0.058, +0.460]  |  Hodges-Lehmann +0.100 points [-0.067, +0.267]
+    then p: Wilcoxon W = 696.0, p = 0.1548, Holm-adjusted p = 0.3095 (family of 8), not significant at alpha = 0.05
+    predicted direction <, observed > — AGAINST the predicted direction
+    n = 60 paired scenarios, 59 with a nonzero difference
+
+C vs LC on Composite NURSE adherence [EXPLORATORY (judge validation study has not run; CONFOUNDED BY SERVING STACK; THE REDUCED FORM OF THE QUESTION (D7))]
+    !!! CONFOUNDED BY SERVING STACK. The LC arm was served by vLLM and condition C by Ollama: a GGUF against HF safetensors, different quantisation, different sampling defaults, different hardware, and per D13 a different realised context pack. No analysis can separate the architecture from the stack that served it, so a difference here is not attributable to long context versus retrieval.
+    !!! THE REDUCED FORM OF THE QUESTION (D7). The corpus does not fit the window: the production pack admits 116/116 knowledge base entries but only 151/471 chunks. LC is a fixed, query-independent sample, not the whole corpus, and any selection rule is itself a form of retrieval. This asks whether query-dependent selection beats a fixed context — not whether curated retrieval beats stuffing everything in, which is the question build plan v3 §3 posed and this run cannot answer.
+    effect (rank-biserial) -0.411 [-0.654, -0.133] (95% bootstrap CI, 60 scenarios)  |  dz -0.361 [-0.626, -0.112]  |  Hodges-Lehmann -0.233 points [-0.422, -0.067]
+    then p: Wilcoxon W = 504.0, p = 0.006572, Holm-adjusted p = 0.01971 (family of 8), significant at alpha = 0.05
+    predicted direction >, observed < — AGAINST the predicted direction
+    n = 60 paired scenarios, 58 with a nonzero difference
+
+A vs B on Naturalness [EXPLORATORY (judge validation study has not run; the judge did not resolve naturalness on this run, so this comparison is untestable rather than null)]
+    !!! INSTRUMENT-LIMITED: every dimension of naturalness (naturalness) is degenerate on this run — the judge concentrated its scores on one value, so most within-scenario differences are exactly zero and the test ranks only the few that are not. Read the pair count and the Hodges-Lehmann shift in points below, never the p-value alone. This is a limit of the instrument, and the result must not be reported either as a clean directional finding or as 'no significant difference'.
+        the test rests on 36 of 60 scenarios (24 tied exactly); shift = -0.167 rubric points [-0.333, +0.000] — interval includes zero
+    effect (rank-biserial) -0.626 [-0.872, -0.315] (95% bootstrap CI, 60 scenarios)  |  dz -0.464 [-0.687, -0.246]  |  Hodges-Lehmann -0.167 points [-0.333, +0.000]
+    then p: Wilcoxon W = 124.5, p = 0.0009356, Holm-adjusted p = 0.003742 (family of 8), NOT TESTABLE — the p-value below describes the judge, not the conditions
+    predicted direction >, observed < — AGAINST the predicted direction
+    n = 60 paired scenarios, 36 with a nonzero difference
+
+A vs B on Ritualistic (REVERSE-CODED — 5 is the worst score) [EXPLORATORY (judge validation study has not run; the judge did not resolve ritualistic on this run, so this comparison is untestable rather than null)]
+    !!! INSTRUMENT-LIMITED: every dimension of ritualistic (ritualistic) is degenerate on this run — the judge concentrated its scores on one value, so most within-scenario differences are exactly zero and the test ranks only the few that are not. Read the pair count and the Hodges-Lehmann shift in points below, never the p-value alone. This is a limit of the instrument, and the result must not be reported either as a clean directional finding or as 'no significant difference'.
+        the test rests on 4 of 60 scenarios (56 tied exactly); shift = +0.000 rubric points [+0.000, +0.000] — interval includes zero
+    effect (rank-biserial) -0.200 [-1.000, +1.000] (95% bootstrap CI, 60 scenarios)  |  dz -0.048 [-0.249, +0.227]  |  Hodges-Lehmann +0.000 points [+0.000, +0.000]
+    then p: Wilcoxon W = 4.0, p = 0.8501, Holm-adjusted p = 0.8501 (family of 8), NOT TESTABLE — the p-value below describes the judge, not the conditions
+    predicted direction >, observed < — AGAINST the predicted direction
+    n = 60 paired scenarios, 4 with a nonzero difference
+
+A vs A2 on Composite NURSE adherence [EXPLORATORY (judge validation study has not run)]
+    effect (rank-biserial) -0.731 [-0.887, -0.533] (95% bootstrap CI, 60 scenarios)  |  dz -0.741 [-1.005, -0.524]  |  Hodges-Lehmann -0.400 points [-0.567, -0.267]
+    then p: Wilcoxon W = 238.5, p = 1.079e-06, Holm-adjusted p = 5.395e-06 (family of 8), significant at alpha = 0.05
+    predicted before the run: no difference
+    n = 60 paired scenarios, 59 with a nonzero difference
+
+B vs D on Composite NURSE adherence [EXPLORATORY (judge validation study has not run)]
+    effect (rank-biserial) +0.992 [+0.967, +1.000] (95% bootstrap CI, 60 scenarios)  |  dz +1.565 [+1.298, +1.946]  |  Hodges-Lehmann +1.114 points [+0.933, +1.300]
+    then p: Wilcoxon W = 7.0, p = 3.497e-11, Holm-adjusted p = 2.798e-10 (family of 8), significant at alpha = 0.05
+    predicted direction >, observed > — as predicted
+    n = 60 paired scenarios, 59 with a nonzero difference
+
+------------------------------------------------------------------------------
+RETRIEVAL, ASKED TWO WAYS (B vs C on composite NURSE adherence)
+  CRAG fell back to Condition-B behaviour on 69 of 180 Condition-C cells (38%), leaving 111 that actually retrieved.
+
+  (1) DOES OFFERING RETRIEVAL HELP? — all Condition-C cells, fallbacks included.
+      The deployed system as it behaves, gate and all.
+B vs C on Composite NURSE adherence [EXPLORATORY (judge validation study has not run)]
+    effect (rank-biserial) +0.214 [-0.091, +0.488] (95% bootstrap CI, 60 scenarios)  |  dz +0.199 [-0.058, +0.460]  |  Hodges-Lehmann +0.100 points [-0.067, +0.267]
+    then p: Wilcoxon W = 696.0, p = 0.1548, Holm-adjusted p = 0.1548 (family of 1), not significant at alpha = 0.05
+    predicted direction <, observed > — AGAINST the predicted direction
+    n = 60 paired scenarios, 59 with a nonzero difference
+
+  (2) DOES RETRIEVAL HELP? — only the cells where retrieval actually fired.
+      THIS is the architecture's claim. See the selection caveat below.
+B vs C on Composite NURSE adherence [EXPLORATORY (not planned in advance; judge validation study has not run; restricted to CRAG-selected cells, which is not a randomised subgroup)]
+    effect (rank-biserial) +0.220 [-0.154, +0.553] (95% bootstrap CI, 37 scenarios)  |  dz +0.226 [-0.095, +0.551]  |  Hodges-Lehmann +0.133 points [-0.100, +0.367]
+    then p: Wilcoxon W = 274.0, p = 0.2453, Holm-adjusted p = 0.2453 (family of 1), not significant at alpha = 0.05
+    predicted direction <, observed > — AGAINST the predicted direction
+    n = 37 paired scenarios (23 dropped for an incomplete pair), 37 with a nonzero difference
+
+  The p-values in this section are UNCORRECTED (family of 1). The Holm-corrected p for
+  this comparison is the one in the §8.1 family above; reading the arm two ways is a
+  second look at one planned comparison, not two new members of the family.
+
+  CAVEAT: The `retrieved` subset is chosen by CRAG on relevance, not randomised. Those 111 cells are plausibly the scenarios this corpus can answer, so their comparison against the full Condition-B arm is a self-selected subgroup contrast. The direction of that bias favours retrieval, so a positive result here is weaker evidence than the same number from a randomised design would be.
+
+------------------------------------------------------------------------------
+VARIANCE DECOMPOSITION (§8.3)
+
+MIXED-EFFECTS MODEL — nurse_composite [EXPLORATORY (judge validation study has not run)]
+  REML, random intercept for scenario (statsmodels MixedLM)
+  value ~ condition + (1 | scenario), reference = A
+  1079 generations, 60 scenarios, 3.0 samples per cell
+
+  VARIANCE
+    between scenarios         0.2389
+    residual                  0.4465
+    ICC (scenario)            0.3485
+    mean within-cell var      0.3301   (the 3 samples, everything else held fixed)
+    moments cross-check    between 0.2276, within 0.6445, ICC 0.2610
+
+  FIXED EFFECTS (contrast vs reference; effect and CI before p)
+    term                       coef                95% CI       SE         p
+    A2 vs A                 +0.4452    [+0.3071, +0.5832]   0.0704 2.604e-10
+    B vs A                  +0.6724    [+0.5344, +0.8105]   0.0704 1.338e-21
+    C vs A                  +0.5453    [+0.4072, +0.6833]   0.0704 9.801e-15
+    D vs A                  -0.4639    [-0.6019, -0.3258]   0.0704  4.51e-11
+    LC vs A                 +0.7973    [+0.6590, +0.9355]   0.0705 1.271e-29
+
+  WHAT TREATING THE 3 SAMPLES AS INDEPENDENT WOULD COST (§8.3)
+    contrast        n scenarios  n sample pairs  SE (cells)  SE (samples)  understated by
+    A2 vs A                  60             180      0.0775        0.0668           1.16x
+    B vs A                   60             180      0.0902        0.0735           1.23x
+    C vs A                   60             180      0.0813        0.0665           1.22x
+    D vs A                   60             180      0.0597        0.0472           1.26x
+    LC vs A                  60             179      0.0962        0.0732           1.31x
+    Above 1.00x, the sample-level analysis understates the standard error and every
+    p-value it produces is too small. At 1.00x a cell's samples differ by sampling noise
+    alone — which is only knowable after the fact, and is not the planned analysis either.
+
+MIXED-EFFECTS MODEL — four_habits_composite [EXPLORATORY (judge validation study has not run)]
+  REML, random intercept for scenario (statsmodels MixedLM)
+  value ~ condition + (1 | scenario), reference = A
+  1076 generations, 60 scenarios, 3.0 samples per cell
+
+  VARIANCE
+    between scenarios         0.1469
+    residual                  0.4310
+    ICC (scenario)            0.2542
+    mean within-cell var      0.3338   (the 3 samples, everything else held fixed)
+    moments cross-check    between 0.1361, within 0.6218, ICC 0.1796
+
+  FIXED EFFECTS (contrast vs reference; effect and CI before p)
+    term                       coef                95% CI       SE         p
+    A2 vs A                 +0.3560    [+0.2204, +0.4916]   0.0692 2.679e-07
+    B vs A                  +0.6530    [+0.5169, +0.7890]   0.0694 5.052e-21
+    C vs A                  +0.6949    [+0.5593, +0.8305]   0.0692 9.971e-24
+    D vs A                  -0.5162    [-0.6518, -0.3806]   0.0692 8.684e-14
+    LC vs A                 +0.5290    [+0.3929, +0.6650]   0.0694 2.512e-14
+
+  WHAT TREATING THE 3 SAMPLES AS INDEPENDENT WOULD COST (§8.3)
+    contrast        n scenarios  n sample pairs  SE (cells)  SE (samples)  understated by
+    A2 vs A                  60             180      0.0784        0.0664           1.18x
+    B vs A                   60             178      0.0990        0.0759           1.30x
+    C vs A                   60             180      0.0864        0.0743           1.16x
+    D vs A                   60             180      0.0697        0.0555           1.26x
+    LC vs A                  60             178      0.0973        0.0768           1.27x
+    Above 1.00x, the sample-level analysis understates the standard error and every
+    p-value it produces is too small. At 1.00x a cell's samples differ by sampling noise
+    alone — which is only knowable after the fact, and is not the planned analysis either.
+
+
+------------------------------------------------------------------------------
+THE EQUITY STRATUM — the one subgroup planned in advance (analysis plan §8.4)
+  DESCRIPTIVE ONLY. This is not a powered test of an equity effect and must not be written up as one (D9.1).
+  20 held-out scenarios in the stratum (lep 4, racial_ethnic 6, ses 10).
+  At n = 20, 80% power, alpha = 0.05 two-sided, the smallest detectable paired effect is dz = 0.676 — large effects only. A null result below that threshold is this subgroup's resolution, not an absence of effect.
+  `racial_ethnic` holds 6 scenarios. At that n nothing is supportable in either direction; the breakdown is printed as a description of the data, not as a comparison.
+  The §8.4 parenthetical says 35 scenarios. That counts the whole bank; §6 restricts the analysis to the holdout, and 15 of the 35 are in train. 20 is the number this analysis ran on (D9.1).
+
+  The `racial_ethnic` axis measures response to anticipated dismissal and patient credibility-management, not race-based disparity in communication generally: eight of the nine scenarios turn on a patient who has already been disbelieved, or expects to be, and manages the clinician accordingly (DECISIONS.md D5). The label is kept for continuity with the frozen split; the description is not.
+
+  COVERAGE GAPS, declared before any holdout data existed (§8.4, D5):
+    - The equity stratum contains no `emotion_intensity = 1` scenario, so it cannot say whether the disparity behaves differently on an emotionally flat turn — the turn where a system that over-reads emotion does its worst work. Flat turns are still tested outside the subgroup.
+    - `racial_ethnic` contains no `adherence_barrier`, `decision_conflict` or `false_comprehension` scenario, and every one of its scenarios presents an already-guarded patient. A system that scores well on this axis may be scoring on `handles a guarded patient` rather than on the disparity the axis claims to measure.
+
+SECONDARY ANALYSIS PLANNED IN ADVANCE: EQUITY STRATUM (ANALYSIS PLAN §8.4)
+  correction: Holm-Bonferroni across the whole set of pairwise comparisons planned in advance, across measures and dimensions together, not per dimension
+  family size m = 8 (8 computed), alpha = 0.05
+  effect sizes and 95% bootstrap CIs are reported BEFORE p-values (analysis plan §8.2)
+  note: restricted to the 20 held-out scenarios with equity_stratum = true; the 35-scenario figure in §8.4 counts the whole bank, train split included
+
+  FRIEDMAN OMNIBUS across {A, B, C} — not part of the Holm family; the within-omnibus adjustment is shown for reference only
+    dimension          chi2  df    n         p   p(omnibus Holm)  instrument
+    name              9.955   2   20  0.006893           0.06893  resolved
+    understand        6.317   2   20   0.04248            0.2657  resolved
+    respect           5.314   2   20   0.07015            0.3507  resolved
+    support           0.818   2   20    0.6643                 1  resolved
+    explore           6.542   2   20   0.03796            0.2657  resolved
+    ib                8.667   2   20   0.01312            0.1081  resolved
+    epp               8.844   2   20   0.01201            0.1081  resolved
+    de               13.625   2   20    0.0011            0.0121  resolved
+    ie                1.000   2   20    0.6065                 1  DEGENERATE — p uninterpretable
+    naturalness       1.444   2   20    0.4857                 1  DEGENERATE — p uninterpretable
+    ritualistic         nan   2   20       nan               nan  DEGENERATE — p uninterpretable
+
+A vs B on Composite NURSE adherence [EXPLORATORY (judge validation study has not run)]
+    effect (rank-biserial) -0.942 [-1.000, -0.762] (95% bootstrap CI, 20 scenarios)  |  dz -1.204 [-2.071, -0.741]  |  Hodges-Lehmann -0.650 points [-0.900, -0.400]
+    then p: Wilcoxon W = 5.0, p = 0.0004924, Holm-adjusted p = 0.002954 (family of 8), significant at alpha = 0.05
+    predicted direction <, observed < — as predicted
+    n = 20 paired scenarios, 18 with a nonzero difference
+
+A vs B on Composite Four Habits adherence [EXPLORATORY (judge validation study has not run)]
+    ATTENUATED: 1 of 4 dimensions in four_habits_composite are degenerate (ie). The comparison is testable on the dimensions that discriminate, but the composite's effect size is pulled toward zero by the constant ones and understates the difference on the dimensions that actually moved.
+    effect (rank-biserial) -0.762 [-1.000, -0.390] (95% bootstrap CI, 20 scenarios)  |  dz -0.763 [-1.691, -0.280]  |  Hodges-Lehmann -0.639 points [-0.951, -0.333]
+    then p: Wilcoxon W = 25.0, p = 0.002993, Holm-adjusted p = 0.01496 (family of 8), significant at alpha = 0.05
+    predicted direction <, observed < — as predicted
+    n = 20 paired scenarios, 20 with a nonzero difference
+
+B vs C on Composite NURSE adherence [EXPLORATORY (judge validation study has not run)]
+    effect (rank-biserial) -0.074 [-0.579, +0.432] (95% bootstrap CI, 20 scenarios)  |  dz -0.066 [-0.563, +0.376]  |  Hodges-Lehmann -0.067 points [-0.400, +0.267]
+    then p: Wilcoxon W = 88.0, p = 0.7936, Holm-adjusted p = 1 (family of 8), not significant at alpha = 0.05
+    predicted direction <, observed < — as predicted
+    n = 20 paired scenarios, 19 with a nonzero difference
+
+C vs LC on Composite NURSE adherence [EXPLORATORY (judge validation study has not run; CONFOUNDED BY SERVING STACK; THE REDUCED FORM OF THE QUESTION (D7))]
+    !!! CONFOUNDED BY SERVING STACK. The LC arm was served by vLLM and condition C by Ollama: a GGUF against HF safetensors, different quantisation, different sampling defaults, different hardware, and per D13 a different realised context pack. No analysis can separate the architecture from the stack that served it, so a difference here is not attributable to long context versus retrieval.
+    !!! THE REDUCED FORM OF THE QUESTION (D7). The corpus does not fit the window: the production pack admits 116/116 knowledge base entries but only 151/471 chunks. LC is a fixed, query-independent sample, not the whole corpus, and any selection rule is itself a form of retrieval. This asks whether query-dependent selection beats a fixed context — not whether curated retrieval beats stuffing everything in, which is the question build plan v3 §3 posed and this run cannot answer.
+    effect (rank-biserial) -0.171 [-0.643, +0.338] (95% bootstrap CI, 20 scenarios)  |  dz -0.146 [-0.608, +0.312]  |  Hodges-Lehmann -0.100 points [-0.400, +0.267]
+    then p: Wilcoxon W = 87.0, p = 0.5134, Holm-adjusted p = 1 (family of 8), not significant at alpha = 0.05
+    predicted direction >, observed < — AGAINST the predicted direction
+    n = 20 paired scenarios, 20 with a nonzero difference
+
+A vs B on Naturalness [EXPLORATORY (judge validation study has not run; the judge did not resolve naturalness on this run, so this comparison is untestable rather than null)]
+    !!! INSTRUMENT-LIMITED: every dimension of naturalness (naturalness) is degenerate on this run — the judge concentrated its scores on one value, so most within-scenario differences are exactly zero and the test ranks only the few that are not. Read the pair count and the Hodges-Lehmann shift in points below, never the p-value alone. This is a limit of the instrument, and the result must not be reported either as a clean directional finding or as 'no significant difference'.
+        the test rests on 14 of 20 scenarios (6 tied exactly); shift = -0.167 rubric points [-0.333, +0.167] — interval includes zero
+    effect (rank-biserial) -0.276 [-0.853, +0.320] (95% bootstrap CI, 20 scenarios)  |  dz -0.182 [-0.757, +0.250]  |  Hodges-Lehmann -0.167 points [-0.333, +0.167]
+    then p: Wilcoxon W = 38.0, p = 0.3716, Holm-adjusted p = 1 (family of 8), NOT TESTABLE — the p-value below describes the judge, not the conditions
+    predicted direction >, observed < — AGAINST the predicted direction
+    n = 20 paired scenarios, 14 with a nonzero difference
+
+A vs B on Ritualistic (REVERSE-CODED — 5 is the worst score) [EXPLORATORY (judge validation study has not run; the judge did not resolve ritualistic on this run, so this comparison is untestable rather than null)]
+    !!! INSTRUMENT-LIMITED: every dimension of ritualistic (ritualistic) is degenerate on this run — the judge concentrated its scores on one value, so most within-scenario differences are exactly zero and the test ranks only the few that are not. Read the pair count and the Hodges-Lehmann shift in points below, never the p-value alone. This is a limit of the instrument, and the result must not be reported either as a clean directional finding or as 'no significant difference'.
+        the test rests on 0 of 20 scenarios (20 tied exactly); shift = +0.000 rubric points [+0.000, +0.000] — interval includes zero
+    effect (rank-biserial) +nan [+nan, +nan] (95% bootstrap CI, 20 scenarios)  |  dz +nan [+nan, +nan]  |  Hodges-Lehmann +0.000 points [+0.000, +0.000]
+    then p: Wilcoxon W = nan, p = nan, Holm-adjusted p = nan (family of 8), NOT TESTABLE — the p-value below describes the judge, not the conditions
+    predicted direction >, observed = — AGAINST the predicted direction
+    n = 20 paired scenarios, 0 with a nonzero difference
+
+A vs A2 on Composite NURSE adherence [EXPLORATORY (judge validation study has not run)]
+    effect (rank-biserial) -0.919 [-1.000, -0.719] (95% bootstrap CI, 20 scenarios)  |  dz -1.001 [-1.420, -0.717]  |  Hodges-Lehmann -0.533 points [-0.933, -0.300]
+    then p: Wilcoxon W = 8.5, p = 0.0003376, Holm-adjusted p = 0.002364 (family of 8), significant at alpha = 0.05
+    predicted before the run: no difference
+    n = 20 paired scenarios, 20 with a nonzero difference
+
+B vs D on Composite NURSE adherence [EXPLORATORY (judge validation study has not run)]
+    effect (rank-biserial) +1.000 [+1.000, +1.000] (95% bootstrap CI, 20 scenarios)  |  dz +1.428 [+1.102, +2.125]  |  Hodges-Lehmann +1.000 points [+0.700, +1.383]
+    then p: Wilcoxon W = 0.0, p = 0.0001428, Holm-adjusted p = 0.001142 (family of 8), significant at alpha = 0.05
+    predicted direction >, observed > — as predicted
+    n = 20 paired scenarios, 19 with a nonzero difference
+
+------------------------------------------------------------------------------
+SENSITIVITY ANALYSES (analysis plan §8.5, build plan v3 §14)
+
+  *** 1 CONCLUSION(S) MOVE UNDER SENSITIVITY ANALYSIS. ***
+  A conclusion that flips under a sensitivity analysis is the finding, not a footnote to one.
+    C vs LC on nurse_composite: lost significance
+      base    effect -0.411, direction <, Holm p 0.01971, significant (n = 60)
+      rerun   effect -0.389, direction <, Holm p 0.137, not significant (n = 37)
+  NOT RUNNABLE: §8.5(a) judge-only vs human-only — fewer than two rater types in the data. docs/limitations.md §4: no human rating has occurred, so every number is judge-only and there is nothing yet to compare it against.
+  NOT RUNNABLE: §8.5(c) excluding poorly-self-consistent scenarios — no multi-sample judge rows. The 5-sample self-consistency pass runs on the validation subset only (analysis plan §9), and the holdout was judged single-pass at temperature 0, so no per-sample rows exist for it. This rerun cannot be run on this data.
+
+  (b) CRAG-fallback turns excluded
+    the §8.1 family recomputed with the 69 generations where retrieval_trace.fell_back_to_b is true removed; a fallback turn ran Condition-B behaviour and is not testing retrieval
+    1 CONCLUSION(S) MOVED:
+    C vs LC on nurse_composite: lost significance
+      base    effect -0.411, direction <, Holm p 0.01971, significant (n = 60)
+      rerun   effect -0.389, direction <, Holm p 0.137, not significant (n = 37)
+
+  (d) output-gate-blocked generations excluded  [PREFERRED READING]   [NOT PLANNED IN ADVANCE]
+    the family recomputed with the 24 generations the carelite.safety output gate refused removed (D12); affected scenarios: SC-012, SC-013, SC-029, SC-031, SC-055, SC-057, SC-072, SC-092
+    CAVEAT: D12 postdates the analysis plan, so this rerun was not planned in advance.
+    CAVEAT: The refusals are concentrated — 13 of 17 on SC-029 — so this exclusion removes one scenario unevenly across conditions rather than trimming symmetrically. The base analysis above INCLUDES the refused text; this rerun excludes it; the preferred reading is this one, because a refused response scored on a communication rubric is a category error rather than a low score.
+    Conclusions hold: no comparison changed significance or direction.
+
+  (e) backend equivalence: the same LC cells under two serving stacks   [NOT PLANNED IN ADVANCE]
+    D13. The 39 Ollama LC cells D11 left behind and their vLLM counterparts share scenario,
+    sample index and seed, so they are paired observations of the same cells. Measured by
+    carelite.eval.judge.backend_equivalence; reported here, not recomputed here.
+    Backend equivalence, condition LC: ollama vs vllm
+      37 paired cells over 13 scenarios (2 gate-blocked cells excluded)
+      resolution: dz >= 0.86 at the scenario level, dz >= 0.48 at the cell level
+      dimension      n   exact     +-1   mean ollama     mean vllm    diff   alpha     rho  wilcox p
+      name          36   77.8%   77.8%         1.333         2.167  +0.833   0.314   0.470     0.057
+      understand    33   48.5%   51.5%         2.394         3.758  +1.364   0.289   0.489     0.009
+      respect       35   57.1%   65.7%         2.086         2.000  -0.086   0.306   0.308     0.688
+      support       35   82.9%   82.9%         1.743         1.743  +0.000   0.697   0.693     1.000
+      explore       35   51.4%   54.3%         2.257         3.114  +0.857   0.075   0.106     0.090
+      ib            35   60.0%   62.9%         1.571         1.543  -0.029   0.079   0.069     1.000
+      epp           35   54.3%   57.1%         1.800         2.771  +0.971   0.268   0.382     0.032
+      de            36   30.6%   41.7%         2.583         3.500  +0.917   0.236   0.363     0.030
+      ie            35   91.4%   91.4%         1.171         1.000  -0.171  -0.030     n/a     0.500
+      naturalness   35   77.1%   94.3%         3.057         3.114  +0.057   0.216   0.262     0.410
+      ritualistic   35  100.0%  100.0%         5.000         5.000  +0.000     n/a     n/a       n/a  <- degenerate
+      poolable: False  (needs n >= 30 scenarios and every dimension at alpha >= 0.667 and rho >= 0.5)
+      limits:
+      - 37 paired cells over 13 scenarios, never randomised for partial analysis: they are the scenarios condition LC happened to reach before D11 stopped it.
+      - At 13 scenario-level pairs the smallest paired effect detectable at 80% power is dz = 0.86. A non-significant result at this n is not evidence of agreement.
+      - The two stacks differ in artifact, quantisation, sampling defaults, realised context pack and hardware, so a disagreement does not isolate the serving stack and an agreement does not make them interchangeable.
+      - EXPLORATORY. D10 dropped the pre-registration and the judge validation study has not run, so no result here is confirmatory.
+    The verdict above bears on D13's decision not to pool the two stacks; it does not reverse it. The LC analysis arm is served_by = 'vllm' and nothing else.
+    LIMIT: 39 paired cells over 13 of the 60 held-out scenarios. They are the scenarios condition LC happened to reach before D11 stopped it and were never randomised for partial analysis, so they are not a sample of the holdout — they are a convenience sample of it.
+    LIMIT: The two arms differ in more than the server: model artifact (GGUF against HF safetensors), quantisation, sampling defaults, realised context pack (D13) and hardware. So agreement does NOT license 'the stacks are interchangeable', and disagreement does NOT isolate the serving stack. Neither direction identifies a cause.
+    LIMIT: Generation ran at temperature 0.7. Two sampling implementations produce different text from the same seed, so even two faithful stacks would differ here by sampling alone.
+    LIMIT: This is not a rerun of the §8.1 family. It cannot flip a conclusion, and a clean result here is not evidence that the C-vs-LC comparison is unconfounded — that confound is structural and is stated on the comparison itself.
+    LIMIT: EXPLORATORY. D10 dropped the pre-registration and the judge validation study has not run.
+
+------------------------------------------------------------------------------
+NEGATIVE CONTROL (analysis plan §4.7, §8.6; build plan v3 §14)
+  NEGATIVE CONTROL PASSES: the rubric separates B from D, by a large margin.
+
+  direction B > D:              True
+  95% bootstrap CI excludes 0:  True
+  Holm-corrected p < 0.05:      True
+
+B vs D on Composite NURSE adherence [EXPLORATORY (judge validation study has not run)]
+    effect (rank-biserial) +0.992 [+0.967, +1.000] (95% bootstrap CI, 60 scenarios)  |  dz +1.565 [+1.298, +1.946]  |  Hodges-Lehmann +1.114 points [+0.933, +1.300]
+    then p: Wilcoxon W = 7.0, p = 3.497e-11, Holm-adjusted p = 2.798e-10 (family of 8), significant at alpha = 0.05
+    predicted direction >, observed > — as predicted
+    n = 60 paired scenarios, 59 with a nonzero difference
+
+  Condition D is degraded on the communication dimensions the rubric scores, not on safety (analysis plan §2).
+  24 output-gate-refused generations ARE INCLUDED in the frame this verdict was computed on (D12 keeps them, flagged). Sensitivity (d) is the rerun that excludes them; compare the two before quoting this margin.
