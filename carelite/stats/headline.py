@@ -3,9 +3,11 @@
 **Why this module exists.** A planning document in this repository was written
 against figures carried forward from memory — "939 generations", "+0.67,
 p < 0.001" — and then reasoned backward toward the code that would justify them.
-It happened to be right: the database independently holds 939 rows and the
-mixed-effects fit independently reports `B vs A +0.6724 [+0.5408, +0.8040],
-p = 1.33e-23`. Being right by luck is not a property anyone can rely on twice.
+It happened to be right when it was written: the database independently held 939
+rows and the mixed-effects fit independently reported a B-vs-A coefficient of
++0.6724. Being right by luck is not a property anyone can rely on twice, and the
+census half of that pair stopped being true the moment D13 completed condition
+LC. That is the ordinary fate of a number written into prose.
 
 So the small set of figures a write-up actually quotes is emitted by `make
 reproduce` as a block read out of Postgres, next to `analysis.txt` and the CSVs.
@@ -18,10 +20,12 @@ recollection.
 the same object `analysis.txt` is rendered from — so the headline and the full
 report cannot disagree. The only thing this module reads for itself is the
 generation census, and it reads that because it is a different question from the
-one the analysis frame answers: `generation` holds 939 rows, the primary
-comparison ran on 900 of them, and collapsing the two into one number is exactly
-the drift this module is here to prevent. Both are printed, each saying what it
-is.
+one the analysis frame answers. The census counts every row the table holds; the
+frame counts the rows a comparison actually ran on, after the split restriction
+and the one-serving-stack-per-condition rule. They have never been equal, and
+collapsing them into one number is exactly the drift this module is here to
+prevent. Both are printed, each saying what it is — and neither is written down
+here, because a docstring is prose too.
 
 **Every number carries its qualification, in the structure and not in the
 prose.** `DECISIONS.md` D10 dropped the pre-registration: every result this

@@ -293,9 +293,10 @@ def run(
 
     Two reads, not one. `run_analysis` reads the scored holdout frame the
     comparisons run on; `load_generation_counts` reads the unfiltered census of
-    `generation`. They answer different questions -- 939 rows exist, 900 were
-    analysed -- and the headline block prints both rather than letting one
-    number stand in for the other.
+    `generation`. They answer different questions -- the census counts every row
+    the table holds, the frame counts the rows a comparison ran on -- and the
+    headline block prints both rather than letting one stand in for the other.
+    Neither count is repeated here: this docstring would go stale the same way.
     """
     return write_tables(
         run_analysis(split=split, n_boot=n_boot),
