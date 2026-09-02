@@ -368,7 +368,7 @@ SENSITIVITY ANALYSES (analysis plan §8.5, build plan v3 §14)
   (d) output-gate-blocked generations excluded  [PREFERRED READING]   [NOT PLANNED IN ADVANCE]
     the family recomputed with the 24 generations the carelite.safety output gate refused removed (D12); affected scenarios: SC-012, SC-013, SC-029, SC-031, SC-055, SC-057, SC-072, SC-092
     CAVEAT: D12 postdates the analysis plan, so this rerun was not planned in advance.
-    CAVEAT: The refusals are concentrated — 13 of 17 on SC-029 — so this exclusion removes one scenario unevenly across conditions rather than trimming symmetrically. The base analysis above INCLUDES the refused text; this rerun excludes it; the preferred reading is this one, because a refused response scored on a communication rubric is a category error rather than a low score.
+    CAVEAT: The refusals are concentrated — 15 of 24 on SC-029 — so this exclusion removes one scenario unevenly across conditions rather than trimming symmetrically. The base analysis above INCLUDES the refused text; this rerun excludes it; the preferred reading is this one, because a refused response scored on a communication rubric is a category error rather than a low score.
     Conclusions hold: no comparison changed significance or direction.
 
   (e) backend equivalence: the same LC cells under two serving stacks   [NOT PLANNED IN ADVANCE]
