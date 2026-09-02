@@ -73,9 +73,14 @@ the validation subset affordable at all — the free-inference argument in v3 §
 project budget 100 scenarios instead of trimming to fit an API budget only holds because nothing
 here is metered per token. The cost of this choice is stated plainly in `docs/limitations.md` §6:
 every result is bounded by a local-model capability ceiling, not the ceiling of the largest hosted
-frontier models. Digests, not tags, are what get recorded per generation (`ModelSpec.digest`, v3
-§16) — Ollama tags are mutable, so `make pin-models` records the digest actually pulled at run time
-rather than trusting a tag string to still mean the same weights later.
+frontier models. Digests, not tags, are what get recorded per generation (v3 §16), since
+a tag is mutable and can mean different weights tomorrow. Each backend's `resolve_digest` asks the
+serving stack what it is actually serving as the run starts, `runner.assert_digests_resolved`
+refuses to write a single cell if the stack will not say, and `generation.model_digest` carries the
+answer per row. **(Corrected 2026-09-01.)** This entry previously named `make pin-models` as that
+mechanism. The target invoked `carelite.models.pin`, a module that never existed, so it had always
+failed; it was removed rather than implemented, because a digest written into the running config is
+not a record the run ever reads back and the persisted column always did the work.
 
 ## 2026-08-22 — Judge-primary evaluation, human rating deferred and validated as its own study
 

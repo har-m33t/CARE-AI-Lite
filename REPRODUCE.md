@@ -185,11 +185,19 @@ for m in json.load(sys.stdin)['models']:
     print(f\"{m['name']:20s} {m['digest']}\")"
 ```
 
-`make pin-models` is intended to do this automatically and record it against `ModelSpec.digest` in
-the running config, but **`carelite.models.pin` does not exist in this repository as of this
-writing** — the Makefile target references a module that has not been built yet. Until it lands,
-run the `curl` above manually and record the digests in your run notes; a generation's persisted
-`model_digest` column is what actually matters for reproducibility, not this convenience wrapper.
+**There is no `make pin-models` step, and nothing is waiting on one.** That target was removed on
+2026-09-01: it invoked `carelite.models.pin`, a module that never existed, so it had always failed,
+and the capability it promised is provided by the run itself. Each backend's `resolve_digest` asks
+the serving stack what it is actually serving as the run starts — the blob digest the Ollama daemon
+reports for a tag, or `vllm:<repo id>@<revision>` from the vLLM server, with the commit pinned by
+`--revision` (§7.3). If the stack will not name what it serves, the resolver returns
+`DIGEST_UNAVAILABLE` and `runner.assert_digests_resolved` refuses the run before its first cell is
+written; there is deliberately no override flag, because a row keyed on a non-identity can never be
+attributed to a model afterwards. The durable record is the per-row `generation.model_digest`
+column, not a field in the running config that the run never reads back.
+
+Run the `curl` above anyway. It is how you observe by eye which weights you are about to use, and it
+is the first thing to check if the pre-flight refuses.
 
 Digests observed during this project's own development run (yours will very likely differ — these
 are recorded as an example of the format, not as values to expect to match):
