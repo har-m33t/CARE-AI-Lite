@@ -28,7 +28,7 @@ CARELite AI is designed to close part of that gap.
 
 ## Communication Frameworks
 
-The system is built on seven evidence-based communication categories derived from synthesis of the peer-reviewed literature (33 papers retrieved into the corpus as of this writing — see "Literature Corpus" below). These categories were not selected from existing frameworks — they were identified through pattern analysis across the literature and then validated against the strongest findings in the corpus.
+The system is built on seven evidence-based communication categories derived from synthesis of the peer-reviewed literature (33 papers retrieved into the corpus — see "Literature Corpus" below). These categories were not selected from existing frameworks — they were identified through pattern analysis across the literature and then validated against the strongest findings in the corpus.
 
 ### 1. Empathy — Responsive, Not Just Warm
 Empathy is treated here as a behavioral skill, not a personality trait. The evidence shows that high-empathy clinicians use activating, cognitively-oriented communication — not more emotional language. The system supports empathy by detecting missed acknowledgments and generating responses that name emotional states before offering clinical information.
@@ -67,13 +67,17 @@ Every finding from the literature is stored as a structured entry containing sev
 | Evidence Strength | Strong, Moderate, or Emerging |
 | AI Action Type | Detection, Generation, or Reframing |
 
-The knowledge base currently holds 116 entries spanning all seven themes (activation_sdm 40, plain_language 21, teach_back 15, trust_continuity 14, empathy 14, emotion_response 9, equity 3), loaded into PostgreSQL from the retrieved paper corpus. Entries are produced by **LLM-assisted extraction with automated verbatim-span provenance validation, not human curation or clinician review**: every entry's quoted span is mechanically confirmed to appear in the extracted text of the paper it cites before the entry is accepted, and an entry whose span cannot be located is rejected as a fabrication rather than repaired. That check is real and enforced in code (`carelite/kb/validate.py`), and it is also specific about what it does not claim — no person has reviewed whether a given finding follows from its quoted span, `human_verified` is `false` on every loaded entry, and any result built on the knowledge base inherits that limitation. **116 is not 116 independent findings**: roughly a third of the entries restate one another in different words, so an entry count must never stand in for convergent evidence — `docs/limitations.md` §2 has the redundancy-cluster accounting. The equity count of 3 is not a gap awaiting more extraction either — the same section records why a targeted re-extraction attempt returned nothing (two of the entries above), which is itself a finding about this corpus, not a pipeline shortfall. `docs/decisions/README.md` records why the knowledge base is derived this way rather than hand-authored to a planning-time count.
+The knowledge base holds 116 entries spanning all seven themes (activation_sdm 40, plain_language 21, teach_back 15, trust_continuity 14, empathy 14, emotion_response 9, equity 3), loaded into PostgreSQL from the retrieved paper corpus.
+
+Entries are produced by **LLM-assisted extraction with automated verbatim-span provenance validation — not by human curation and not by clinician review**. Every entry's quoted span is mechanically confirmed to appear in the extracted text of the paper it cites before the entry is accepted, and an entry whose span cannot be located is rejected as a fabrication rather than repaired. That check is real and enforced in code (`carelite/kb/validate.py`), and it is also narrow: no person has reviewed whether a given finding follows from its quoted span, `human_verified` is `false` on every loaded entry, and any result built on the knowledge base inherits that limitation.
+
+**116 entries is not 116 independent findings.** Roughly a third of them restate one another in different words, so the count must never stand in for convergent evidence — `docs/limitations.md` §2 has the redundancy-cluster accounting. The equity count of 3 is not a gap awaiting more extraction either: a targeted re-extraction with a revised prompt returned zero net new equity entries (`DECISIONS.md` D3's recorded outcome), which is a finding about this corpus rather than a pipeline shortfall. `docs/decisions/README.md` records why the knowledge base is derived this way rather than hand-authored to a planning-time count.
 
 ---
 
 ## Actionable Behavior System
 
-Every knowledge-base entry is tagged with one of three functional categories — `AI Action Type` in the table above — rather than being organized into a separate, curated master list of behaviors as originally planned. As of this writing that tagging spans the 116 loaded entries: 73 generation, 26 reframing, 17 detection. A refined, prioritized, non-overlapping behavior list distilled from these tags remains a planned deliverable — see "Expected Outcomes" below — not a finished artifact.
+Every knowledge-base entry is tagged with one of three functional categories — `AI Action Type` in the table above — rather than being organized into a separate, curated master list of behaviors as originally planned. Across the 116 loaded entries that tagging is 73 generation, 26 reframing, 17 detection. A refined, prioritized, non-overlapping behavior list distilled from these tags remains a planned deliverable, not a finished artifact.
 
 **Detection behaviors** — the system monitors the conversation and flags something the clinician might miss. Examples include detecting emotional blocking patterns, flagging jargon, and identifying conversations that end without a teach-back check.
 
@@ -83,19 +87,13 @@ Every knowledge-base entry is tagged with one of three functional categories —
 
 ---
 
-## Expected Outcomes
+## How the System Runs
 
-By the end of the internship period, this project is expected to produce the following deliverables.
+CARELite is a terminal bedside assistant plus the evaluation study that measures it. PostgreSQL 18.6 with pgvector is the system of record: the corpus, the knowledge base, the graph edges, the scenario bank, every generation and every score sit in one database, and `carelite/db/schema.sql` is the authority on its shape. Retrieval is hybrid — dense pgvector search and lexical `tsvector` search fused by reciprocal rank, reranked, then gated by CRAG, which declines to inject evidence it grades irrelevant rather than injecting it anyway.
 
-**A structured knowledge base** containing evidence-based entries across all seven communication themes, each linking a specific research finding to a practical clinical behavior and an AI action type.
+The evaluation compares six conditions across the 60 held-out scenarios at three samples each: **A** (bare model), **A2** (the same prompt on a second model family, as a cross-model baseline), **B** (framework-prompted, no retrieval), **C** (framework plus retrieval), **LC** (a fixed, query-independent sample of the corpus packed into the context window — the corpus does not fit the window, so this is the reduced long-context baseline `DECISIONS.md` D7 defines), and **D** (a deliberately degraded prompt, as a negative control).
 
-**A refined behavior list** of twenty to thirty prioritized, non-overlapping, evaluation-ready communication behaviors derived from the master list and grounded in evidence strength.
-
-**A prototype prompt architecture** demonstrating how the system would detect, generate, and reframe in real clinical conversation contexts — including example inputs, expected outputs, and the evidence rationale behind each.
-
-**An evaluation framework** defining what good looks like for each behavior: what the system should produce, how that output would be assessed, and what the evidence-based standard for success is.
-
-**Project documentation** including this README, a literature synthesis, a communication themes framework, evidence summaries for each theme, and a versioned record of all design decisions made during the internship.
+Every model in the roster is open-weight, and no hosted vendor model sits anywhere in the inference path. **What is not true is that everything runs locally.** Conditions A, A2, B, C and D were served by Ollama on a rented Runpod L40S; Condition LC was served by vLLM with prefix caching on a rented A100, because the same cell costs 198 seconds on the first stack and 3.61 seconds warm on the second — a serving-stack difference, not a property of the condition (`DECISIONS.md` D11 and D13). The two passes sat differently against that hardware: the Ollama pass ran the generation loop on the pod itself and wrote journal files that were loaded into the database afterwards, whereas for LC only model serving was remote and the loop, the database, and the analysis stayed on the operator's machine. `generation.served_by` records which stack produced each row, so a comparison that spans both is visibly confounded rather than quietly pooled.
 
 ---
 
@@ -109,113 +107,123 @@ The system is also not a script generator. The literature is explicit on this po
 
 ## Project Structure
 
-The layout below is the actual current tree, not the intended one — the version this section
-described until 2026-08-24 documented four directories (`literature/`, `framework/`, `behaviors/`,
-and most of `docs/`'s planned contents) that were never created, alongside a status table that
-called the project further along than it was. The build is substantially complete — see "Status"
-below for what remains, and read `runs/repro/headline-numbers.txt` rather than any count in this
-file, since `make reproduce` writes that file from the database and this one is written by hand.
+The tree below is the current layout, not an intended one. Every count in this file is a hand-written
+snapshot; `runs/repro/headline-numbers.txt` is the authority, because `make reproduce` writes it from
+the database and this file is written by hand.
 
 ```
 carelite-ai/
 │
-├── README.md                    # This file
-├── REPRODUCE.md                 # Cold-start reproduction instructions
-├── DECISIONS.md                 # Dated record of project-owner decisions (D1-D13)
-├── Makefile                     # install / check / db-up / eval-smoke / reproduce
-├── pyproject.toml, uv.lock      # Toolchain: Python 3.13, uv-managed
+├── README.md                   # This file
+├── REPRODUCE.md                # Cold-start reproduction instructions
+├── DECISIONS.md                # Dated record of project-owner decisions (D1-D13)
+├── Makefile                    # install / check / db-up / eval-smoke / reproduce
+├── pyproject.toml, uv.lock     # Toolchain: Python 3.13, uv-managed
 │
-├── carelite/                    # The application and evaluation-harness code
-│   ├── types.py, config.py      # Frozen contracts: controlled vocabularies, model roster, seeds
-│   ├── db/                      # PostgreSQL + pgvector schema and connection helpers
-│   ├── corpus/                  # Fetch, extract, chunk the paper corpus
-│   ├── kb/                      # Knowledge-base extraction, verbatim-span provenance, load
-│   ├── scenarios/                # The 100-scenario bank; the frozen 60-scenario holdout split
-│   ├── index/                   # Dense (pgvector) + lexical (tsvector) indexing
-│   ├── retrieval/                # Hybrid retrieval: RRF fusion, rerank, CRAG, HyDE
-│   ├── graph/                     # Curated property graph over the knowledge base (715 edges)
-│   ├── generate/                 # The six conditions; orchestration; Ollama and vLLM backends
-│   ├── prompts/                  # Versioned prompt files per condition
+├── carelite/                   # The application and evaluation-harness code
+│   ├── types.py, config.py     # Frozen contracts: controlled vocabularies, model roster, seeds
+│   ├── db/                     # PostgreSQL + pgvector schema and connection helpers
+│   ├── corpus/                 # Fetch, extract, chunk the paper corpus
+│   ├── kb/                     # Knowledge-base extraction, verbatim-span provenance, load
+│   ├── scenarios/              # The 100-scenario bank; the frozen 60-scenario holdout split
+│   ├── index/                  # Dense (pgvector) + lexical (tsvector) indexing
+│   ├── retrieval/              # Hybrid retrieval: RRF fusion, rerank, CRAG, HyDE, R0-R9 ablations
+│   ├── graph/                  # Curated property graph over the knowledge base
+│   ├── generate/               # The six conditions; orchestration; Ollama and vLLM backends
+│   ├── prompts/                # Versioned prompt files per condition
 │   ├── eval/
-│   │   ├── rubric/               # The 11-dimension NURSE / Four Habits rubric, deterministic scorers
-│   │   ├── judge/                 # LLM-as-judge and its v3 §13 validation study
-│   │   └── human/                 # Blinded human-rating harness (synthetic-rater-exercised)
-│   ├── safety/                    # Input/output safety: injection, PHI, red-flag screens
-│   ├── stats/                     # Friedman/Wilcoxon/Holm-Bonferroni, mixed-effects, sensitivity
-│   ├── viz/                       # Every figure, regenerated from the database
-│   ├── cli/                       # The Typer + Rich terminal interface
-│   └── repro.py                   # `make reproduce` entry point
+│   │   ├── rubric/             # The 11-dimension NURSE / Four Habits rubric, deterministic scorers
+│   │   ├── judge/              # LLM-as-judge and its validation study
+│   │   └── human/              # Blinded human-rating harness (synthetic-rater-exercised)
+│   ├── safety/                 # Input/output safety: injection, PHI, red-flag screens
+│   ├── stats/                  # Friedman/Wilcoxon/Holm-Bonferroni, mixed-effects, sensitivity
+│   ├── viz/                    # Every figure, regenerated from the database
+│   ├── cli/                    # The Typer + Rich terminal interface
+│   └── repro.py                # `make reproduce` entry point
 │
 ├── data/
-│   ├── fetch_corpus.py           # Thin shim -> carelite.corpus.fetch
-│   └── pdfs/                     # Retrieved PDFs (gitignored) + _manual_needed.csv
+│   ├── fetch_corpus.py         # Thin shim -> carelite.corpus.fetch
+│   └── pdfs/                   # Retrieved PDFs (gitignored) + _manual_needed.csv
 │
 ├── knowledge_base/
-│   ├── TAXONOMY.md               # Seven-theme taxonomy proposal (accepted, DECISIONS.md D1)
-│   ├── review/                    # Generated human-review digest (0/116 signed off as of writing)
-│   └── cache/                     # Extraction cache (gitignored)
+│   ├── TAXONOMY.md             # Seven-theme taxonomy proposal (accepted, DECISIONS.md D1)
+│   ├── review/                 # Generated review digest (no entry has been signed off)
+│   └── cache/                  # Extraction cache (gitignored)
 │
 ├── scenarios/
-│   ├── EQUITY_REVIEW.md          # Equity-stratum review packet and outcome (D2, D5)
-│   ├── bank.jsonl                 # The 100-scenario bank
-│   └── holdout.lock               # Per-record digests behind HOLDOUT_DIGEST
+│   ├── EQUITY_REVIEW.md        # Equity-stratum review packet and outcome (D2, D5)
+│   ├── bank.jsonl              # The 100-scenario bank
+│   └── holdout.lock            # Per-record digests behind HOLDOUT_DIGEST
 │
 ├── docs/
-│   ├── rubric.md                  # The rating rubric humans and the judge are scored against
-│   ├── preregistration.md         # Analysis plan; OSF registration dropped by D10, kept as a record
-│   ├── limitations.md             # Kept-current limitations record (build plan v3 §17)
-│   ├── decisions/                 # Dated decision log (foundational build decisions)
-│   ├── reporting/                 # TRIPOD-LLM and CHART checklists, completed as an appendix
-│   └── superpowers/specs/         # Orchestrating-session design records, not project docs
+│   ├── rubric.md               # The rating rubric humans and the judge are scored against
+│   ├── preregistration.md      # Analysis plan; registration dropped by D10, kept as a record
+│   ├── limitations.md          # Kept-current limitations record (build plan v3 §17)
+│   ├── decisions/              # Dated log of the foundational build decisions
+│   └── reporting/              # TRIPOD-LLM and CHART checklists, completed as an appendix
 │
-├── figures/                       # Present but unused; `make reproduce` writes to runs/repro/
-├── dumps/                         # Local database dumps (gitignored, never committed)
-├── runs/                          # Run artifacts: caches, journals, repro output (gitignored)
+├── figures/                    # Empty and unused; every artifact goes to runs/repro/
+├── dumps/                      # Local database dumps (gitignored, never committed)
+├── runs/                       # Run artifacts: caches, journals, repro output (gitignored)
 └── tests/
-    ├── unit/                      # ~2,560 tests, one directory per carelite package
-    └── security/                  # Adversarial input corpus (injection, PHI, red-flag)
+    ├── unit/                   # One directory per carelite package
+    └── security/               # Adversarial input corpus (injection, PHI, red-flag)
 ```
 
 ---
 
 ## Literature Corpus
 
-The knowledge base is grounded in 33 retrieved peer-reviewed sources, not the “approximately fifty” earlier planning estimated. The manifest lists 43 unique DOIs; 10 did not resolve to an open-access PDF (nine are `nihms*` manuscripts both Unpaywall and the NCBI ID-converter report as not licensed for programmatic retrieval, readable on PMC in a browser but not fetchable) and are not in the corpus. That loss is not evenly spread across the seven themes — `docs/limitations.md` has the coverage table — and it cost the corpus some frequently-cited anchors specifically: Flickinger et al. (2016) on empathy and medication self-efficacy, Yen and Leasure (2019) on teach-back, and Park et al. (2020) on racial disparities in emotion response are all in the unresolved set and are **not** in this project's evidence base, however often they appear in the surrounding literature. What the retrieved corpus does anchor: Wilson et al. (2010) on shared decision-making and asthma adherence, Talevski et al. (2020) — a systematic review that alone accounts for 13 of the 17 teach-back knowledge-base entries — and Roberts et al. (2021) on the socioeconomic and racial empathy gap. `data/fetch_corpus.py` rebuilds this corpus from its embedded DOI manifest; `data/pdfs/_manual_needed.csv` is the honest record of what did not resolve.
+The knowledge base is grounded in 33 retrieved peer-reviewed sources, not the "approximately fifty" earlier planning estimated. The manifest lists 43 unique DOIs; 10 did not resolve to an open-access PDF — nine are `nihms*` manuscripts that both Unpaywall and the NCBI ID-converter report as not licensed for programmatic retrieval, readable on PMC in a browser but not fetchable — and they are not in the corpus.
+
+That loss is not evenly spread across the seven themes; `docs/limitations.md` §1 has the coverage table. It cost the corpus some frequently-cited anchors specifically. Flickinger et al. (2016) on empathy and medication self-efficacy, Yen and Leasure (2019) on teach-back, and Park et al. (2020) on racial disparities in emotion response are all in the unresolved set and are **not** in this project's evidence base, however often they appear in the surrounding literature.
+
+What the retrieved corpus does anchor: Wilson et al. (2010) on shared decision-making and asthma adherence, Talevski et al. (2020) — a systematic review that alone accounts for 12 of the 15 teach-back knowledge-base entries — and Roberts et al. (2021) on the socioeconomic and racial empathy gap. `data/fetch_corpus.py` rebuilds this corpus from its embedded DOI manifest, and `data/pdfs/_manual_needed.csv` is the honest record of what did not resolve.
 
 ---
 
 ## Status
 
-This table describes what is actually built and running today, queried against the live database
-and the repository as of 2026-09-01, not a plan. **Counts here are a hand-written snapshot;
-`runs/repro/headline-numbers.txt` is the authority** — `make reproduce` writes it from Postgres,
-with each figure printed beside the qualification it cannot honestly be quoted without, and it
-exists because a planning document in this repository was once written from numbers carried forward
-in memory. See `docs/decisions/README.md` for the decisions behind each row and
-`docs/limitations.md` for what each one does not claim.
+The four planned deliverables are built with one exception. The structured knowledge base, the prompt
+architecture, and the evaluation framework exist and have been run; the refined twenty-to-thirty
+behavior list does not, and what stands in its place is the action-type tagging on the knowledge base
+described above.
+
+The table below is what is actually built and running, queried against the live database and the
+repository on 2026-09-01. **Counts here are a hand-written snapshot and some of them move as scoring
+proceeds; `runs/repro/headline-numbers.txt` is the authority** — `make reproduce` writes it from
+Postgres with each figure printed beside the qualification it cannot honestly be quoted without, and
+it exists because a planning document in this repository was once written from numbers carried
+forward in memory. `docs/decisions/README.md` holds the reasoning behind each row and
+`docs/limitations.md` holds what each one does not claim.
 
 | Component | Status |
 |---|---|
-| Corpus retrieval | Built — 33 of 43 manifest DOIs resolved; the rest are documented as genuinely unavailable, not silently dropped |
-| Knowledge base extraction and provenance validation | Built — 116 entries (`DECISIONS.md` D3's outcome; ~1/3 restate one another, see `docs/limitations.md` §2), verbatim-span-validated; **not human-reviewed** (`human_verified = false` on all of them) |
-| Equity knowledge-base re-extraction (`DECISIONS.md` D3) | Complete — negative result: zero net new equity entries; established as a property of the corpus (Roberts is a meta-analysis, Holdsworth is not), not an unfinished extraction |
+| Corpus retrieval | Built — 33 of 43 manifest DOIs resolved; the rest are recorded as genuinely unavailable in `data/pdfs/_manual_needed.csv`, not silently dropped |
+| Knowledge base extraction and provenance validation | Built — 116 entries, every one verbatim-span-validated and **none human-reviewed** (`human_verified = false` on all of them); roughly a third restate one another (`docs/limitations.md` §2) |
+| Equity knowledge-base re-extraction (`DECISIONS.md` D3) | Complete — negative result: zero net new equity entries, established as a property of the corpus rather than an unfinished extraction |
 | Scenario bank and frozen holdout split | Complete — 100 scenarios (40 train / 60 holdout), checksummed and write-once |
-| Dense + lexical index | Built and verified — 471/471 chunks embedded, 10/10 retrieval probes passing |
-| Hybrid retrieval (RRF, rerank, CRAG, HyDE) | Built |
-| Curated graph layer | Built — 715 edges (`belongs_to` 116, `supports` 116, `has` 149, `appropriate_in` 160, `instantiates` 92, `restates` 82) |
-| Safety screens (input/output, injection, PHI, red-flag) | Built |
+| Dense + lexical index | Built and verified — 471/471 chunks embedded; the retrieval-quality gate passes 12/12 probes, re-run against the live index on 2026-09-01 |
+| Hybrid retrieval (RRF, rerank, CRAG, HyDE) | Built, with the R0–R9 ablation harness |
+| Curated graph layer | Built — 715 edges over the knowledge base |
+| Safety screens (input/output, injection, PHI, red-flag) | Built, and observed refusing real generated text at scale rather than only in tests (`DECISIONS.md` D12) |
 | Rubric (11-dimension NURSE / Four Habits) | Built, with anchored examples and a calibration set |
-| Generation orchestration (six experimental conditions) | Complete for all six at 180 cells each. A, A2, B, C and D were served by Ollama; **Condition LC was stopped at 39/180 under Ollama by `DECISIONS.md` D11 for cost, then completed in full under vLLM with prefix caching by `DECISIONS.md` D13** — 3.61 s per warm cell against Ollama's 198 s, a 54.9x difference that belongs to the serving stack and not to the condition. The 39 Ollama LC cells are retained as a paired backend-equivalence sample and belong to no analysis arm; the LC arm is `served_by = 'vllm'` and nothing else |
-| LLM-as-judge and its validation study | The Ollama pass is judged: 939/939, zero errors, 206 minutes. **Condition LC's 180 vLLM cells are generated and being scored now, so `rubric_score` holds 939 rows against 1,119 generations** — the gap is exactly that set. Confirmatory status still blocked on human-rating data (unchanged); the n=30 validation study's instrument-check findings are confirmed at n=939 — see `docs/limitations.md` §4 for the `naturalness`/`ritualistic` measurement failure this surfaced |
-| Human-rating harness | Built, exercised only against synthetic raters — **no real human rating has occurred** |
+| Generation orchestration (six experimental conditions) | Complete — `generation` holds 1,119 rows: 180 cells for each of the six conditions, plus the 39 partial Ollama LC cells `DECISIONS.md` D11 stopped at, which D13 retains as a paired backend-equivalence sample belonging to no analysis arm. The LC arm is `served_by = 'vllm'` and nothing else |
+| LLM-as-judge and its validation study | Built and running against the generated cells; the scored-row count moves, so read `runs/repro/headline-numbers.txt` rather than any number here. The judge-validation study itself has **not** run, which is why every judged result is exploratory. The instrument findings it did surface — `naturalness` and `ritualistic` are measurement failures rather than null results — are in `docs/limitations.md` §4 |
+| Human-rating harness | Built, exercised only against synthetic raters — **no real human rating has occurred**, and `rating_assignment` is empty |
 | Terminal (CLI) interface | Built |
-| Full evaluation run | **`generation` holds 1,119 rows**: 180 each for the six conditions, plus the 39 Ollama LC cells D11 stopped at and D13 retained. Produced in two passes on rented GPU hardware — five conditions under Ollama on 2026-08-25, Condition LC under vLLM on 2026-09-01 (`DECISIONS.md` D11 and D13; `docs/limitations.md` §4). **Completing LC adds one comparison and strengthens nothing**: the primary contrast is unmoved, `ie`/`naturalness`/`ritualistic` stay degenerate, no human rating exists, and **every result is descriptive per `DECISIONS.md` D10 and exploratory for want of a judge-validation comparator** |
-| Secondary outcome 3 (Condition C vs. Condition LC) | **No result exists yet.** D11 closed this comparison as untestable and D13 re-opened it by completing LC, in the reduced form `DECISIONS.md` D7 already fixed — whether query-dependent selection beats a fixed context, not whether retrieval beats stuffing the corpus in. The cells are generated and not yet scored, so this row is a seam and not a number |
-| OSF pre-registration | **Retired by decision, not pending** — `DECISIONS.md` D10: this is a local proof of concept, not being published or submitted, so registration was dropped rather than completed. `docs/preregistration.md` is kept as a timestamped record of the analysis plan as it stood before evaluation data existed. |
-| Statistical analysis (Friedman/Wilcoxon/Holm-Bonferroni, mixed-effects) | Built and run on the five judged conditions; `carelite/stats/RESULTS.md` is the write-up and `runs/repro/analysis.txt` is regenerated from the database. Effect sizes and corrected tests live there, not here |
-| Figures | Built (`carelite/viz/`) — `make reproduce` currently writes ten files (five figures as PNG+PDF pairs) into `runs/repro/`, skipping with a stated reason any figure whose source table is still empty rather than failing or silently omitting it |
+| Statistical analysis (Friedman/Wilcoxon/Holm-Bonferroni, mixed-effects) | Built and run. `runs/repro/analysis.txt` is regenerated from the database and is where effect sizes and corrected tests live; `carelite/stats/RESULTS.md` is the write-up |
+| Figures | Built (`carelite/viz/`) — `make reproduce` writes PNG+PDF pairs into `runs/repro/`, skipping with a stated reason any figure whose source table is still empty rather than failing or silently omitting it |
+| Secondary outcome 3 (Condition C vs. Condition LC) | **No result is stated here.** D11 closed this comparison as untestable and D13 re-opened it by completing LC, in the reduced form D7 already fixed — whether query-dependent selection beats a fixed context, not whether retrieval beats stuffing the corpus in. C was served by Ollama and the LC arm by vLLM, so the comparison carries a serving-stack confound wherever it is printed. Whether it has been scored yet is a question for `runs/repro/headline-numbers.txt` |
+| OSF pre-registration | **Retired by decision, not pending** — `DECISIONS.md` D10: this is a local proof of concept, not being published or submitted, so registration was dropped rather than completed. `docs/preregistration.md` is kept as a timestamped record of the analysis plan as it stood before evaluation data existed |
 | Reporting checklists (TRIPOD-LLM, CHART) | Drafted as a living appendix (`docs/reporting/`); items that depend on results are marked pending, not filled in |
-| `make reproduce` | Built. Both downstream lanes are wired under the `run(output_dir)` contract, so one command regenerates every table and figure from the database: six tables (including `headline-numbers.txt`, the block any write-up should quote from) and ten figure files, plus a per-stage row-count census. It runs no inference and is safe to repeat |
+| `make reproduce` | Built. One command regenerates every table and figure from the database — six tables, including `headline-numbers.txt`, and ten figure files, plus a per-stage row-count census. It runs no inference and is safe to repeat |
+
+**Every result this project has produced is descriptive and exploratory.** `DECISIONS.md` D10 dropped
+the pre-registration, so nothing here is confirmatory or hypothesis-testing; no dimension has cleared
+a judge-agreement threshold, because the judge-validation study has not run; and no human rating
+exists. Completing Condition LC under a faster serving stack added a comparison and strengthened
+nothing.
 
 ---
 
