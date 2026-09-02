@@ -814,7 +814,7 @@ def _fmt(value: float | None) -> str:
 def _provenance() -> dict[str, Any]:
     """What was actually run, read from the daemon rather than from config.
 
-    `settings.models.judge.digest` is unset until `make pin-models`, and
+    `settings.models.judge.digest` is unset -- nothing pre-fills it -- and
     `OllamaChatClient.digest` then falls back to the tag — which is the right
     fallback for a cache key but is not a provenance record. The digest the
     daemon reports is the real identity of the weights that produced these

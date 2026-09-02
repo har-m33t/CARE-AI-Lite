@@ -187,8 +187,8 @@ def assert_digests_resolved(digests: dict[Condition, str]) -> None:
         f"the daemon did not report a digest for these conditions' models: {missing}. "
         "Every row generated now would key on a non-identity and could never be "
         "attributed to a model afterwards. Check that the daemon is up and that "
-        "`ollama list` names each configured tag, then rerun; `make pin-models` "
-        "records what it currently serves."
+        "`ollama list` names each configured tag, then rerun. On the vLLM route, "
+        "pin the served commit with `--revision` and set CARELITE_VLLM_MODEL_REVISION."
     )
 
 

@@ -1,7 +1,8 @@
 """Runtime configuration. FROZEN INTERFACE — foundation lane only.
 
 Model tags are mutable in Ollama, so every tag is paired with a digest that is
-recorded on each generation (v3 §16). `make pin-models` refreshes the digests.
+recorded on each generation (v3 §16). Nothing pre-fills `ModelSpec.digest`: the
+serving stack is asked at run time and `generation.model_digest` is the record.
 """
 
 from __future__ import annotations
@@ -18,7 +19,10 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 class ModelSpec(BaseModel):
     tag: str
-    digest: str | None = None  # filled by `make pin-models`
+    digest: str | None = None
+    """Optional pin. Left unset in practice: the digest is resolved from the serving
+    stack at run time and persisted per row, which is the identity that survives a
+    mutable tag. Consumers that read this fall back to the tag for a cache key."""
     context_window: int = 8192
     role: str = ""
 
