@@ -1,4 +1,4 @@
-.PHONY: help install check lint type test test-security test-db db-up db-check pin-models eval-smoke reproduce clean
+.PHONY: help install check lint type test test-security test-db db-up db-check eval-smoke reproduce clean
 
 VENV := .venv
 PY   := $(VENV)/bin/python
@@ -33,9 +33,6 @@ db-up: ## Apply the schema to an existing database (see REPRODUCE.md to create i
 
 db-check: ## Wave-0 gate: extension, tables, three-way join
 	$(PY) -m carelite.db.check
-
-pin-models: ## Record Ollama digests for every configured model tag
-	$(PY) -m carelite.models.pin
 
 eval-smoke: ## 5 scenarios x all conditions, end to end
 	$(PY) -m carelite.eval.smoke
