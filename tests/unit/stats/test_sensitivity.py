@@ -414,6 +414,23 @@ def test_the_gate_blocked_rerun_names_the_affected_scenarios(
     assert "SC-000" in run.specification
 
 
+def test_the_gate_blocked_caveat_counts_the_concentration_from_the_frame(
+    blocked_long: pd.DataFrame,
+) -> None:
+    """The concentration figure is measured here, never carried forward.
+
+    It was hardcoded as `13 of 17 on SC-029` from an earlier run, and stayed
+    that way after the holdout grew to 24 refusals with 15 on SC-029 — a caveat
+    describing a run that no longer existed. The fixture puts all 6 refusals on
+    SC-000, so a literal cannot pass.
+    """
+    base = run_family(blocked_long, n_boot=200)
+    run = sensitivity_gate_blocked(blocked_long, base, n_boot=200)
+    concentration = next(c for c in run.caveats if "concentrated" in c)
+    assert "6 of 6 on SC-000" in concentration
+    assert "SC-029" not in concentration
+
+
 def test_the_gate_blocked_rerun_is_labelled_not_planned_in_advance(
     blocked_long: pd.DataFrame,
 ) -> None:

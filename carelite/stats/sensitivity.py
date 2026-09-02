@@ -417,10 +417,12 @@ def sensitivity_gate_blocked(
     **Neither inclusion nor exclusion is obviously right, which is why both are
     reported.** Scoring refused text as though it were an ordinary response
     flatters whichever condition produced it, and the refusal is invisible in
-    the scores. But the refusals are not spread evenly: D12 measured 13 of 17 on
-    SC-029 alone, so excluding them removes most of one scenario across several
-    conditions rather than trimming symmetrically — and a paired test then loses
-    that scenario from every comparison it touches.
+    the scores. But the refusals are not spread evenly — on the holdout run most
+    of them land on a single scenario — so excluding them removes most of one
+    scenario across several conditions rather than trimming symmetrically, and a
+    paired test then loses that scenario from every comparison it touches. The
+    concentration is measured from the frame and printed in the caveat, never
+    carried forward from an earlier run.
 
     **The preferred reading is the one that excludes them**, and the reason is
     asymmetric. Including refused text puts a number on the rubric scale that
@@ -433,6 +435,7 @@ def sensitivity_gate_blocked(
     This rerun is **not** in the analysis plan: `gate_blocked` did not exist when
     the plan was written and D12 is dated after it. It is labelled accordingly.
     """
+    concentration = "(none)"
     if "gate_blocked" not in long.columns:
         kept = long
         n_excluded = 0
@@ -442,6 +445,15 @@ def sensitivity_gate_blocked(
         n_excluded = int(long.loc[blocked, "generation_id"].nunique())
         scenarios = sorted({str(s) for s in long.loc[blocked, "scenario_id"]})
         kept = long[~blocked]
+        per_scenario = (
+            long.loc[blocked]
+            .drop_duplicates("generation_id")
+            .groupby("scenario_id")["generation_id"]
+            .size()
+        )
+        if len(per_scenario):
+            worst = per_scenario.idxmax()
+            concentration = f"{int(per_scenario.max())} of {n_excluded} on {worst}"
 
     family = run_family(
         kept,
@@ -467,7 +479,7 @@ def sensitivity_gate_blocked(
         prespecified=False,
         caveats=(
             "D12 postdates the analysis plan, so this rerun was not planned in advance.",
-            "The refusals are concentrated — 13 of 17 on SC-029 — so this exclusion removes one "
+            f"The refusals are concentrated — {concentration} — so this exclusion removes one "
             "scenario unevenly across conditions rather than trimming symmetrically. The base "
             "analysis above INCLUDES the refused text; this rerun excludes it; the preferred "
             "reading is this one, because a refused response scored on a communication rubric "
